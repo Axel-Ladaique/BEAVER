@@ -11,6 +11,8 @@ from aerorib import __version__
 from aerorib.classify import ClassifyError, classify
 from aerorib.config import Config, ConfigError, load_config
 from aerorib.io_step import StepReadError, read_step
+from aerorib.report import format_text, write_html
+from aerorib.validate import validate
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
@@ -67,3 +69,44 @@ def inspect(
             typer.echo(
                 f"      Ø {s.diameter:.1f} mm · axe {_fmt_vec(s.axis_dir)} · longueur {s.length:.1f} mm"
             )
+
+
+def _skins(file: Path, cfg: Config):
+    try:
+        return classify(read_step(file), cfg).of("skin")
+    except (FileNotFoundError, StepReadError, ClassifyError) as exc:
+        _fail(str(exc))
+
+
+@app.command()
+def check(
+    file: Path = typer.Argument(..., help="Pièce à vérifier (STEP)."),
+    config: Optional[Path] = typer.Option(None, "-c", "--config", help="Fichier de configuration YAML."),
+    original: Optional[Path] = typer.Option(None, "--original", help="STEP d'origine, pour vérifier la peau."),
+    html: Optional[Path] = typer.Option(None, "--html", help="Écrit un rapport HTML."),
+) -> None:
+    """Vérifie qu'une pièce est imprimable en vase mode."""
+    cfg = _load(config)
+    skins = _skins(file, cfg)
+    originals = {}
+    if original is not None:
+        orig_skins = _skins(original, cfg)
+        by_name = {s.body.name: s.body.solid for s in orig_skins}
+        for s in skins:
+            if s.body.name in by_name:
+                originals[s.body.name] = by_name[s.body.name]
+            elif len(skins) == 1 and len(orig_skins) == 1:
+                originals[s.body.name] = orig_skins[0].body.solid
+            else:
+                _fail(f"pas de peau d'origine pour {s.body.name}")
+    all_ok = True
+    for s in skins:
+        report = validate(s.body.solid, cfg, original=originals.get(s.body.name))
+        all_ok &= report.ok
+        typer.echo(format_text(report, title=s.body.display))
+        if html is not None:
+            target = html if len(skins) == 1 else html.with_name(f"{html.stem}-{s.body.name}{html.suffix}")
+            write_html(report, target, title=s.body.display)
+            typer.echo(f"  rapport : {target}")
+    if not all_ok:
+        raise typer.Exit(1)

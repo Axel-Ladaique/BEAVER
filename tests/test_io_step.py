@@ -134,3 +134,40 @@ def test_roundtrip_accented_names(tmp_path: Path):
     )
     assert sorted(b.name for b in read_step(out)) == ["Longeron_carbone_Ø14", "Peau_aile_légère"]
     assert out.read_bytes().isascii()
+
+
+def test_ambiguous_face_count_is_flagged():
+    from aerorib.io_step import _assign_brep_names
+
+    found = [((), Box(1, 1, 1), True), ((), Box(2, 2, 2), True)]
+    bodies = _assign_brep_names(found, [("A", 6), ("B", 6)])
+    assert [b.name for b in bodies] == ["A", "B"]
+    assert bodies[0].note == "nom deviné parmi : A, B"  # deux candidats libres
+    assert bodies[1].note == ""  # un seul candidat restant
+
+
+def test_unambiguous_match_has_no_note():
+    from aerorib.io_step import _assign_brep_names
+
+    bodies = _assign_brep_names([((), Box(1, 1, 1), True)], [("A", 6), ("B", 9)])
+    assert bodies[0].name == "A" and bodies[0].note == ""
+
+
+def test_inspect_shows_ambiguity_note(tmp_path: Path):
+    from typer.testing import CliRunner
+
+    from aerorib.cli import app
+
+    # deux boîtes de 6 faces écrites sans libellé : le nom est deviné
+    root = Compound(children=[Box(1, 1, 1), Box(2, 2, 2).moved(Location((9, 0, 0)))])
+    root.label = "ASM"
+    export_step(root, str(tmp_path / "amb.step"))
+    text = (tmp_path / "amb.step").read_text(encoding="utf-8")
+    # injecte des noms de brep identiques en nombre de faces
+    names = iter(["SKIN_A", "SKIN_B"])
+    import re
+
+    text = re.sub(r"MANIFOLD_SOLID_BREP\(''", lambda m: f"MANIFOLD_SOLID_BREP('{next(names)}'", text)
+    (tmp_path / "amb.step").write_text(text, encoding="utf-8")
+    r = CliRunner().invoke(app, ["inspect", str(tmp_path / "amb.step")])
+    assert "⚠ nom ambigu, nom deviné parmi : SKIN_A, SKIN_B" in r.output, r.output

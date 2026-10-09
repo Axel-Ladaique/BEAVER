@@ -47,6 +47,7 @@ class StepReadError(ValueError):
 class NamedBody:
     path: tuple[str, ...]
     solid: Solid
+    note: str = ""
 
     @property
     def name(self) -> str:
@@ -117,6 +118,17 @@ def read_step(path: str | Path) -> list[NamedBody]:
 
     named = {p[-1] for p, _, anon in found if p and not anon}
     pool = [(n, f) for n, f in _brep_names(path) if n not in named]
+    return _assign_brep_names(found, pool)
+
+
+def _assign_brep_names(
+    found: list[tuple[tuple[str, ...], Solid, bool]], pool: list[tuple[str, int]]
+) -> list[NamedBody]:
+    """Attribue aux solides anonymes les noms du texte STEP, par nombre de faces.
+
+    Si plusieurs noms libres avaient le même nombre de faces, l'appariement est une
+    devinette : elle est signalée dans `NamedBody.note`.
+    """
     used = [False] * len(pool)
     bodies: list[NamedBody] = []
     counter = 0
@@ -125,10 +137,13 @@ def read_step(path: str | Path) -> list[NamedBody]:
             bodies.append(NamedBody(here, solid))
             continue
         n_faces = len(solid.faces())
-        match = next((j for j, (_, f) in enumerate(pool) if not used[j] and f == n_faces), None)
-        if match is not None:
-            used[match] = True
-            bodies.append(NamedBody(here + (pool[match][0],), solid))
+        candidates = [j for j, (_, f) in enumerate(pool) if not used[j] and f == n_faces]
+        if candidates:
+            used[candidates[0]] = True
+            note = ""
+            if len(candidates) > 1:
+                note = "nom deviné parmi : " + ", ".join(pool[j][0] for j in candidates)
+            bodies.append(NamedBody(here + (pool[candidates[0]][0],), solid, note))
         else:
             counter += 1
             base = here[-1] if here else "corps"

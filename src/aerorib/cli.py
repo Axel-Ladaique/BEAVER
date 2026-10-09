@@ -64,6 +64,8 @@ def inspect(
         role = cb.role or "—"
         how = f"   ({cb.matched_by})" if cb.matched_by else ""
         typer.echo(f"  {role:<6}  {cb.body.display}{how}")
+        if cb.body.note:
+            typer.echo(f"      ⚠ nom ambigu, {cb.body.note}")
         if cb.spar is not None:
             s = cb.spar
             typer.echo(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import NoReturn, Optional
 
@@ -30,6 +31,10 @@ def main(
     ),
 ) -> None:
     """AeroRib : structure interne pour impression vase mode."""
+    # symboles ✔ ✘ ≈ Ø ⚠ absents de cp1252 : sortie redirigée sous Windows
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def _fail(message: str) -> NoReturn:
@@ -40,7 +45,7 @@ def _fail(message: str) -> NoReturn:
 def _load(cfg_path: Optional[Path]) -> Config:
     try:
         return load_config(cfg_path)
-    except (ConfigError, OSError) as exc:
+    except ConfigError as exc:
         _fail(str(exc))
 
 
@@ -55,10 +60,7 @@ def inspect(
 ) -> None:
     """Affiche les corps trouvés et le rôle attribué à chacun."""
     cfg = _load(config)
-    try:
-        model = classify(read_step(file), cfg)
-    except (FileNotFoundError, StepReadError, ClassifyError) as exc:
-        _fail(str(exc))
+    model = _classify(file, cfg)
     typer.echo(f"{file.name} : {len(model.bodies)} corps")
     for cb in model.bodies:
         role = cb.role or "—"
@@ -73,11 +75,17 @@ def inspect(
             )
 
 
-def _skins(file: Path, cfg: Config):
+def _classify(file: Path, cfg: Config):
     try:
-        return classify(read_step(file), cfg).of("skin")
+        return classify(read_step(file), cfg)
     except (FileNotFoundError, StepReadError, ClassifyError) as exc:
         _fail(str(exc))
+    except OSError as exc:
+        _fail(f"lecture impossible : {file} ({exc.strerror or exc})")
+
+
+def _skins(file: Path, cfg: Config):
+    return _classify(file, cfg).of("skin")
 
 
 @app.command()

@@ -60,3 +60,10 @@ def test_skin_damage_detected():
     assert len(issues) == 1
     assert issues[0].check == "skin"
     assert "3.0 mm" in issues[0].message
+
+
+def test_skin_threshold_uses_real_missing_length():
+    orig = Layer(1.0, (BASE,))
+    # ouverture réelle de 0.55 mm > 0.5 : détectée (la portion érodée ne mesure que ~0.45)
+    assert len(check_skin(Layer(1.0, (notch(10, 0.55),)), orig, max_mouth=0.5, tol=0.05)) == 1
+    assert check_skin(Layer(1.0, (notch(10, 0.45),)), orig, max_mouth=0.5, tol=0.05) == []

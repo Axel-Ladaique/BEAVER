@@ -15,6 +15,8 @@ from aerorib.slicing import Layer, layer_heights, slice_layers
 
 Severity = Literal["error", "warning"]
 MAX_FAILED_LAYERS = 20
+# Une fente détectée doit avoir une aire > min_width * NARROW_AREA_FACTOR (sinon : bruit de buffer).
+NARROW_AREA_FACTOR = 0.5
 
 
 @dataclass(frozen=True)
@@ -68,8 +70,11 @@ def check_narrow_slits(layer: Layer, min_width: float) -> list[Issue]:
     issues = []
     for poly in layer.polygons:
         closed = poly.buffer(r, join_style="mitre").buffer(-r, join_style="mitre")
+        # pré-filtre : aire totale ajoutée par la fermeture trop faible pour contenir une fente
+        if closed.area - poly.area <= min_width * NARROW_AREA_FACTOR:
+            continue
         for part in _parts(closed.difference(poly)):
-            if part.area > min_width * 0.5:
+            if part.area > min_width * NARROW_AREA_FACTOR:
                 issues.append(
                     Issue("narrow_slit", "error", layer.z, f"fente plus étroite que {min_width} mm", part.bounds)
                 )
@@ -84,10 +89,12 @@ def check_skin(layer: Layer, original: Layer, max_mouth: float, tol: float) -> l
     missing = orig_boundary if res_boundary is None else orig_boundary.difference(res_boundary.buffer(tol))
     issues = []
     for piece in _parts(missing):
-        if piece.length > max_mouth:
+        # la tolérance érode `tol` à chaque extrémité de la portion manquante : on compare
+        # la longueur réellement manquante, corrigée de 2·tol
+        missing_length = piece.length + 2 * tol
+        if missing_length > max_mouth:
             issues.append(
-                # la tolérance érode `tol` à chaque extrémité de la portion manquante
-                Issue("skin", "error", layer.z, f"peau entamée sur {piece.length + 2 * tol:.1f} mm", piece.bounds)
+                Issue("skin", "error", layer.z, f"peau entamée sur {missing_length:.1f} mm", piece.bounds)
             )
     return issues
 

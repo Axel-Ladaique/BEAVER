@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from aerorib.testing.synthetic import broken_wing, naca4, naca_wing, ribbed_wing
@@ -32,3 +34,36 @@ def test_ribbed_wing_removes_material():
 def test_broken_variants_are_valid_solids(kind):
     part = broken_wing(kind)
     assert part.is_valid
+
+
+def test_ribbed_wing_is_one_solid():
+    # la bande de séparation relie les segments : la pièce valide reste d'un seul tenant
+    assert len(ribbed_wing().solids()) == 1
+
+
+def test_island_variant_has_two_solids():
+    # la fente traversante coupe l'aile en deux îlots
+    assert len(broken_wing("island").solids()) == 2
+
+
+@pytest.mark.parametrize("kind", ["hole", "narrow", "skin"])
+def test_non_island_variants_have_one_solid(kind):
+    assert len(broken_wing(kind).solids()) == 1
+
+
+def test_hole_variant_removes_cylinder_volume():
+    # cylindre de rayon 4 mm entièrement dans l'aile, sur toute l'envergure de 100 mm
+    wing, _ = naca_wing()
+    hole = broken_wing("hole")
+    assert hole.volume == pytest.approx(wing.volume - math.pi * 4**2 * 100, rel=1e-3)
+
+
+def test_slit_width_scales_removed_volume():
+    # même fente, seule la largeur change : 3.0 mm contre 0.05 mm.
+    # Le volume retiré se mesure par la différence booléenne (petit solide), et non par
+    # la différence de deux volumes complets : ces derniers ont une erreur d'environ 26 mm3,
+    # du même ordre que la fente fine (~28 mm3).
+    wing, _ = naca_wing()
+    removed_narrow = (wing - broken_wing("narrow")).volume
+    removed_skin = (wing - broken_wing("skin")).volume
+    assert removed_skin / removed_narrow == pytest.approx(3.0 / 0.05, rel=1e-2)

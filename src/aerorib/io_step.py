@@ -13,6 +13,30 @@ _GENERIC_LABELS = {"COMPOUND", "SOLID"}
 _ENTITY = re.compile(r"#(\d+)\s*=\s*([A-Z_][A-Z0-9_]*)\s*\((.*?)\)\s*;", re.S)
 _REF = re.compile(r"#(\d+)")
 _NAME = re.compile(r"\s*'((?:[^']|'')*)'")
+_STEP_ESCAPE = re.compile(
+    r"\\X2\\((?:[0-9A-Fa-f]{4})+)\\X0\\"
+    r"|\\X4\\((?:[0-9A-Fa-f]{8})+)\\X0\\"
+    r"|\\X\\([0-9A-Fa-f]{2})"
+    r"|\\S\\(.)",
+    re.S,
+)
+_NON_ASCII = re.compile(r"[^\x00-\x7f]+")
+
+
+def _decode_step_string(s: str) -> str:
+    """Décode les échappements ISO-10303-21 d'une chaîne STEP (\\X2\\, \\X4\\, \\X\\, \\S\\, '')."""
+
+    def repl(m: re.Match) -> str:
+        if m.group(1):
+            return bytes.fromhex(m.group(1)).decode("utf-16-be", errors="replace")
+        if m.group(2):
+            h = m.group(2)
+            return "".join(chr(int(h[i : i + 8], 16)) for i in range(0, len(h), 8))
+        if m.group(3):
+            return chr(int(m.group(3), 16))
+        return chr(ord(m.group(4)) + 128)
+
+    return _STEP_ESCAPE.sub(repl, s).replace("''", "'")
 
 
 class StepReadError(ValueError):
@@ -35,7 +59,11 @@ class NamedBody:
 
 def _brep_names(path: Path) -> list[tuple[str, int]]:
     """Noms des entités MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS et nombre de faces de leur coque."""
-    text = path.read_text(encoding="utf-8", errors="replace")
+    raw = path.read_bytes()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1")
     if "DATA;" not in text:
         return []
     entities = {int(m.group(1)): (m.group(2), m.group(3)) for m in _ENTITY.finditer(text.split("DATA;", 1)[1])}
@@ -47,7 +75,7 @@ def _brep_names(path: Path) -> list[tuple[str, int]]:
         refs = [int(r) for r in _REF.findall(args)]
         if not name_match or not refs or refs[0] not in entities:
             continue
-        name = name_match.group(1).replace("''", "'").strip()
+        name = _decode_step_string(name_match.group(1)).strip()
         if name:
             found.append((name, len(_REF.findall(entities[refs[0]][1]))))
     return found
@@ -116,4 +144,25 @@ def write_step(path: str | Path, bodies: list[NamedBody], assembly_name: str = "
         solid.label = body.name
         children.append(solid)
     export_step(Compound(children=children, label=assembly_name), str(path))
+    _fix_label_encoding(path)
     return path
+
+
+def _fix_label_encoding(path: Path) -> None:
+    """OCP réécrit les octets UTF-8 des libellés comme des caractères latin-1 (« é » → « Ã© »).
+
+    On rétablit le texte puis on l'échappe en \\X2\\…\\X0\\ (STEP reste ainsi du pur ASCII).
+    """
+
+    def fix(m: re.Match) -> str:
+        run = m.group()
+        try:
+            run = run.encode("latin-1").decode("utf-8")
+        except UnicodeError:
+            pass
+        return "\\X2\\" + run.encode("utf-16-be").hex().upper() + "\\X0\\"
+
+    text = path.read_text(encoding="utf-8")
+    if _NON_ASCII.search(text):
+        path.write_text(_NON_ASCII.sub(fix, text), encoding="utf-8", newline="")
+

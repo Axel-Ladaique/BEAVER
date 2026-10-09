@@ -95,3 +95,42 @@ def test_roundtrip_identical_bodies_same_place(tmp_path: Path):
         [NamedBody(("SKIN_a",), Box(10, 10, 10)), NamedBody(("SKIN_b",), Box(10, 10, 10))],
     )
     assert sorted(b.name for b in read_step(out)) == ["SKIN_a", "SKIN_b"]
+
+
+def test_decode_step_string():
+    from aerorib.io_step import _decode_step_string as dec
+
+    assert dec(r"Aile_l\X2\00E9\X0\g\X2\00E8\X0\re") == "Aile_légère"
+    assert dec(r"\X2\00D8\X0\14") == "Ø14"
+    assert dec(r"a\X4\0001F600\X0\b") == "a\U0001f600b"
+    assert dec(r"l\X\E9g") == "lég"
+    assert dec(r"l\S\ig") == "lég"  # \S\i = 'i' + 128 = 'é'
+    assert dec("l''aile") == "l'aile"
+    assert dec("plain") == "plain"
+
+
+def test_brep_names_decodes_escapes(tmp_path: Path):
+    text = FUSION.read_text(encoding="utf-8")
+    assert "WING_1" in text
+    p = tmp_path / "acc.step"
+    p.write_text(text.replace("WING_1", r"Aile_l\X2\00E9\X0\g\X2\00E8\X0\re"), encoding="utf-8")
+    assert ("Aile_légère", 9) in _brep_names(p)
+
+
+def test_brep_names_latin1_file(tmp_path: Path):
+    text = FUSION.read_text(encoding="utf-8").replace("WING_1", "Aile_légère")
+    p = tmp_path / "l1.step"
+    p.write_bytes(text.encode("latin-1"))
+    assert ("Aile_légère", 9) in _brep_names(p)
+
+
+def test_roundtrip_accented_names(tmp_path: Path):
+    out = write_step(
+        tmp_path / "acc.step",
+        [
+            NamedBody(("Peau_aile_légère",), Box(10, 10, 10)),
+            NamedBody(("Longeron_carbone_Ø14",), Box(5, 5, 5).moved(Location((50, 0, 0)))),
+        ],
+    )
+    assert sorted(b.name for b in read_step(out)) == ["Longeron_carbone_Ø14", "Peau_aile_légère"]
+    assert out.read_bytes().isascii()

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 Role = Literal["skin", "spar", "split", "norib", "cut", "ignore"]
 
@@ -16,11 +16,11 @@ class _Strict(BaseModel):
 
 
 class MaterialPreset(_Strict):
-    line_width: float  # mm
-    layer_height: float  # mm
-    density: float  # g/cm³ effective du filament imprimé (estimation, à recaler par pesée)
-    min_slit_width: float  # mm ; en dessous, le slicer referme la fente
-    max_overhang_deg: float  # inclinaison max des murs internes par rapport à Z
+    line_width: float = Field(gt=0)  # mm
+    layer_height: float = Field(gt=0)  # mm
+    density: float = Field(gt=0)  # g/cm³ effective du filament imprimé (estimation, à recaler par pesée)
+    min_slit_width: float = Field(gt=0)  # mm ; en dessous, le slicer referme la fente
+    max_overhang_deg: float = Field(gt=0, le=90)  # inclinaison max des murs internes par rapport à Z
 
 
 class PrinterSpec(_Strict):
@@ -42,24 +42,33 @@ PRINTERS: dict[str, PrinterSpec] = {
 
 
 class Naming(_Strict):
-    skin: list[str] = ["SKIN", "Wing", "Fuse"]
+    skin: list[str] = ["SKIN", "Wing", "Fuse", "Aile", "Peau"]
     spar: list[str] = ["SPAR", "SBAR", "Longeron"]
     split: list[str] = ["SPLIT"]
     norib: list[str] = ["NORIB"]
     cut: list[str] = ["CUT"]
 
+    @field_validator("skin", "spar", "split", "norib", "cut")
+    @classmethod
+    def _no_blank_prefix(cls, v: list[str]) -> list[str]:
+        if any(not p.strip() for p in v):
+            raise ValueError("un préfixe de nommage ne peut pas être vide")
+        return v
+
 
 class ValidationSettings(_Strict):
-    tessellation_tol: float = 0.005  # mm, précision du maillage de validation
-    skin_tolerance: float = 0.05  # mm, écart toléré entre peau d'origine et résultat
-    max_mouth_width: float = 0.5  # mm, plus grande ouverture tolérée dans la peau (bouche de fente)
+    tessellation_tol: float = Field(default=0.005, gt=0)  # mm, précision du maillage de validation
+    skin_tolerance: float = Field(default=0.05, gt=0)  # mm, écart toléré entre peau d'origine et résultat
+    # ouverture max tolérée dans la peau (bouche de fente), mesurée réellement : la longueur
+    # manquante est corrigée de 2·skin_tolerance avant comparaison
+    max_mouth_width: float = Field(default=0.5, gt=0)  # mm
 
 
 class Config(_Strict):
     material: str = "pla_aero"
     material_settings: dict[str, float] = Field(default_factory=dict)
     printer: str = "p1s"
-    slit_width: float = 0.1
+    slit_width: float = Field(default=0.1, gt=0)
     naming: Naming = Field(default_factory=Naming)
     roles: dict[str, Role] = Field(default_factory=dict)
     validation: ValidationSettings = Field(default_factory=ValidationSettings)
@@ -86,9 +95,17 @@ class Config(_Strict):
             raise ValueError(f"réglage matière inconnu : {', '.join(sorted(unknown))}")
         return v
 
+    @model_validator(mode="after")
+    def _valid_preset(self) -> "Config":
+        try:
+            self.preset
+        except ValidationError as exc:
+            raise ValueError(f"réglage matière invalide : {exc}") from exc
+        return self
+
     @property
     def preset(self) -> MaterialPreset:
-        return MATERIALS[self.material].model_copy(update=self.material_settings)
+        return MaterialPreset.model_validate({**MATERIALS[self.material].model_dump(), **self.material_settings})
 
     @property
     def printer_spec(self) -> PrinterSpec:
@@ -112,7 +129,14 @@ def _deep_merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
 def load_config(path: Path | None = None, overrides: dict[str, Any] | None = None) -> Config:
     data: dict[str, Any] = {}
     if path is not None:
-        loaded = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+        try:
+            loaded = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+        except OSError as exc:
+            raise ConfigError(f"configuration introuvable / illisible : {path} ({exc.strerror or exc})") from exc
+        except UnicodeDecodeError as exc:
+            raise ConfigError(f"{path} : la configuration doit être encodée en UTF-8") from exc
+        except yaml.YAMLError as exc:
+            raise ConfigError(f"{path} : YAML mal formé ({exc})") from exc
         if not isinstance(loaded, dict):
             raise ConfigError(f"{path} : la config doit être un dictionnaire YAML")
         data = loaded

@@ -21,7 +21,7 @@ def test_yaml_partial_nested_override(tmp_path: Path):
     cfg = load_config(p)
     assert cfg.material == "asa_aero"
     assert cfg.naming.spar == ["TUBE"]
-    assert cfg.naming.skin == ["SKIN", "Wing", "Fuse"]  # défaut conservé
+    assert cfg.naming.skin == ["SKIN", "Wing", "Fuse", "Aile", "Peau"]  # défaut conservé
 
 
 def test_overrides_win_over_yaml(tmp_path: Path):
@@ -79,3 +79,48 @@ def test_config_is_immutable():
     cfg = Config()
     with pytest.raises(Exception):
         cfg.slit_width = 0.3
+
+
+def test_malformed_yaml(tmp_path: Path):
+    p = tmp_path / "c.yaml"
+    p.write_text("a: [1, 2\nb: : :\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="YAML mal formé"):
+        load_config(p)
+
+
+def test_non_utf8_yaml(tmp_path: Path):
+    p = tmp_path / "c.yaml"
+    p.write_bytes("naming:\n  skin: [Aile_légère]\n".encode("cp1252"))
+    with pytest.raises(ConfigError, match="UTF-8"):
+        load_config(p)
+
+
+def test_missing_or_directory_config(tmp_path: Path):
+    with pytest.raises(ConfigError, match="introuvable / illisible"):
+        load_config(tmp_path / "nope.yaml")
+    with pytest.raises(ConfigError, match="introuvable / illisible"):
+        load_config(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"material_settings": {"layer_height": 0}},
+        {"material_settings": {"max_overhang_deg": 120}},
+        {"slit_width": -1},
+        {"slit_width": 0},
+        {"validation": {"skin_tolerance": 0}},
+        {"validation": {"max_mouth_width": -0.1}},
+        {"validation": {"tessellation_tol": 0}},
+    ],
+)
+def test_non_positive_values_rejected(overrides):
+    with pytest.raises(ConfigError):
+        load_config(overrides=overrides)
+
+
+def test_blank_naming_prefix_rejected():
+    with pytest.raises(ConfigError, match="vide"):
+        load_config(overrides={"naming": {"skin": [""]}})
+    with pytest.raises(ConfigError, match="vide"):
+        load_config(overrides={"naming": {"spar": ["  "]}})

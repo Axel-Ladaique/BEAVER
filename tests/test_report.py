@@ -39,3 +39,8 @@ def test_html_contains_svg_per_failed_layer(tmp_path: Path):
     assert "z = 0.10 mm" in html and "z = 0.30 mm" in html
     assert "trou isolé" in html
     assert "<title>aile</title>" in html
+
+
+def test_write_html_creates_parent_dir(tmp_path: Path):
+    out = write_html(failing(), tmp_path / "a" / "b" / "r.html")
+    assert out.exists()

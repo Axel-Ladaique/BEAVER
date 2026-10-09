@@ -104,7 +104,7 @@ Principe : **une feature = un fichier dans `features/`**, testable seul. Ajouter
 
 | Préfixe par défaut | Rôle |
 |---|---|
-| `SKIN`, `Wing`, `Fuse` | corps à traiter (s'il n'y a qu'un seul corps non reconnu, c'est la peau) |
+| `SKIN`, `Wing`, `Fuse`, `Aile`, `Peau` | corps à traiter (s'il n'y a qu'un seul corps non reconnu, c'est la peau) |
 | `SPAR`, `SBAR`, `Longeron` | longeron : diamètre et axe détectés (cylindre) |
 | `SPLIT` | surface de séparation manuelle |
 | `NORIB` | zone sans nervures |
@@ -216,7 +216,7 @@ spars:
 lightening_holes: {mode: auto, margin: 4}
 
 naming:
-  skin: [SKIN, Wing, Fuse]
+  skin: [SKIN, Wing, Fuse, Aile, Peau]
   spar: [SPAR, SBAR, Longeron]
   split: [SPLIT]
   norib: [NORIB]

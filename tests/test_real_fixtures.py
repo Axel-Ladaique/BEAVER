@@ -7,7 +7,7 @@ from aerorib.config import load_config
 from aerorib.io_step import read_step
 
 FIXTURES = Path(__file__).parent / "fixtures"
-FILES = sorted([*FIXTURES.glob("*.step"), *FIXTURES.glob("*.stp")])
+FILES = sorted(p for p in FIXTURES.iterdir() if p.suffix.lower() in {".step", ".stp"})
 
 
 @pytest.mark.skipif(not FILES, reason="aucune fixture réelle dans tests/fixtures/")
@@ -23,6 +23,11 @@ def test_real_export_has_skin_and_spar(path: Path):
 )
 def test_inch_export_matches_mm_twin(inch: Path):
     twin = inch.with_name(inch.stem.removesuffix("_inch") + inch.suffix)
+    if not twin.exists():
+        # extension du jumeau éventuellement différente (.STEP / .step / .stp)
+        twin = next(
+            (p for p in FILES if p.stem == inch.stem.removesuffix("_inch")), twin
+        )
     if not twin.exists():
         pytest.skip(f"jumeau en mm absent : {twin.name}")
     cfg = load_config()

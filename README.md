@@ -21,7 +21,7 @@ uv run aerorib check piece.step --original origine.step --html rapport.html
 
 | Préfixe | Rôle |
 |---|---|
-| `SKIN`, `Wing`, `Fuse` | corps à traiter |
+| `SKIN`, `Wing`, `Fuse`, `Aile`, `Peau` | corps à traiter |
 | `SPAR`, `SBAR`, `Longeron` | longeron (diamètre et axe détectés) |
 | `SPLIT` | surface de séparation manuelle |
 | `NORIB` | zone sans nervures |

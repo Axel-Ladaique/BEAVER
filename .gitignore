@@ -5,3 +5,4 @@ __pycache__/
 out/
 *.stl
 !tests/fixtures/**
+.DS_Store

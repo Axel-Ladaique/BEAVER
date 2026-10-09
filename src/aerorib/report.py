@@ -81,6 +81,7 @@ svg { width:100%; height:auto; max-height:420px; }
 
 def write_html(report: Report, path: Path, title: str = "AeroRib") -> Path:
     path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     figures = []
     for z, polys in sorted(report.failed_layers.items()):
         issues = [i for i in report.errors if i.z == z]

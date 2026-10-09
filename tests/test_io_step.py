@@ -74,3 +74,24 @@ def test_fusion_body_names_recovered():
         ("Aile_4412_simple_Sbar_v1", "WING_1"),
     ]
     assert [len(b.solid.faces()) for b in bodies] == [3, 9]
+
+
+def test_roundtrip_shared_tshape_keeps_both_names(tmp_path: Path):
+    b = Box(10, 10, 10)
+    out = write_step(
+        tmp_path / "s.step",
+        [NamedBody(("SKIN_L",), b), NamedBody(("SKIN_R",), b.moved(Location((50, 0, 0))))],
+    )
+    bodies = read_step(out)
+    assert sorted(b.name for b in bodies) == ["SKIN_L", "SKIN_R"]
+    xs = {b.name: b.solid.center().X for b in bodies}
+    assert xs["SKIN_L"] == pytest.approx(0, abs=1e-6)
+    assert xs["SKIN_R"] == pytest.approx(50, abs=1e-6)
+
+
+def test_roundtrip_identical_bodies_same_place(tmp_path: Path):
+    out = write_step(
+        tmp_path / "i.step",
+        [NamedBody(("SKIN_a",), Box(10, 10, 10)), NamedBody(("SKIN_b",), Box(10, 10, 10))],
+    )
+    assert sorted(b.name for b in read_step(out)) == ["SKIN_a", "SKIN_b"]

@@ -112,7 +112,7 @@ def write_step(path: str | Path, bodies: list[NamedBody], assembly_name: str = "
     path = Path(path)
     children = []
     for body in bodies:
-        solid = copy.copy(body.solid)
+        solid = copy.deepcopy(body.solid)
         solid.label = body.name
         children.append(solid)
     export_step(Compound(children=children, label=assembly_name), str(path))

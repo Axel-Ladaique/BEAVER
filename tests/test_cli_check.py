@@ -49,16 +49,13 @@ def test_check_skin_damage_with_original(tmp_path: Path):
 
 
 def test_check_original_mismatch(tmp_path: Path):
-    # géométries distinctes : write_step confond deux corps de même géométrie
     wing, _ = naca_wing()
-    ribbed = ribbed_wing()
+    solid = wing.solids()[0]
     a = write_step(
-        tmp_path / "a.step",
-        [NamedBody(("SKIN_a",), wing.solids()[0]), NamedBody(("SKIN_b",), ribbed.solids()[0])],
+        tmp_path / "a.step", [NamedBody(("SKIN_a",), solid), NamedBody(("SKIN_b",), solid)]
     )
     o = write_step(
-        tmp_path / "o.step",
-        [NamedBody(("SKIN_x",), wing.solids()[0]), NamedBody(("SKIN_y",), ribbed.solids()[0])],
+        tmp_path / "o.step", [NamedBody(("SKIN_x",), solid), NamedBody(("SKIN_y",), solid)]
     )
     r = runner.invoke(app, ["check", str(a), "--original", str(o), "-c", str(coarse_cfg(tmp_path))])
     assert r.exit_code == 1

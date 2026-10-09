@@ -6,6 +6,8 @@
 
 **Architecture :** paquet Python `src/aerorib`, un module par responsabilité (`config`, `io_step`, `classify`, `slicing`, `validate`, `report`, `cli`). La géométrie passe par OpenCascade via `build123d`. La validation tessele le solide (`trimesh`), le découpe en couches et analyse chaque couche en 2D (`shapely`). Des pièces synthétiques générées en code (aile NACA bonne ou cassée) servent d'oracle aux tests.
 
+**Fixture réelle disponible :** `tests/fixtures/fusion_aile_4412_simple_sbar.step` (export Fusion 360 : les noms des corps sont sur les `MANIFOLD_SOLID_BREP`, voir Task 4).
+
 **Tech Stack :** Python ≥ 3.12, `uv`, `build123d` (OCP), `trimesh` (+ `networkx`, `scipy`, `rtree`), `shapely` 2, `pydantic` 2, `PyYAML`, `typer`, `pytest`.
 
 **Spec :** `docs/specs/2026-10-09-aerorib-design.md` (lire §2, §5, §6, §8, §9, §10, §15).
@@ -19,7 +21,7 @@
 - `slit_width` par défaut **0.1 mm** ; bande de séparation par défaut **0.6 mm** (spec §2, §10).
 - Critère bloquant n°1 : **chaque couche = exactement 1 polygone, sans trou intérieur** (spec §2, §8).
 - Ordre de configuration : défauts → preset matière → YAML → options CLI (spec §10). Les surcharges par nom CAO arrivent en P1.
-- Préfixes de nommage par défaut (spec §6) : skin `SKIN, Wing, Fuse` ; spar `SPAR, Longeron` ; split `SPLIT` ; norib `NORIB` ; cut `CUT`. Comparaison insensible à la casse, par préfixe, à tous les niveaux du chemin.
+- Préfixes de nommage par défaut (spec §6) : skin `SKIN, Wing, Fuse` ; spar `SPAR, SBAR, Longeron` ; split `SPLIT` ; norib `NORIB` ; cut `CUT`. Comparaison insensible à la casse, par préfixe, à tous les niveaux du chemin.
 - Tests rapides par défaut ; les tests lents portent le marqueur `@pytest.mark.slow`.
 
 ## Hors périmètre P0 (reporté, volontairement)
@@ -236,7 +238,7 @@ def test_defaults():
     assert cfg.material == "pla_aero"
     assert cfg.printer == "p1s"
     assert cfg.slit_width == 0.1
-    assert cfg.naming.spar == ["SPAR", "Longeron"]
+    assert cfg.naming.spar == ["SPAR", "SBAR", "Longeron"]
     assert cfg.preset == MATERIALS["pla_aero"]
     assert cfg.printer_spec.volume == (256, 256, 256)
 
@@ -359,7 +361,7 @@ PRINTERS: dict[str, PrinterSpec] = {
 
 class Naming(_Strict):
     skin: list[str] = ["SKIN", "Wing", "Fuse"]
-    spar: list[str] = ["SPAR", "Longeron"]
+    spar: list[str] = ["SPAR", "SBAR", "Longeron"]
     split: list[str] = ["SPLIT"]
     norib: list[str] = ["NORIB"]
     cut: list[str] = ["CUT"]
@@ -638,7 +640,8 @@ git commit -m "test: pièces synthétiques NACA (bonne et cassées)"
 - Consumes : `aerorib.testing.synthetic.naca_wing`.
 - Produces :
   - `@dataclass(frozen=True) NamedBody(path: tuple[str, ...], solid: Solid)` avec propriétés `.name -> str` (dernier élément, `""` si vide) et `.display -> str` (`"/".join(path)` ou `"<sans nom>"`).
-  - `read_step(path: str | Path) -> list[NamedBody]` : parcourt l'arbre importé ; les libellés vides sont ignorés ; un nœud sans enfant contenant plusieurs solides produit `nom#1`, `nom#2`… Lève `FileNotFoundError` si le fichier n'existe pas, `StepReadError` si aucun solide.
+  - `read_step(path: str | Path) -> list[NamedBody]` : parcourt l'arbre importé ; les libellés vides ou génériques (`COMPOUND`, `SOLID`) sont ignorés. Un solide **anonyme** (nœud sans enfant contenant plusieurs solides, ou libellé générique) reçoit le nom de son entité `MANIFOLD_SOLID_BREP` / `BREP_WITH_VOIDS`, relu dans le texte du STEP et associé par nombre de faces, puis par ordre du fichier. C'est le cas de Fusion 360, qui nomme les corps à cet endroit (spec §6). À défaut : `nom#1`, `nom#2`… Lève `FileNotFoundError` si le fichier n'existe pas, `StepReadError` si aucun solide.
+  - `_brep_names(path: Path) -> list[tuple[str, int]]` : (nom, nombre de faces de la coque extérieure) dans l'ordre du fichier.
   - `write_step(path: str | Path, bodies: list[NamedBody], assembly_name: str = "AERORIB") -> Path` : un assemblage plat, chaque solide portant `body.name`.
   - `StepReadError(ValueError)`.
 
@@ -651,7 +654,7 @@ from pathlib import Path
 import pytest
 from build123d import Box, Compound, Cylinder, Location, export_step
 
-from aerorib.io_step import NamedBody, StepReadError, read_step, write_step
+from aerorib.io_step import NamedBody, StepReadError, _brep_names, read_step, write_step
 
 
 def _spar():
@@ -706,6 +709,22 @@ def test_garbage_file(tmp_path: Path):
     p.write_text("not a step file", encoding="utf-8")
     with pytest.raises(StepReadError):
         read_step(p)
+
+
+FUSION = Path(__file__).parent / "fixtures" / "fusion_aile_4412_simple_sbar.step"
+
+
+def test_brep_names_from_text():
+    assert _brep_names(FUSION) == [("SBAR_14mm_1", 3), ("WING_1", 9)]
+
+
+def test_fusion_body_names_recovered():
+    bodies = read_step(FUSION)
+    assert [b.path for b in bodies] == [
+        ("Aile_4412_simple_Sbar_v1", "SBAR_14mm_1"),
+        ("Aile_4412_simple_Sbar_v1", "WING_1"),
+    ]
+    assert [len(b.solid.faces()) for b in bodies] == [3, 9]
 ```
 
 - [ ] **Step 2 : lancer** — `uv run pytest tests/test_io_step.py -v` → FAIL.
@@ -718,10 +737,16 @@ def test_garbage_file(tmp_path: Path):
 from __future__ import annotations
 
 import copy
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from build123d import Compound, Shape, Solid, export_step, import_step
+
+_GENERIC_LABELS = {"COMPOUND", "SOLID"}
+_ENTITY = re.compile(r"#(\d+)\s*=\s*([A-Z_][A-Z0-9_]*)\s*\((.*?)\)\s*;", re.S)
+_REF = re.compile(r"#(\d+)")
+_NAME = re.compile(r"\s*'((?:[^']|'')*)'")
 
 
 class StepReadError(ValueError):
@@ -742,6 +767,26 @@ class NamedBody:
         return "/".join(self.path) if self.path else "<sans nom>"
 
 
+def _brep_names(path: Path) -> list[tuple[str, int]]:
+    """Noms des entités MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS et nombre de faces de leur coque."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if "DATA;" not in text:
+        return []
+    entities = {int(m.group(1)): (m.group(2), m.group(3)) for m in _ENTITY.finditer(text.split("DATA;", 1)[1])}
+    found = []
+    for kind, args in entities.values():
+        if kind not in ("MANIFOLD_SOLID_BREP", "BREP_WITH_VOIDS"):
+            continue
+        name_match = _NAME.match(args)
+        refs = [int(r) for r in _REF.findall(args)]
+        if not name_match or not refs or refs[0] not in entities:
+            continue
+        name = name_match.group(1).replace("''", "'").strip()
+        if name:
+            found.append((name, len(_REF.findall(entities[refs[0]][1]))))
+    return found
+
+
 def read_step(path: str | Path) -> list[NamedBody]:
     path = Path(path)
     if not path.exists():
@@ -751,27 +796,45 @@ def read_step(path: str | Path) -> list[NamedBody]:
     except Exception as exc:  # OCP lève des types variés
         raise StepReadError(f"{path} : lecture STEP impossible ({exc})") from exc
 
-    bodies: list[NamedBody] = []
+    # (chemin, solide, anonyme ?)
+    found: list[tuple[tuple[str, ...], Solid, bool]] = []
 
     def walk(shape: Shape, prefix: tuple[str, ...]) -> None:
         label = (shape.label or "").strip()
-        here = prefix + ((label,) if label else ())
+        generic = not label or label.upper() in _GENERIC_LABELS
+        here = prefix if generic else prefix + (label,)
         children = list(getattr(shape, "children", ()) or ())
         if children:
             for child in children:
                 walk(child, here)
             return
         solids = shape.solids()
-        for i, solid in enumerate(solids, start=1):
-            if len(solids) == 1:
-                bodies.append(NamedBody(here, solid))
-            else:
-                base = here[-1] if here else "corps"
-                bodies.append(NamedBody(here[:-1] + (f"{base}#{i}",) if here else (f"{base}#{i}",), solid))
+        anonymous = generic or len(solids) > 1
+        for solid in solids:
+            found.append((here, solid, anonymous))
 
     walk(root, ())
-    if not bodies:
+    if not found:
         raise StepReadError(f"{path} : aucun solide trouvé")
+
+    named = {p[-1] for p, _, anon in found if p and not anon}
+    pool = [(n, f) for n, f in _brep_names(path) if n not in named]
+    used = [False] * len(pool)
+    bodies: list[NamedBody] = []
+    counter = 0
+    for here, solid, anonymous in found:
+        if not anonymous:
+            bodies.append(NamedBody(here, solid))
+            continue
+        n_faces = len(solid.faces())
+        match = next((j for j, (_, f) in enumerate(pool) if not used[j] and f == n_faces), None)
+        if match is not None:
+            used[match] = True
+            bodies.append(NamedBody(here + (pool[match][0],), solid))
+        else:
+            counter += 1
+            base = here[-1] if here else "corps"
+            bodies.append(NamedBody(here + (f"{base}#{counter}",), solid))
     return bodies
 
 
@@ -916,6 +979,21 @@ def test_detect_spar_tube_takes_outer_diameter():
 
 def test_detect_spar_none_for_box():
     assert detect_spar(Box(5, 5, 5)) is None
+
+
+def test_fusion_fixture_roles_and_spar():
+    from pathlib import Path
+
+    from aerorib.io_step import read_step
+
+    fixture = Path(__file__).parent / "fixtures" / "fusion_aile_4412_simple_sbar.step"
+    m = classify(read_step(fixture), load_config())
+    assert [c.body.name for c in m.of("skin")] == ["WING_1"]
+    (spar,) = m.of("spar")
+    assert spar.body.name == "SBAR_14mm_1"
+    assert spar.spar.diameter == pytest.approx(14.0)
+    assert spar.spar.axis_dir == pytest.approx((1, 0, 0), abs=1e-9)
+    assert spar.spar.length == pytest.approx(210.0)
 ```
 
 - [ ] **Step 2 : lancer** — `uv run pytest tests/test_classify.py -v` → FAIL.
@@ -1955,7 +2033,8 @@ git commit -m "feat(cli): commande check avec rapport HTML"
 
 Déposer ici des exports STEP **réels** depuis SolidWorks et Fusion 360 :
 
-- la même pièce simple dans les deux logiciels : un tronçon d'aile nommé `SKIN…` et un longeron cylindrique nommé `SPAR…` ;
+- la même pièce simple dans les deux logiciels : un tronçon d'aile nommé `SKIN…` / `WING…` et un longeron cylindrique nommé `SPAR…` / `SBAR…` ;
+- déjà présent : `fusion_aile_4412_simple_sbar.step` (Fusion 360, corps `WING_1` avec alésage Ø14 et `SBAR_14mm_1`, envergure selon X) ;
 - nom de fichier : `<logiciel>_<description>.step`, ex. `solidworks_aile_simple.step`, `fusion_aile_simple.step` ;
 - au moins un export Fusion en **pouces**, pour vérifier la conversion d'unités (`fusion_aile_simple_inch.step`).
 
@@ -2047,7 +2126,7 @@ uv run aerorib check piece.step --original origine.step --html rapport.html
 | Préfixe | Rôle |
 |---|---|
 | `SKIN`, `Wing`, `Fuse` | corps à traiter |
-| `SPAR`, `Longeron` | longeron (diamètre et axe détectés) |
+| `SPAR`, `SBAR`, `Longeron` | longeron (diamètre et axe détectés) |
 | `SPLIT` | surface de séparation manuelle |
 | `NORIB` | zone sans nervures |
 | `CUT` | plan de découpe forcé |

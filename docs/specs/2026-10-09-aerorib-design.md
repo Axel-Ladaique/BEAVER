@@ -99,12 +99,13 @@ Principe : **une feature = un fichier dans `features/`**, testable seul. Ajouter
 
 - Formats acceptés : STEP (AP203/AP214/AP242). STL accepté plus tard en entrée dégradée (sans export STEP propre).
 - Unités lues depuis le fichier.
+- Fusion 360 place les noms des corps sur les entités `MANIFOLD_SOLID_BREP` (pas sur des produits). OpenCascade ne les remonte pas : `aerorib` les relit dans le texte STEP et les associe aux solides par nombre de faces (invariant au placement), puis par ordre du fichier.
 - Les rôles sont déduits des noms, en cherchant à **tous les niveaux disponibles** (produit/pièce, composant, corps), sans tenir compte de la casse, par préfixe configurable.
 
 | Préfixe par défaut | Rôle |
 |---|---|
 | `SKIN`, `Wing`, `Fuse` | corps à traiter (s'il n'y a qu'un seul corps non reconnu, c'est la peau) |
-| `SPAR`, `Longeron` | longeron : diamètre et axe détectés (cylindre) |
+| `SPAR`, `SBAR`, `Longeron` | longeron : diamètre et axe détectés (cylindre) |
 | `SPLIT` | surface de séparation manuelle |
 | `NORIB` | zone sans nervures |
 | `CUT` | plan de découpe forcé entre tronçons |
@@ -216,7 +217,7 @@ lightening_holes: {mode: auto, margin: 4}
 
 naming:
   skin: [SKIN, Wing, Fuse]
-  spar: [SPAR, Longeron]
+  spar: [SPAR, SBAR, Longeron]
   split: [SPLIT]
   norib: [NORIB]
   cut: [CUT]

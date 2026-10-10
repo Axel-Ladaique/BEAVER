@@ -223,7 +223,7 @@ def _segment(
         progress(f"⚠ {w_}")
     try:
         cuts = plan_cuts(bb.max.Z - bb.min.Z, max_h, seg.cuts_at or None)
-        pieces = split_part(result, cuts) if cuts else [result]
+        pieces = split_part(result, [bb.min.Z + c for c in cuts]) if cuts else [result]
     except SegmentError as exc:
         raise PipelineError(f"{body_name} : {exc}") from exc
     if cuts:

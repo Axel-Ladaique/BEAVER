@@ -171,3 +171,10 @@ def test_missing_template_warns(tmp_path):
     cfg = _cfg(template=tmp_path / "absent.3mf")
     pieces, warns = pipeline._segment("B", _part(), cfg, msgs.append)
     assert len(pieces) == 1 and any("introuvable" in w and "volume de l'imprimante" in w for w in warns)
+
+
+def test_cuts_are_relative_to_part_root_not_world_zero():
+    cfg = _cfg(cuts_at=[30])
+    part = Pos(0, 0, 50) * Box(20, 20, 80)  # emplanture à z = 10, pas 0
+    pieces, _ = pipeline._segment("B", part, cfg, lambda m: None)
+    assert [round(p.bounding_box().max.Z, 3) for p in pieces] == [30.0, 50.0]

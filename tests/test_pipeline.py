@@ -2,7 +2,7 @@ import dataclasses
 
 import pytest
 from build123d import Cylinder, Location
-from shapely.geometry import box
+from shapely.geometry import LineString, Point, Polygon, box
 from shapely.ops import unary_union
 
 from aerorib import pipeline
@@ -14,16 +14,20 @@ from aerorib.slicing import slice_layers
 from aerorib.testing.synthetic import naca_wing, wing_x_bodies
 
 FAST = load_config(overrides={"material_settings": {"layer_height": 1.0}, "rib_layers": [{"spacing": 20}]})
+FAST_LINK = load_config(
+    overrides={"material_settings": {"layer_height": 1.0}, "rib_layers": [{"spacing": 20}], "passages": {"mode": "link"}}
+)
 
 
 def test_synthetic_wing_is_printable():
-    model = classify(wing_x_bodies(), FAST)
+    model = classify(wing_x_bodies(), FAST_LINK)
     messages = []
-    run = run_model(model, FAST, progress=messages.append)
+    run = run_model(model, FAST_LINK, progress=messages.append)
     assert run.ok, [i.message for b in run.bodies for i in b.report.errors][:5]
     (body,) = run.bodies
     assert body.name == "Aile_test" and body.plates > 10
     assert sorted(b.cut_hole for b in body.bores) == [False, True]
+    assert body.filled == ()  # mode link : le passage est relié, pas rebouché
     assert body.result.is_valid and len(body.result.solids()) == 1
     bb = body.result.bounding_box()
     assert bb.min.Z == pytest.approx(0.0, abs=1e-3) and bb.max.Z == pytest.approx(80.0, abs=1e-3)
@@ -41,6 +45,7 @@ def test_spar_outside_skin_is_ignored():
 
 # 60 mm et phase 15 : à z = 60, aucune nervure ne passe en x = 30 (position du longeron)
 HALF = load_config(overrides={"rib_layers": [{"spacing": 60, "phase": 15}]})
+HALF_LINK = load_config(overrides={"rib_layers": [{"spacing": 60, "phase": 15}], "passages": {"mode": "link"}})
 
 
 def _half_span_case():
@@ -52,7 +57,7 @@ def _half_span_case():
 @pytest.fixture(scope="module")
 def half_span():
     skin, spar, camber = _half_span_case()
-    result, bores, _ = generate_skin(skin, [("SBAR_demi", spar)], HALF)
+    result, bores, _, _ = generate_skin(skin, [("SBAR_demi", spar)], HALF)
     return skin, spar, camber, result, bores
 
 
@@ -142,10 +147,140 @@ def test_coaxial_small_bore_is_not_recut_by_the_spar(monkeypatch):
         - Cylinder(1, 40).moved(Location((10, 0, 80)))
     ).solids()[0]
     spar = Cylinder(4, 40).moved(Location((10, 0, 20)))
-    result, bores, _ = generate_skin(skin, [("SBAR", spar)], HALF)
+    result, bores, _, _ = generate_skin(skin, [("SBAR", spar)], HALF_LINK)
     assert sorted((b.name, b.cut_hole, round(b.radius, 2)) for b in bores) == [
         ("SBAR", True, 4.15), ("passage 1", False, 1.0)
     ]
     mid, upper = (unary_union(layer.polygons) for layer in slice_layers(result, [50.0, 80.0]))
     assert mid.contains(Point(10, 0).buffer(4.5))  # aucune coupe entre le longeron et l'alésage
     assert upper.contains(Point(10, -2.5)) and not upper.contains(Point(10, -0.5))  # Ø2 resté Ø2
+
+
+# --- P1b : attache côté opposé et rebouchage (aile synthétique, réglages par défaut) ------------
+
+
+def _vertical(poly, x, y_lo=-100.0, y_hi=100.0):
+    """Segments de matière de la tranche le long de la verticale x (triés par y)."""
+    cut = poly.intersection(LineString([(x, y_lo), (x, y_hi)]))
+    segs = [] if cut.is_empty else list(getattr(cut, "geoms", [cut]))
+    return sorted((g.bounds[1], g.bounds[3]) for g in segs)
+
+
+@pytest.fixture(scope="module")
+def default_run():
+    return run_model(classify(wing_x_bodies(), FAST), FAST)
+
+
+def test_default_run_anchors_spar_and_fills_passage(default_run):
+    assert default_run.ok, [i.message for b in default_run.bodies for i in b.report.errors][:5]
+    (body,) = default_run.bodies
+    (b,) = body.bores  # le passage est rebouché : seul le longeron reste
+    assert b.cut_hole and b.anchor_gap == 1.0 and b.side == 1
+    (f,) = body.filled
+    assert f.r == pytest.approx(1.2)
+    assert body.result.is_valid and len(body.result.solids()) == 1
+    (layer,) = slice_layers(body.result, [40.0])
+    (poly,) = layer.polygons  # un seul contour
+    assert not poly.interiors  # aucun anneau intérieur : ni trou isolé, ni passage
+    disc = Point(f.x, f.y).buffer(f.r)
+    assert poly.intersection(disc).area > 0.85 * disc.area  # le passage est plein (au plus une nervure le croise)
+
+
+def test_default_run_anchor_notch_under_the_spar(default_run):
+    (body,) = default_run.bodies
+    (b,) = body.bores
+    (layer,) = slice_layers(body.result, [40.0])
+    (poly,) = layer.polygons
+    skin_bottom = _vertical(Polygon(poly.exterior), b.x)[0][0]
+    hole_bottom = b.y - b.radius
+    # sous le trou, une seule matière sur l'axe : le pont de anchor_gap (±0,2) contre la peau intrados
+    below = [s for s in _vertical(poly, b.x) if s[1] < hole_bottom - 0.1]
+    assert len(below) == 1
+    lo, hi = below[0]
+    assert lo == pytest.approx(skin_bottom, abs=1e-3)
+    assert hi - lo == pytest.approx(1.0, abs=0.2)
+    # largeur de l'encoche ≈ slit_width, matière de part et d'autre (bande sans nervure)
+    y = (hole_bottom + hi) / 2
+    cut = poly.intersection(LineString([(b.x - 1.0, y), (b.x + 1.0, y)]))
+    segs = sorted(g.bounds for g in getattr(cut, "geoms", [cut]))
+    assert len(segs) == 2
+    assert segs[1][0] - segs[0][2] == pytest.approx(b.slit, abs=0.05)
+
+
+def test_half_span_spar_anchor_stops_with_the_spar(half_span):
+    _, _, camber, result, _ = half_span
+    yc = camber(30)
+    notch = box(29.95, yc - 4.9, 30.05, yc - 4.4)  # entre le bas du trou (yc − 4,15) et la fin de l'attache
+    low, high = (unary_union(layer.polygons) for layer in slice_layers(result, [20.0, 60.0]))
+    assert low.intersection(notch).area < 0.2 * notch.area  # attache présente sous z1
+    assert high.contains(notch)  # rien au-delà du longeron
+
+
+@pytest.fixture
+def no_ribs(monkeypatch):
+    monkeypatch.setattr(pipeline, "diamond_plates", lambda *a, **k: [])  # rapide : seuls les trous comptent
+
+
+def test_anchor_off_has_no_notch(no_ribs):
+    skin, spar, camber = _half_span_case()
+    cfg = load_config(overrides={"spars": {"default": {"anchor": False}}})
+    result, (b,), _, _ = generate_skin(skin, [("SBAR_demi", spar)], cfg)
+    assert b.anchor_gap == 0.0
+    yc = camber(30)
+    (layer,) = slice_layers(result, [20.0])
+    assert unary_union(layer.polygons).contains(box(29.95, yc - 4.9, 30.05, yc - 4.4))
+
+
+def _parasitic_case():
+    wing, camber = naca_wing(chord=100.0, span=80.0)
+    skin = (wing - Cylinder(1.2, 200).moved(Location((70, camber(70), 40)))).solids()[0]
+    spar = Cylinder(4, 80).moved(Location((30, camber(30), 40)))
+    return skin, spar, camber
+
+
+def test_parasitic_bore_is_filled_by_default(no_ribs):
+    skin, spar, camber = _parasitic_case()
+    result, bores, _, filled = generate_skin(skin, [("SBAR", spar)], HALF)
+    assert [b.name for b in bores] == ["SBAR"]
+    (f,) = filled
+    assert (f.x, f.y, f.r) == (pytest.approx(70.0), pytest.approx(camber(70)), pytest.approx(1.2))
+    assert (f.z0, f.z1) == (pytest.approx(0.0), pytest.approx(80.0))
+    assert result.is_valid and len(result.solids()) == 1
+    bb = result.bounding_box()
+    assert bb.min.Z == pytest.approx(0.0, abs=1e-3) and bb.max.Z == pytest.approx(80.0, abs=1e-3)  # rien au-delà
+    (layer,) = slice_layers(result, [40.0])
+    (poly,) = layer.polygons
+    assert not poly.interiors
+    yc = camber(70)
+    assert poly.contains(Point(70, yc).buffer(1.5))  # plus de trou
+    top = _vertical(Polygon(poly.exterior), 70.0)[0][1]
+    assert poly.contains(box(69.9, yc, 70.1, top - 0.3))  # ni de fente vers la peau
+
+
+def test_parasitic_bore_linked_in_link_mode(no_ribs):
+    skin, spar, camber = _parasitic_case()
+    result, bores, _, filled = generate_skin(skin, [("SBAR", spar)], HALF_LINK)
+    assert filled == ()
+    assert [b.name for b in bores] == ["SBAR", "passage 1"]
+    (layer,) = slice_layers(result, [40.0])
+    yc = camber(70)
+    assert not unary_union(layer.polygons).contains(Point(70, yc))  # trou gardé
+    assert not unary_union(layer.polygons).contains(box(69.99, yc + 1.5, 70.01, yc + 2.0))  # fente vers l'extrados
+
+
+def test_fill_refused_when_bore_breaks_the_surface(no_ribs):
+    from build123d import Align, Box
+
+    base = Box(60, 30, 40, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    skin = (base - Cylinder(1.2, 40).moved(Location((0, 15 - 1.21, 20)))).solids()[0]  # paroi de 0,01 mm
+    with pytest.raises(PipelineError, match=r"passage 1 \(x=0.0, y=13.8, Ø2.4\) : alésage à 0.01 mm de la surface — rebouchage impossible"):
+        generate_skin(skin, [], HALF)
+
+
+def test_fill_refused_for_tilted_passage(no_ribs):
+    from build123d import Align, Box
+
+    base = Box(60, 30, 40, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    skin = (base - Cylinder(1.2, 80).moved(Location((10, 3, 20), (0, 2, 0)))).solids()[0]
+    with pytest.raises(PipelineError, match=r"passage 1.*incliné de 2.0°.*rebouchage impossible"):
+        generate_skin(skin, [], HALF)

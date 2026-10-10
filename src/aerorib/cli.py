@@ -139,15 +139,28 @@ def check(
         raise typer.Exit(1)
 
 
-def format_bores(bores) -> str:
-    """Trous reliés à la peau (décisions autonomes rendues visibles), repère d'impression."""
-    items = [
-        f"{b.name} (longeron, Ø{2 * b.radius:.1f})"
-        if b.cut_hole
-        else f"{b.name} (Ø{2 * b.radius:.1f}, x={b.x:.1f}, y={b.y:.1f})"
-        for b in bores
-    ]
-    return "  trous reliés : " + (" ; ".join(items) if items else "aucun")
+def format_bores(bores, filled=()) -> str:
+    """Trous traités (décisions autonomes rendues visibles), repère d'impression, 1 décimale."""
+    items = []
+    for b in bores:
+        if not b.cut_hole:
+            items.append(f"{b.name} (Ø{2 * b.radius:.1f}, x={b.x:.1f}, y={b.y:.1f})")
+        elif b.anchor_gap > 0:  # l'attache est du côté opposé à la fente
+            items.append(f"{b.name} (longeron, Ø{2 * b.radius:.1f}, attache {'intrados' if b.side > 0 else 'extrados'})")
+        else:
+            items.append(f"{b.name} (longeron, Ø{2 * b.radius:.1f})")
+    groups: dict[str, list] = {}
+    for f in filled:
+        groups.setdefault(f"{2 * f.r:.1f}", []).append(f)
+    if groups:
+        items.append(
+            "rebouchés : "
+            + " ; ".join(
+                f"{len(fs)} × Ø{d} (" + " / ".join(f"x={f.x:.1f}, y={f.y:.1f}" for f in fs) + ")"
+                for d, fs in groups.items()
+            )
+        )
+    return "  trous : " + (" ; ".join(items) if items else "aucun")
 
 
 @app.command()
@@ -163,7 +176,7 @@ def run(
         result = run_model(model, cfg, progress=lambda m: typer.echo(f"… {m}"))
         for b in result.bodies:
             typer.echo(format_text(b.report, title=b.name))
-            typer.echo(format_bores(b.bores))
+            typer.echo(format_bores(b.bores, b.filled))
         target = out or Path(cfg.output.dir)
         try:
             paths = export_results(result, target, file.stem, list(cfg.output.formats))

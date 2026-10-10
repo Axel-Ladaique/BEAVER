@@ -83,11 +83,13 @@ uv run aerorib run piece.step -c examples/config-doubles-nervures.yaml --out out
 ```
 
 - `depth: 3` : la nervure ne descend qu'à 3 mm sous la peau (mesurés selon l'épaisseur de la pièce,
-  pas selon la normale à la peau : écart négligeable sur un profil d'aile). Là où la pièce est plus mince
-  que 2 × 3 mm, la nervure va jusqu'à la bande de séparation, comme une nervure principale.
+  pas selon la normale à la peau ; un peu moins profond là où la peau est pentue, près du bord d'attaque).
+  Là où la pièce est plus mince que `2 × depth + gap` (6,6 mm ici), la nervure va jusqu'à la bande de
+  séparation, comme une nervure principale.
 - `depth` doit valoir au moins 2 × la largeur de ligne (0,9 mm en `pla_aero`), sinon les deux murs de la
   nervure se confondent.
-- `phase: 5` décale le motif d'un demi-pas : les nervures fines tombent entre les principales.
+- `phase: 5` décale le motif d'un demi-pas : les nervures fines tombent entre les principales (une nervure
+  fine qui tomberait exactement sur une principale n'est pas recoupée).
 - Manchons, bandes sans nervure et attaches des longerons s'appliquent aux deux réseaux.
 - Durée : chaque nervure coûte ~1,4 s de coupe sur une aile CAO réelle ; le réseau de peau à 10 mm
   multiplie le nombre de nervures : 338 au lieu d'une soixantaine sur l'aile de 200 × 210 mm,

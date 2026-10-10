@@ -8,7 +8,7 @@ from collections.abc import Sequence
 import numpy as np
 from build123d import Face, Solid, Vector, Wire, extrude
 from shapely import affinity
-from shapely.geometry import Point, Polygon, box
+from shapely.geometry import LineString, Point, Polygon, box
 from shapely.ops import unary_union
 
 from aerorib.config import RibLayer
@@ -17,9 +17,11 @@ from aerorib.midsurface import MidSurface
 
 _FAR = 1e4
 _DEPTH_STEP = 0.5  # mm, pas d'échantillonnage de l'épaisseur le long d'une plaque
-# mm : pas max des sommets du bord intérieur d'une plaque peu profonde (depth en mm). Le bord suit alors
-# la peau décalée ; à 16 sommets, la corde d'une peau convexe creusait jusqu'à ~0,9 mm de trop au bord d'attaque.
-_PARTIAL_EDGE_STEP = 5.0
+# mm : écart max entre le bord intérieur d'une plaque peu profonde (depth en mm) et la peau décalée. Le bord
+# est échantillonné finement puis simplifié (Douglas-Peucker) : peu de sommets là où la peau est peu courbée,
+# beaucoup au bord d'attaque. À 16 sommets réguliers, la corde creusait jusqu'à ~0,9 mm de trop au bord
+# d'attaque ; à un sommet tous les 5 mm, la coupe coûtait ×2,7.
+_PARTIAL_EDGE_TOL = 0.05
 _SAME_LINE = 1e-6  # mm : deux plaques de même famille et même c sont confondues
 
 
@@ -69,7 +71,8 @@ def plate_profiles_2d(
     """Profils 2D des plaques haute et basse.
 
     ss/ym/th : échantillons fins le long de la plaque (pour situer les transitions d'épaisseur) ;
-    le bord intérieur n'utilise que `edge_vertices` sommets (coût des booléens).
+    le bord intérieur n'utilise que `edge_vertices` sommets (coût des booléens) ; pour un niveau peu
+    profond (`depth`), il est simplifié à `_PARTIAL_EDGE_TOL` près au lieu d'être échantillonné régulièrement.
     Une transition profonde / trop mince est une marche verticale, jamais une rampe : en tranche, une
     rampe donne des pointes de fente obliques qui pincent la bande de séparation.
 
@@ -82,9 +85,8 @@ def plate_profiles_2d(
     runs = _deep_runs(ss, deep)
     if not runs:
         return []
-    if edge_vertices is not None and depth is not None:
-        edge_vertices = max(edge_vertices, math.ceil((ss[-1] - ss[0]) / _PARTIAL_EDGE_STEP) + 1)
-    coarse = ss if edge_vertices is None else np.linspace(ss[0], ss[-1], edge_vertices)
+    simplify = depth is not None and edge_vertices is not None
+    coarse = ss if edge_vertices is None or simplify else np.linspace(ss[0], ss[-1], edge_vertices)
     out = []
     for top in (True, False):
         far = ytop if top else ybot
@@ -102,6 +104,9 @@ def plate_profiles_2d(
                 # pas de mélange avec l'épaisseur d'un échantillon trop mince (marche, pas de rampe)
                 run = deep & (ss >= lo) & (ss <= hi)
                 y_edge = np.interp(s_edge, ss[run], inner[run])
+                if simplify and len(s_edge) > 2:
+                    edge = LineString(list(zip(s_edge, y_edge))).simplify(_PARTIAL_EDGE_TOL)
+                    s_edge, y_edge = (np.asarray(a) for a in zip(*edge.coords))
             pieces.append(Polygon(list(zip(s_edge, y_edge)) + [(hi, far), (lo, far)]).buffer(0))
         poly = unary_union(pieces)
         if zones:

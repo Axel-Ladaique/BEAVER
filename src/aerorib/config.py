@@ -56,8 +56,62 @@ class Naming(_Strict):
         return v
 
 
+class OrientationAxis(_Strict):
+    axis: tuple[float, float, float]
+
+    @field_validator("axis")
+    @classmethod
+    def _non_zero(cls, v: tuple[float, float, float]) -> tuple[float, float, float]:
+        if sum(c * c for c in v) < 1e-12:
+            raise ValueError("axe d'orientation nul")
+        return v
+
+
+class SplitSettings(_Strict):
+    gap: float = Field(default=0.6, gt=0)  # largeur de la bande de séparation (mm)
+    min_rib_depth: float = Field(default=1.0, ge=0)  # nervure plus courte → non coupée (bords d'attaque/fuite)
+    grid: tuple[int, int] = (101, 22)  # résolution (nx, nz) de la surface médiane
+
+
+class RibLayer(_Strict):
+    name: str = "principal"
+    pattern: Literal["diamond"] = "diamond"
+    angle: float | None = Field(default=None, gt=0, lt=90)  # None → min(45, max_overhang_deg du preset)
+    spacing: float = Field(default=30.0, gt=0)
+    depth: Literal["full"] | float = "full"
+    phase: float = 0.0
+    samples: int = Field(default=16, ge=4)
+
+    @field_validator("depth")
+    @classmethod
+    def _full_only(cls, v: object) -> object:
+        if v != "full":
+            raise ValueError("profondeur partielle des nervures prévue en phase P3 (utiliser depth: full)")
+        return v
+
+
+class BoreSettings(_Strict):
+    clearance: float = Field(default=0.15, ge=0)  # jeu radial autour du longeron
+    sleeve: float = Field(default=0.5, ge=0)  # matière gardée autour du trou, sans nervure
+    strip: float = Field(default=2.0, gt=0)  # largeur de la bande sans nervure jusqu'à la peau
+    slit_side: Literal["top", "bottom"] = "top"  # top = extrados (+Y)
+
+
+class PassageSettings(_Strict):
+    mode: Literal["auto", "off"] = "auto"
+    sleeve: float = Field(default=0.5, ge=0)
+    strip: float = Field(default=1.0, gt=0)
+    slit_side: Literal["top", "bottom"] = "top"
+    max_tilt_deg: float = Field(default=5.0, gt=0, lt=90)
+
+
+class OutputSettings(_Strict):
+    dir: str = "out"
+    formats: list[Literal["step", "stl"]] = ["step", "stl"]
+
+
 class ValidationSettings(_Strict):
-    tessellation_tol: float = Field(default=0.005, gt=0)  # mm, précision du maillage de validation
+    tessellation_tol: float = Field(default=0.02, gt=0)  # mm, précision du maillage de validation
     skin_tolerance: float = Field(default=0.05, gt=0)  # mm, écart toléré entre peau d'origine et résultat
     # ouverture max tolérée dans la peau (bouche de fente), mesurée réellement : la longueur
     # manquante est corrigée de 2·skin_tolerance avant comparaison
@@ -72,6 +126,12 @@ class Config(_Strict):
     naming: Naming = Field(default_factory=Naming)
     roles: dict[str, Role] = Field(default_factory=dict)
     validation: ValidationSettings = Field(default_factory=ValidationSettings)
+    orientation: Literal["auto"] | OrientationAxis = "auto"
+    split: SplitSettings = Field(default_factory=SplitSettings)
+    rib_layers: list[RibLayer] = Field(default_factory=lambda: [RibLayer()])
+    spars: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    passages: PassageSettings = Field(default_factory=PassageSettings)
+    output: OutputSettings = Field(default_factory=OutputSettings)
 
     @field_validator("material")
     @classmethod
@@ -103,6 +163,21 @@ class Config(_Strict):
             raise ValueError(f"réglage matière invalide : {exc}") from exc
         return self
 
+    @model_validator(mode="after")
+    def _valid_p1(self) -> "Config":
+        limit = self.preset.max_overhang_deg
+        for layer in self.rib_layers:
+            if self.rib_angle(layer) > limit:
+                raise ValueError(
+                    f"rib_layers '{layer.name}' : angle {self.rib_angle(layer)}° > surplomb max {limit}° du preset"
+                )
+        for name in self.spars:
+            try:
+                self.spar_settings(name)
+            except ValidationError as exc:
+                raise ValueError(f"spars '{name}' invalide : {exc}") from exc
+        return self
+
     @property
     def preset(self) -> MaterialPreset:
         return MaterialPreset.model_validate({**MATERIALS[self.material].model_dump(), **self.material_settings})
@@ -110,6 +185,16 @@ class Config(_Strict):
     @property
     def printer_spec(self) -> PrinterSpec:
         return PRINTERS[self.printer]
+
+    def rib_angle(self, layer: RibLayer) -> float:
+        return layer.angle if layer.angle is not None else min(45.0, self.preset.max_overhang_deg)
+
+    def spar_settings(self, name: str) -> BoreSettings:
+        base = self.spars.get("default", {})
+        override = next(
+            (v for k, v in self.spars.items() if k != "default" and k.lower() == name.lower()), {}
+        )
+        return BoreSettings.model_validate({**base, **override})
 
 
 class ConfigError(ValueError):

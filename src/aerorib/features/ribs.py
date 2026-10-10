@@ -58,14 +58,19 @@ def _deep_runs(ss: np.ndarray, deep: np.ndarray) -> list[tuple[float, float]]:
 
 
 def plate_profiles_2d(
-    ss, ym, th, zones, *, gap, min_depth, ytop, ybot, edge_vertices: int | None = None
+    ss, ym, th, zones, *, gap, min_depth, ytop, ybot, edge_vertices: int | None = None,
+    depth: float | None = None,
 ) -> list[tuple[bool, Polygon]]:
     """Profils 2D des plaques haute et basse.
 
     ss/ym/th : échantillons fins le long de la plaque (pour situer les transitions d'épaisseur) ;
-    le bord le long de la surface médiane n'utilise que `edge_vertices` sommets (coût des booléens).
+    le bord intérieur n'utilise que `edge_vertices` sommets (coût des booléens).
     Une transition profonde / trop mince est une marche verticale, jamais une rampe : en tranche, une
     rampe donne des pointes de fente obliques qui pincent la bande de séparation.
+
+    `depth` (mm, None = full) : la plaque ne descend qu'à `depth` sous la peau (y_peau = ym ± th/2),
+    sans jamais dépasser la bande de séparation. Profondeur mesurée selon Y (épaisseur), pas selon la
+    normale à la peau : écart en 1/cos(pente de la peau), négligeable sur un profil d'aile.
     """
     ss, ym, th = (np.asarray(a, dtype=float) for a in (ss, ym, th))
     deep = th > gap + 2 * min_depth
@@ -76,11 +81,20 @@ def plate_profiles_2d(
     out = []
     for top in (True, False):
         far = ytop if top else ybot
-        off = gap / 2 if top else -gap / 2
+        if top:
+            inner = ym + (gap / 2 if depth is None else np.maximum(gap / 2, th / 2 - depth))
+        else:
+            inner = ym - (gap / 2 if depth is None else np.maximum(gap / 2, th / 2 - depth))
         pieces = []
         for lo, hi in runs:
             s_edge = np.concatenate([[lo], coarse[(coarse > lo) & (coarse < hi)], [hi]])
-            y_edge = np.interp(s_edge, ss, ym) + off
+            if depth is None:
+                y_edge = np.interp(s_edge, ss, inner)
+            else:
+                # bord lu sur les seuls échantillons profonds du tronçon : aux bornes (entre deux échantillons),
+                # pas de mélange avec l'épaisseur d'un échantillon trop mince (marche, pas de rampe)
+                run = deep & (ss >= lo) & (ss <= hi)
+                y_edge = np.interp(s_edge, ss[run], inner[run])
             pieces.append(Polygon(list(zip(s_edge, y_edge)) + [(hi, far), (lo, far)]).buffer(0))
         poly = unary_union(pieces)
         if zones:
@@ -127,7 +141,8 @@ def diamond_plates(
             ym, th = mid.at(c + ss * d0, zmin + ss * d1)
             zones = [z for b in bores for z in bore_zones_2d(b, c, d0, d1, zmin, zmax, slit=slit)]
             for _, poly in plate_profiles_2d(
-                ss, ym, th, zones, gap=gap, min_depth=min_depth, ytop=ytop, ybot=ybot, edge_vertices=layer.samples
+                ss, ym, th, zones, gap=gap, min_depth=min_depth, ytop=ytop, ybot=ybot, edge_vertices=layer.samples,
+                depth=None if layer.depth == "full" else layer.depth,
             ):
                 plates.append(plate_solid(poly, c, d0, d1, zmin, slit))
     return plates

@@ -299,3 +299,55 @@ def test_passages_searched_once(no_ribs, monkeypatch):
     skin, spar, _ = _parasitic_case()
     generate_skin(skin, [("SBAR", spar)], HALF)
     assert len(calls) == 1
+
+
+# --- P3 : doubles nervures (réseau principal + réseau de peau peu profond) ----------------------
+
+DOUBLE = load_config(
+    overrides={
+        "material_settings": {"layer_height": 1.0},
+        "rib_layers": [{"spacing": 20}, {"name": "peau", "spacing": 10, "depth": 3, "phase": 5}],
+    }
+)
+
+
+@pytest.fixture(scope="module")
+def double_run():
+    return run_model(classify(wing_x_bodies(), DOUBLE), DOUBLE)
+
+
+def _notch_depths(poly, skin, xs):
+    """Profondeur (depuis l'extrados) des encoches ouvertes sur l'extrados le long des verticales xs."""
+    depths = []
+    for x in xs:
+        outer = _vertical(skin, x)
+        cols = _vertical(poly, x)
+        if not outer or not cols:
+            continue
+        top_skin, top_mat = outer[-1][1], cols[-1][1]
+        if top_skin - top_mat > 0.1:  # la verticale tombe dans une fente ouverte sur l'extrados
+            depths.append(top_skin - top_mat)
+    return depths
+
+
+def test_double_ribs_wing_is_printable(double_run, default_run):
+    assert double_run.ok, [i.message for b in double_run.bodies for i in b.report.errors][:5]
+    (body,) = double_run.bodies
+    assert body.result.is_valid and len(body.result.solids()) == 1
+    assert body.plates > default_run.bodies[0].plates
+
+
+def test_double_ribs_skin_notches_are_shallow(double_run):
+    (body,) = double_run.bodies
+    bb = body.result.bounding_box()
+    z = (bb.min.Z + bb.max.Z) / 2
+    (layer,) = slice_layers(body.result, [z])
+    (poly,) = layer.polygons
+    (orig,) = slice_layers(body.original, [z])
+    skin = Polygon(orig.polygons[0].exterior)
+    xs = [bb.min.X + i * 0.02 for i in range(int((bb.max.X - bb.min.X) / 0.02))]
+    depths = _notch_depths(poly, skin, xs)
+    shallow = [d for d in depths if abs(d - 3.0) <= 0.3]
+    assert shallow, sorted(depths)
+    # et le réseau principal descend toujours jusqu'à la bande de séparation (plus profond que 3,3 mm)
+    assert any(d > 3.5 for d in depths), sorted(depths)

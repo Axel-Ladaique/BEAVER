@@ -108,3 +108,62 @@ def test_strip_on_both_sides_when_anchored(anchor_gap, below):
     # bande sans nervure au-dessus (côté fente) toujours ; en dessous (côté attache) seulement si ancré
     assert any(z.contains(Point(40.0, 10.0)) for z in zones)
     assert any(z.contains(Point(40.0, -10.0)) for z in zones) is below
+
+
+# --- doubles nervures : niveau peu profond (depth en mm) ---------------------------------------
+
+
+def test_partial_depth_profiles_stay_near_the_skin():
+    # épaisseur 20, profondeur 3 : haute de ym + 10 − 3 = 7 à ytop, basse de ybot à −7
+    profs = plate_profiles_2d(SS, YM, TH, [], **KW, depth=3.0)
+    (top,) = [p for t, p in profs if t]
+    (bot,) = [p for t, p in profs if not t]
+    assert top.bounds[1] == pytest.approx(7.0) and top.bounds[3] == pytest.approx(15.0)
+    assert bot.bounds[1] == pytest.approx(-15.0) and bot.bounds[3] == pytest.approx(-7.0)
+
+
+def test_partial_depth_follows_the_mid_surface_and_thickness():
+    ym = 0.05 * SS  # surface médiane inclinée
+    th = np.linspace(20.0, 12.0, len(SS))
+    (top,) = [p for t, p in plate_profiles_2d(SS, ym, th, [], **KW, depth=3.0) if t]
+    for s in (0.0, 40.0, 90.0):
+        (seg,) = column(top, s)
+        skin = float(np.interp(s, SS, ym + th / 2))
+        assert seg.bounds[1] == pytest.approx(skin - 3.0, abs=0.05), s
+
+
+def test_partial_depth_on_thin_section_falls_back_to_the_gap_band():
+    # th/2 − 3 = 0 < gap/2 : la nervure va jusqu'à la bande de séparation, comme une plaque full
+    th = np.full_like(SS, 6.0)
+    shallow = plate_profiles_2d(SS, YM, th, [], **KW, depth=3.0)
+    full = plate_profiles_2d(SS, YM, th, [], **KW)
+    assert [(t, p.bounds) for t, p in shallow] == [(t, p.bounds) for t, p in full]
+    (top,) = [p for t, p in shallow if t]
+    assert top.bounds[1] == pytest.approx(0.3)
+
+
+def test_partial_depth_keeps_pruning_and_bore_zones():
+    th = np.where(SS < 50, 20.0, 2.0)  # partie trop mince : pas de coupe, comme en full
+    (top,) = [p for t, p in plate_profiles_2d(SS, YM, th, [], **KW, depth=3.0) if t]
+    assert all(seg.bounds[1] >= 15.0 - 1e-9 for seg in column(top, 80.0))
+    d = math.sin(math.radians(45))
+    b = Bore("S", 40.0 * d, 0.0, 4.0, 0.5, 2.0, 1, True, 0.0, 100.0, 0.1, 0.15)
+    zones = bore_zones_2d(b, 0.0, d, d, 0.0, 100.0, slit=0.1)
+    polys = [p for t, p in plate_profiles_2d(SS, YM, TH, zones, **KW, depth=3.0) if t]
+    assert all(p.intersection(z).area < 1e-6 for p in polys for z in zones)  # bande sans nervure au-dessus du trou
+    assert not any(p.contains(Point(40.0, 12.0)) for p in polys)
+
+
+def test_diamond_plates_partial_depth_on_box():
+    part = Box(100, 20, 60)
+    bb = part.bounding_box()
+    mid = MidSurface(
+        xs=np.linspace(bb.min.X, bb.max.X, 11), zs=np.linspace(bb.min.Z, bb.max.Z, 5),
+        ymid=np.zeros((11, 5)), thick=np.full((11, 5), 20.0),
+    )
+    layer = RibLayer(name="peau", spacing=10.0, depth=3.0, phase=5.0)
+    plates = diamond_plates(bb, mid, [], layer, angle_deg=45.0, gap=0.6, slit=0.1, min_depth=1.0)
+    assert plates and all(p.is_valid for p in plates)
+    for p in plates:  # chaque plaque reste dans les 3 mm sous la peau (y = ±10)
+        pb = p.bounding_box()
+        assert pb.min.Y >= 7.0 - 1e-6 or pb.max.Y <= -7.0 + 1e-6

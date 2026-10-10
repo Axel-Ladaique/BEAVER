@@ -22,7 +22,10 @@ class Layer:
 
 
 def to_mesh(shape: Shape, tol: float = 0.02, angular: float = 0.3) -> trimesh.Trimesh:
-    """Maillage OpenCascade natif (parallèle), relu via un STL binaire temporaire."""
+    """Maillage OpenCascade natif (parallèle), relu via un STL binaire temporaire.
+
+    La triangulation est stockée sur la forme par OpenCascade et réutilisée par les appels suivants.
+    """
     BRepMesh_IncrementalMesh(shape.wrapped, tol, False, angular, True)
     fd, tmp = tempfile.mkstemp(suffix=".stl")
     os.close(fd)
@@ -30,7 +33,8 @@ def to_mesh(shape: Shape, tol: float = 0.02, angular: float = 0.3) -> trimesh.Tr
         writer = StlAPI_Writer()
         if hasattr(writer, "ASCIIMode"):
             writer.ASCIIMode = False
-        writer.Write(shape.wrapped, tmp)
+        if not writer.Write(shape.wrapped, tmp):
+            raise RuntimeError(f"maillage : écriture STL impossible ({tmp})")
         return trimesh.load(tmp, file_type="stl", force="mesh")
     finally:
         os.remove(tmp)

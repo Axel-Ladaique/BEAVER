@@ -1,9 +1,11 @@
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
 from build123d import Box, Compound, Cylinder, Location
 
+from aerorib.io_step import read_step
 from aerorib.slicing import layer_heights, slice_layers, to_mesh
 from aerorib.testing.synthetic import ribbed_wing
 
@@ -26,6 +28,25 @@ def test_to_mesh_is_fast_and_watertight_on_ribbed_wing():
     assert time.perf_counter() - t0 < 5.0
     assert mesh.is_watertight
     assert abs(mesh.volume - part.volume) / part.volume < 2e-3
+
+
+@pytest.mark.slow
+def test_to_mesh_fast_and_volume_on_real_wing():
+    fixture = Path(__file__).parent / "fixtures" / "fusion_aile_4412_simple_sbar.step"
+    (wing,) = [b.solid for b in read_step(fixture) if b.name == "WING_1"]
+    t0 = time.perf_counter()
+    mesh = to_mesh(wing, 0.02)
+    assert time.perf_counter() - t0 < 5.0
+    assert mesh.is_watertight
+    # envergure selon X : on la tourne sur Z pour trancher perpendiculairement
+    span_wing = wing.moved(Location((0, 0, 0), (0, -90, 0)))
+    bb = span_wing.bounding_box()
+    zmin, zmax = bb.min.Z, bb.max.Z
+    h = (zmax - zmin) / 100
+    heights = zmin + (np.arange(100) + 0.5) * h
+    areas = [sum(p.area for p in layer.polygons) for layer in slice_layers(span_wing, heights, 0.02)]
+    integral = float(np.mean(areas)) * (zmax - zmin)
+    assert abs(mesh.volume - integral) / integral < 1e-3
 
 
 def test_box_single_polygon():

@@ -41,7 +41,7 @@ def test_spar_bore_from_oriented_spar():
     (b,) = spar_bores([("SBAR_14", Cylinder(7, 100).moved(Location((-15, 0, 0))))], CFG)
     assert (b.name, b.x, b.y, b.cut_hole, b.side) == ("SBAR_14", -15.0, 0.0, True, 1)
     assert b.radius == pytest.approx(7.15) and b.strip == 2.0 and b.sleeve == 0.7
-    assert (b.z0, b.z1, b.clearance) == (pytest.approx(-50.0), pytest.approx(50.0), 0.15)
+    assert (b.z0, b.z1, b.clearance, b.slit) == (pytest.approx(-50.0), pytest.approx(50.0), 0.15, 0.15)
 
 
 def test_spar_slit_side_override():
@@ -61,6 +61,7 @@ def test_passages_exclude_spar_bore_and_mode_off():
     assert [(p.name, p.x, p.y, p.radius, p.cut_hole, p.strip, p.clearance) for p in ps] == [
         ("passage 1", 10.0, 3.0, 1.2, False, 1.0, 0.0)
     ]
+    assert ps[0].slit == 0.15
     assert (ps[0].z0, ps[0].z1) == (pytest.approx(-20.0), pytest.approx(20.0))
     assert passage_bores(drilled_box(), load_config(overrides={"passages": {"mode": "off"}}), []) == []
 

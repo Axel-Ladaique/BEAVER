@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Literal
 
@@ -9,6 +10,9 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 Role = Literal["skin", "spar", "split", "norib", "cut", "ignore"]
+
+
+SLIT_MARGIN = 1.1  # une fente doit dépasser de 10 % le seuil de fermeture du slicer
 
 
 class _Strict(BaseModel):
@@ -19,7 +23,8 @@ class MaterialPreset(_Strict):
     line_width: float = Field(gt=0)  # mm
     layer_height: float = Field(gt=0)  # mm
     density: float = Field(gt=0)  # g/cm³ effective du filament imprimé (estimation, à recaler par pesée)
-    min_slit_width: float = Field(gt=0)  # mm ; en dessous, le slicer referme la fente
+    # mm ; en dessous, le slicer referme la fente (Bambu Studio / Orca : slice_closing_radius 0,049)
+    min_slit_width: float = Field(gt=0)
     max_overhang_deg: float = Field(gt=0, le=90)  # inclinaison max des murs internes par rapport à Z
 
 
@@ -29,10 +34,10 @@ class PrinterSpec(_Strict):
 
 MATERIALS: dict[str, MaterialPreset] = {
     "pla_aero": MaterialPreset(
-        line_width=0.45, layer_height=0.2, density=0.8, min_slit_width=0.08, max_overhang_deg=45
+        line_width=0.45, layer_height=0.2, density=0.8, min_slit_width=0.10, max_overhang_deg=45
     ),
     "asa_aero": MaterialPreset(
-        line_width=0.45, layer_height=0.2, density=0.7, min_slit_width=0.08, max_overhang_deg=40
+        line_width=0.45, layer_height=0.2, density=0.7, min_slit_width=0.10, max_overhang_deg=40
     ),
 }
 
@@ -97,7 +102,7 @@ class BoreSettings(_Strict):
     sleeve: float = Field(default=0.7, gt=0)  # matière gardée autour du trou, sans nervure
     strip: float = Field(default=2.0, gt=0)  # largeur de la bande sans nervure jusqu'à la peau
     slit_side: Literal["top", "bottom"] = "top"  # top = extrados (+Y)
-    slit_width: float = Field(default=0.1, gt=0)  # largeur de la fente trou → peau
+    slit_width: float = Field(default=0.15, gt=0)  # largeur de la fente trou → peau (≥ 1,1 × min_slit_width)
 
 
 class PassageSettings(_Strict):
@@ -105,7 +110,7 @@ class PassageSettings(_Strict):
     sleeve: float = Field(default=0.7, gt=0)  # cf. BoreSettings : ≥ largeur de ligne
     strip: float = Field(default=1.0, gt=0)
     slit_side: Literal["top", "bottom"] = "top"
-    slit_width: float = Field(default=0.1, gt=0)
+    slit_width: float = Field(default=0.15, gt=0)
     max_tilt_deg: float = Field(default=5.0, gt=0, lt=90)
 
 
@@ -192,6 +197,22 @@ class Config(_Strict):
                 raise ValueError(
                     f"{where} : manchon (sleeve) {sleeve} mm < largeur de ligne {lw} mm — "
                     "la matière autour du trou serait plus fine qu'une ligne"
+                )
+        need = SLIT_MARGIN * self.preset.min_slit_width
+        for layer in self.rib_layers:
+            seen = self.slit_width / math.cos(math.radians(self.rib_angle(layer)))
+            if seen < need - 1e-9:
+                raise ValueError(
+                    f"rib_layers '{layer.name}' : fente de {self.slit_width} mm vue {seen:.3f} mm en tranche "
+                    f"< {need:.3f} mm (1,1 × min_slit_width) — le slicer la refermerait"
+                )
+        slits = [(f"spars '{n}'", self.spar_settings(n).slit_width) for n in self.spars or {"default": {}}]
+        slits.append(("passages", self.passages.slit_width))
+        for where, width in slits:
+            if width < need - 1e-9:
+                raise ValueError(
+                    f"{where} : fente (slit_width) {width} mm < {need:.3f} mm (1,1 × min_slit_width) — "
+                    "le slicer la refermerait"
                 )
         if self.split.gap < lw:
             raise ValueError(

@@ -74,7 +74,7 @@ def ribbed_wing(
     rib_x: tuple[float, ...] = (20, 70, 90, 110, 130),
     spar_x: float = 45.0,
     spar_d: float = 8.0,
-    slit: float = 0.1,
+    slit: float = 0.15,  # > 1,1 × min_slit_width (0,10) des presets
     gap: float = 0.6,
     chord: float = 150.0,
     span: float = 100.0,

@@ -1,7 +1,7 @@
 # Exemple de configuration AeroRib — toutes les valeurs ci-dessous sont les défauts.
 material: pla_aero          # pla_aero | asa_aero
 printer: p1s
-slit_width: 0.1             # largeur des fentes (mm)
+slit_width: 0.1             # épaisseur des nervures (mm) ; vue 0,14 en tranche à 45°
 orientation: auto           # auto (axe du 1er longeron) ou {axis: [1, 0, 0]}
 split:
   gap: 0.6                  # bande de séparation entre nervures hautes et basses
@@ -11,16 +11,17 @@ rib_layers:
     pattern: diamond
     spacing: 30             # mm entre nervures parallèles
     # angle: 45             # défaut = min(45, surplomb max de la matière)
-# Réglages des longerons (défauts : clearance 0.15, sleeve 0.7, strip 2.0, slit_side top).
+# Réglages des longerons (défauts : clearance 0.15, sleeve 0.7, strip 2.0, slit_side top, slit_width 0.15).
 # Laissé en commentaire : une clé `spars:` active ne serait plus égale aux défauts.
 # spars:
-#   default: {clearance: 0.15, sleeve: 0.7, strip: 2.0, slit_side: top}
+#   default: {clearance: 0.15, sleeve: 0.7, strip: 2.0, slit_side: top, slit_width: 0.15}
 #   SBAR_arriere: {slit_side: bottom}
 passages:
   mode: auto                # relie à la peau les alésages existants (ex. joncs) ; off pour désactiver
   sleeve: 0.7               # matière gardée autour du trou (≥ largeur de ligne)
   strip: 1.0
   slit_side: top
+  slit_width: 0.15          # fente trou → peau (≥ 1,1 × seuil de fermeture du slicer 0,10)
 output:
   dir: out
   formats: [step, stl]

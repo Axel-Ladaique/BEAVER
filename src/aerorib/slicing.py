@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
 import trimesh
 from build123d import Shape
+from OCP.BRepMesh import BRepMesh_IncrementalMesh
+from OCP.StlAPI import StlAPI_Writer
 from shapely.geometry import Polygon
 
 
@@ -17,17 +21,26 @@ class Layer:
     polygons: tuple[Polygon, ...]
 
 
-def to_mesh(shape: Shape, tol: float = 0.005) -> trimesh.Trimesh:
-    vertices, triangles = shape.tessellate(tol, 0.1)
-    verts = np.array([[v.X, v.Y, v.Z] for v in vertices], dtype=float)
-    return trimesh.Trimesh(verts, np.array(triangles, dtype=np.int64), process=True)
+def to_mesh(shape: Shape, tol: float = 0.02, angular: float = 0.3) -> trimesh.Trimesh:
+    """Maillage OpenCascade natif (parallèle), relu via un STL binaire temporaire."""
+    BRepMesh_IncrementalMesh(shape.wrapped, tol, False, angular, True)
+    fd, tmp = tempfile.mkstemp(suffix=".stl")
+    os.close(fd)
+    try:
+        writer = StlAPI_Writer()
+        if hasattr(writer, "ASCIIMode"):
+            writer.ASCIIMode = False
+        writer.Write(shape.wrapped, tmp)
+        return trimesh.load(tmp, file_type="stl", force="mesh")
+    finally:
+        os.remove(tmp)
 
 
 def layer_heights(zmin: float, zmax: float, layer_height: float) -> np.ndarray:
     return np.arange(zmin + layer_height / 2, zmax, layer_height)
 
 
-def slice_layers(shape: Shape, heights: Sequence[float], tol: float = 0.005) -> list[Layer]:
+def slice_layers(shape: Shape, heights: Sequence[float], tol: float = 0.02) -> list[Layer]:
     mesh = to_mesh(shape, tol)
     zs = [float(z) for z in heights]
     sections = mesh.section_multiplane(plane_origin=[0, 0, 0], plane_normal=[0, 0, 1], heights=zs)

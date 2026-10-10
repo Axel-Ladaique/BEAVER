@@ -1,8 +1,11 @@
+import time
+
 import numpy as np
 import pytest
 from build123d import Box, Compound, Cylinder, Location
 
 from aerorib.slicing import layer_heights, slice_layers, to_mesh
+from aerorib.testing.synthetic import ribbed_wing
 
 
 def test_layer_heights():
@@ -14,6 +17,15 @@ def test_layer_heights():
 
 def test_to_mesh_watertight():
     assert to_mesh(Box(10, 20, 30)).is_watertight
+
+
+def test_to_mesh_is_fast_and_watertight_on_ribbed_wing():
+    part = ribbed_wing()
+    t0 = time.perf_counter()
+    mesh = to_mesh(part, 0.02)
+    assert time.perf_counter() - t0 < 5.0
+    assert mesh.is_watertight
+    assert abs(mesh.volume - part.volume) / part.volume < 2e-3
 
 
 def test_box_single_polygon():

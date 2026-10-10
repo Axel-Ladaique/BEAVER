@@ -10,6 +10,8 @@ from aerorib.pipeline import run_model
 from aerorib.slicing import slice_layers
 
 FUSION = Path(__file__).parent / "fixtures" / "fusion_aile_4412_simple_sbar.step"
+FUSION_V2 = Path(__file__).parent / "fixtures" / "fusion_aile_4412_simple_sbar_v2.step"
+DOUBLES = Path(__file__).parents[1] / "examples" / "config-doubles-nervures.yaml"
 
 
 def _vertical(poly, x):
@@ -42,3 +44,43 @@ def test_real_fusion_wing_is_printable():
     skin = _vertical(Polygon(poly.exterior), spar.x)
     assert bridge[0 if spar.side > 0 else 1] == pytest.approx(skin[0][0] if spar.side > 0 else skin[-1][1], abs=1e-3)
     assert bridge[1] - bridge[0] == pytest.approx(1.0, abs=0.2)
+
+
+@pytest.mark.slow
+def test_real_wing_v2_double_ribs():
+    import time
+
+    cfg = load_config(DOUBLES)
+    stamps = []
+    t0 = time.perf_counter()
+    run = run_model(
+        classify(read_step(FUSION_V2), cfg), cfg, progress=lambda m: stamps.append((time.perf_counter() - t0, m))
+    )
+    total = time.perf_counter() - t0
+    (body,) = run.bodies
+    assert body.report.ok, [i.message for i in body.report.errors][:5]
+    (spar,) = body.bores
+    assert spar.cut_hole and body.filled == ()  # v2 : aucun alésage parasite
+    assert body.plates > 200  # deux réseaux : bien plus que le seul réseau principal (~50–60)
+    gen = next(t for t, m in stamps if "validation" in m) - next(t for t, m in stamps if "surface médiane" in m)
+    print(
+        f"\naile v2 doubles nervures : {body.plates} plaques, génération (surface médiane + coupe) {gen:.0f} s, "
+        f"total {total:.0f} s, {len(body.report.warnings)} avertissement(s)"
+    )
+    for w in body.report.warnings:
+        print(f"  {w.check} z={w.z:.1f} {tuple(round(v, 2) for v in w.bounds)}")
+    # réseau de peau présent à mi-envergure : encoches de ~3 mm ouvertes sur la peau
+    bb = body.result.bounding_box()
+    z = (bb.min.Z + bb.max.Z) / 2
+    (layer,) = slice_layers(body.result, [z])
+    (poly,) = layer.polygons
+    (orig,) = slice_layers(body.original, [z])
+    skin = Polygon(orig.polygons[0].exterior)
+    depths = []
+    x = bb.min.X
+    while x < bb.max.X:
+        outer, cols = _vertical(skin, x), _vertical(poly, x)
+        if outer and cols and outer[-1][1] - cols[-1][1] > 0.1:
+            depths.append(outer[-1][1] - cols[-1][1])
+        x += 0.02
+    assert any(abs(d - 3.0) <= 0.3 for d in depths), sorted(depths)

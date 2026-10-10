@@ -149,8 +149,8 @@ def passage_bores(skin: Solid, cfg: Config, exclude: list[Bore]) -> list[Bore]:
         return []
     out = []
     for f in find_passages(skin, p.max_tilt_deg):
-        if any(math.hypot(f.x - b.x, f.y - b.y) < 0.5 for b in exclude):
-            continue
+        if any(_linked(b, f) for b in exclude if b.cut_hole):
+            continue  # alésage du logement d'un longeron : déjà traité avec lui
         name = f"passage {len(out) + 1}"
         drift = (f.z1 - f.z0) * math.tan(math.radians(f.tilt_deg))
         if drift > p.sleeve / 2:
@@ -164,15 +164,34 @@ def passage_bores(skin: Solid, cfg: Config, exclude: list[Bore]) -> list[Bore]:
     return out
 
 
+_COAXIAL = 0.5  # mm : alésage sur l'axe d'un longeron
+_EPS = 1e-3
+
+
+def _linked(spar: Bore, f: Passage) -> bool:
+    """Alésage existant prolongeant le logement du longeron : coaxial, au moins aussi large que le
+    longeron, et touchant son étendue (± jeu). Un alésage plus petit ou séparé reste un passage."""
+    return (
+        math.hypot(f.x - spar.x, f.y - spar.y) < _COAXIAL
+        and f.r >= spar.radius - spar.clearance - _EPS
+        and f.z0 <= spar.z1 + spar.clearance + _EPS
+        and f.z1 >= spar.z0 - spar.clearance - _EPS
+    )
+
+
 def extend_to_existing_bores(spars: list[Bore], skin: Solid, cfg: Config) -> list[Bore]:
-    """Un longeron logé dans un alésage existant de la peau : fente sur toute l'étendue de l'alésage."""
+    """Un longeron logé dans un alésage existant plus long : trou et fente sur toute l'union contiguë."""
     found = find_passages(skin, cfg.passages.max_tilt_deg)
     out = []
     for b in spars:
-        same = [f for f in found if math.hypot(f.x - b.x, f.y - b.y) < 0.5]
-        z0 = min([b.z0, *(f.z0 for f in same)])
-        z1 = max([b.z1, *(f.z1 for f in same)])
-        out.append(replace(b, z0=z0, z1=z1))
+        while True:  # de proche en proche : un alésage relié peut en toucher un autre
+            linked = [f for f in found if _linked(b, f)]
+            z0 = min([b.z0, *(f.z0 for f in linked)])
+            z1 = max([b.z1, *(f.z1 for f in linked)])
+            if (z0, z1) == (b.z0, b.z1):
+                break
+            b = replace(b, z0=z0, z1=z1)
+        out.append(b)
     return out
 
 

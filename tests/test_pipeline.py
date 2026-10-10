@@ -130,3 +130,22 @@ def test_several_skins_refused():
     bodies = wing_x_bodies() + [NamedBody(("Aile_B",), Box(10, 10, 10))]
     with pytest.raises(PipelineError, match=r"plusieurs peaux \(Aile_test, Aile_B\) : en P1, traiter une pièce"):
         run_model(classify(bodies, FAST), FAST)
+
+
+def test_coaxial_small_bore_is_not_recut_by_the_spar(monkeypatch):
+    from build123d import Align, Box
+    from shapely.geometry import Point
+
+    monkeypatch.setattr(pipeline, "diamond_plates", lambda *a, **k: [])  # rapide : seuls les trous comptent
+    skin = (
+        Box(60, 30, 100, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        - Cylinder(1, 40).moved(Location((10, 0, 80)))
+    ).solids()[0]
+    spar = Cylinder(4, 40).moved(Location((10, 0, 20)))
+    result, bores, _ = generate_skin(skin, [("SBAR", spar)], HALF)
+    assert sorted((b.name, b.cut_hole, round(b.radius, 2)) for b in bores) == [
+        ("SBAR", True, 4.15), ("passage 1", False, 1.0)
+    ]
+    mid, upper = (unary_union(layer.polygons) for layer in slice_layers(result, [50.0, 80.0]))
+    assert mid.contains(Point(10, 0).buffer(4.5))  # aucune coupe entre le longeron et l'alésage
+    assert upper.contains(Point(10, -2.5)) and not upper.contains(Point(10, -0.5))  # Ø2 resté Ø2

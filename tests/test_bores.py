@@ -1,5 +1,5 @@
 import pytest
-from build123d import Box, Cylinder, GeomType, Location, fillet
+from build123d import Align, Box, Cylinder, GeomType, Location, fillet
 
 from aerorib.config import load_config
 from aerorib.features.bores import (
@@ -40,7 +40,7 @@ def test_find_passages_concave_parallel_to_z_only():
 def test_spar_bore_from_oriented_spar():
     (b,) = spar_bores([("SBAR_14", Cylinder(7, 100).moved(Location((-15, 0, 0))))], CFG)
     assert (b.name, b.x, b.y, b.cut_hole, b.side) == ("SBAR_14", -15.0, 0.0, True, 1)
-    assert b.radius == pytest.approx(7.15) and b.strip == 2.0 and b.sleeve == 0.7
+    assert b.radius == pytest.approx(7.15) and b.strip == 2.0 and b.sleeve == 0.8
     assert (b.z0, b.z1, b.clearance, b.slit) == (pytest.approx(-50.0), pytest.approx(50.0), 0.15, 0.15)
 
 
@@ -151,3 +151,39 @@ def test_spar_in_longer_existing_bore_gets_full_extent():
     assert (b.z0, b.z1) == (pytest.approx(-20.0), pytest.approx(20.0))
     (alone,) = extend_to_existing_bores([bore("SBAR", 0.0, -10.0, z0=-20.0, z1=0.0)], drilled_box(), CFG)
     assert (alone.z0, alone.z1) == (-20.0, 0.0)
+
+
+def _coaxial_case():
+    # repro du relecteur : boîte 60×30×100, longeron Ø8 en z 0–40, alésage coaxial Ø2 en z 60–100
+    skin = (
+        Box(60, 30, 100, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        - Cylinder(1, 40).moved(Location((10, 0, 80)))
+    ).solids()[0]
+    spar = Cylinder(4, 40).moved(Location((10, 0, 20)))
+    return skin, spar
+
+
+def test_coaxial_bore_not_linked_when_smaller_or_apart():
+    skin, spar = _coaxial_case()
+    (s,) = spar_bores([("SBAR", spar)], CFG)
+    (b,) = extend_to_existing_bores([s], skin, CFG)
+    assert (b.z0, b.z1) == (pytest.approx(0.0), pytest.approx(40.0))
+    (p,) = passage_bores(skin, CFG, exclude=[b])  # reste un passage ordinaire, avec sa fente
+    assert (p.x, p.y, p.radius, p.cut_hole) == (10.0, 0.0, 1.0, False)
+    assert (p.z0, p.z1) == (pytest.approx(60.0), pytest.approx(100.0))
+
+
+def test_linked_bores_must_touch_the_spar_range():
+    # même diamètre que le longeron mais séparé de 20 mm : non relié ; contigu : relié (de proche en proche)
+    base = Box(60, 30, 100, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    apart = (base - Cylinder(4, 40).moved(Location((10, 0, 80)))).solids()[0]
+    s = bore("SBAR", 10.0, 0.0, 4.15, z0=0.0, z1=40.0)
+    (b,) = extend_to_existing_bores([s], apart, CFG)
+    assert (b.z0, b.z1) == (0.0, 40.0)
+    assert len(passage_bores(apart, CFG, exclude=[b])) == 1
+    chain = (
+        base - Cylinder(4, 20).moved(Location((10, 0, 50))) - Cylinder(4.5, 40).moved(Location((10, 0, 80)))
+    ).solids()[0]
+    (c,) = extend_to_existing_bores([s], chain, CFG)
+    assert (c.z0, c.z1) == (pytest.approx(0.0), pytest.approx(100.0))
+    assert passage_bores(chain, CFG, exclude=[c]) == []

@@ -1,4 +1,5 @@
 import zipfile
+from dataclasses import replace
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -109,3 +110,57 @@ def test_write_project(tmp_path):
 def test_write_project_empty(tmp_path):
     with pytest.raises(BambuError):
         write_project(read_template(FIXTURE), [], tmp_path / "o.3mf")
+
+
+def _template_variant(tmp_path, drop=(), app=None):
+    out = tmp_path / "variant.3mf"
+    with zipfile.ZipFile(FIXTURE) as zt, zipfile.ZipFile(out, "w") as z:
+        for n in zt.namelist():
+            if n in drop:
+                continue
+            data = zt.read(n)
+            if n == "3D/3dmodel.model" and app:
+                data = data.replace(b"BambuStudio-02.02.01.60", app.encode())
+            z.writestr(n, data)
+    return out
+
+
+def _box(name="s"):
+    return (name, trimesh.creation.box(extents=(10, 10, 10)))
+
+
+def test_write_project_copies_application_from_template(tmp_path):
+    t = read_template(_template_variant(tmp_path, app="BambuStudio-09.9.9.9"))
+    out = write_project(t, [_box()], tmp_path / "o.3mf")
+    with zipfile.ZipFile(out) as z:
+        model = z.read("3D/3dmodel.model").decode()
+    assert '<metadata name="Application">BambuStudio-09.9.9.9</metadata>' in model
+
+
+def test_write_project_object_ids_like_bambu(tmp_path):
+    out = write_project(read_template(FIXTURE), [_box("a"), _box("b")], tmp_path / "o.3mf")
+    with zipfile.ZipFile(out) as z:
+        for k in (1, 2):
+            mesh_obj = ET.fromstring(z.read(f"3D/Objects/object_{k}.model")).find(".//c:object", NS)
+            assert mesh_obj.get("id") == str(2 * k - 1)
+        model = ET.fromstring(z.read("3D/3dmodel.model"))
+        comps = model.findall(".//c:component", NS)
+        assert [c.get("objectid") for c in comps] == ["1", "3"]
+        assert [o.get("id") for o in model.findall("c:resources/c:object", NS)] == ["2", "4"]
+        cfg = ET.fromstring(z.read("Metadata/model_settings.config"))
+        assert [o.find("part").get("id") for o in cfg.findall("object")] == ["1", "3"]
+
+
+def test_write_project_without_optional_files(tmp_path):
+    t = read_template(_template_variant(tmp_path, drop=("Metadata/slice_info.config",)))
+    out = write_project(t, [_box()], tmp_path / "o.3mf")
+    with zipfile.ZipFile(out) as z:
+        assert "Metadata/slice_info.config" not in z.namelist()
+        assert "Metadata/project_settings.config" in z.namelist()
+
+
+def test_write_project_template_without_settings_is_error(tmp_path):
+    t = read_template(FIXTURE)
+    broken = _template_variant(tmp_path, drop=("Metadata/project_settings.config",))
+    with pytest.raises(BambuError, match="project_settings"):
+        write_project(replace(t, path=broken), [_box()], tmp_path / "o.3mf")

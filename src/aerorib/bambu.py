@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import uuid
@@ -17,11 +18,10 @@ import numpy as np
 import trimesh
 
 # Fichiers du gabarit recopiés à l'identique (octets) : on ne reconstruit jamais les réglages.
-_COPIED = (
-    "[Content_Types].xml",
-    "Metadata/project_settings.config",
-    "Metadata/slice_info.config",
-)
+_REQUIRED = ("[Content_Types].xml", "Metadata/project_settings.config")
+_OPTIONAL = ("Metadata/slice_info.config",)  # recopié seulement s'il est dans le gabarit
+_DEFAULT_APP = "BambuStudio-02.02.01.60"
+_DEFAULT_VERSION = "1"
 _IDENTITY = "1 0 0 0 1 0 0 0 1"
 _GAP = 1.2  # espacement inter-plateaux de Bambu Studio (PartPlate)
 
@@ -105,14 +105,24 @@ def _height(mesh: trimesh.Trimesh) -> float:
     return float(v[:, 2].max() - v[:, 2].min())
 
 
-def _object_file(k: int, mesh: trimesh.Trimesh) -> str:
+def _template_meta(zt: zipfile.ZipFile, name: str, default: str) -> str:
+    """Métadonnée du 3D/3dmodel.model du gabarit (Application, version du format), sinon `default`."""
+    try:
+        text = zt.read("3D/3dmodel.model").decode("utf-8", errors="replace")
+    except KeyError:
+        return default
+    m = re.search(rf'<metadata name="{re.escape(name)}">([^<]*)</metadata>', text)
+    return m.group(1) if m and m.group(1) else default
+
+
+def _object_file(k: int, mesh: trimesh.Trimesh, version: str = _DEFAULT_VERSION) -> str:
     v = _centered(mesh)
     f = np.asarray(mesh.faces)
     out = [
         _XML, f"<model {_NS}>\n",
-        ' <metadata name="BambuStudio:3mfVersion">1</metadata>\n',
+        f' <metadata name="BambuStudio:3mfVersion">{version}</metadata>\n',
         " <resources>\n",
-        f'  <object id="1" p:UUID="{_uid("obj", k)}" type="model">\n',
+        f'  <object id="{2 * k - 1}" p:UUID="{_uid("obj", k)}" type="model">\n',
         "   <mesh>\n    <vertices>\n",
     ]
     out += [f'     <vertex x="{_fmt(a)}" y="{_fmt(b)}" z="{_fmt(c)}"/>\n' for a, b, c in v]
@@ -132,16 +142,28 @@ def write_project(
     path = Path(path)
     W, D = template.bed
 
+    try:
+        with zipfile.ZipFile(template.path) as zt:
+            names = set(zt.namelist())
+            missing = [n for n in _REQUIRED if n not in names]
+            if missing:
+                raise BambuError(f"« {template.path} » : {', '.join(missing)} introuvable dans le gabarit.")
+            app = _template_meta(zt, "Application", _DEFAULT_APP)
+            version = _template_meta(zt, "BambuStudio:3mfVersion", _DEFAULT_VERSION)
+            copied = {n: zt.read(n) for n in (*_REQUIRED, *_OPTIONAL) if n in names}
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise BambuError(f"« {template.path} » n'est pas un projet Bambu Studio valide.") from exc
     res, items, rels, objcfg, plates, assemble = [], [], [], [], [], []
     for k, (name, mesh) in enumerate(objects, 1):
-        oid = 2 * k
+        oid = 2 * k  # objet-assemblage ; son maillage (object_k.model) porte l'id 2k-1, comme Bambu Studio
+        mid = oid - 1
         ox, oy = plate_origin(k - 1, n, template.bed)
         tr = f"{_IDENTITY} {_fmt(ox + W / 2)} {_fmt(oy + D / 2)} {_fmt(_height(mesh) / 2)}"
         qn = quoteattr(name)
         res.append(
             f'  <object id="{oid}" p:UUID="{_uid("res", k)}" type="model">\n'
             "   <components>\n"
-            f'    <component p:path="/3D/Objects/object_{k}.model" objectid="1" '
+            f'    <component p:path="/3D/Objects/object_{k}.model" objectid="{mid}" '
             f'p:UUID="{_uid("cmp", k)}" transform="{_IDENTITY} 0 0 0"/>\n'
             "   </components>\n  </object>\n"
         )
@@ -157,7 +179,7 @@ def write_project(
             f'    <metadata key="name" value={qn}/>\n'
             '    <metadata key="extruder" value="1"/>\n'
             f'    <metadata face_count="{len(mesh.faces)}"/>\n'
-            '    <part id="1" subtype="normal_part">\n'
+            f'    <part id="{mid}" subtype="normal_part">\n'
             f'      <metadata key="name" value={qn}/>\n'
             '      <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>\n'
             f'      <mesh_stat face_count="{len(mesh.faces)}" edges_fixed="0" degenerate_facets="0" '
@@ -184,8 +206,8 @@ def write_project(
 
     model = (
         f"{_XML}<model {_NS}>\n"
-        ' <metadata name="Application">BambuStudio-02.02.01.60</metadata>\n'
-        ' <metadata name="BambuStudio:3mfVersion">1</metadata>\n'
+        f' <metadata name="Application">{app}</metadata>\n'
+        f' <metadata name="BambuStudio:3mfVersion">{version}</metadata>\n'
         " <resources>\n" + "".join(res) + " </resources>\n"
         f' <build p:UUID="{_uid("build")}">\n' + "".join(items) + " </build>\n</model>\n"
     )
@@ -199,16 +221,17 @@ def write_project(
     )
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(template.path) as zt, zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("[Content_Types].xml", zt.read("[Content_Types].xml"))
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", copied["[Content_Types].xml"])
         z.writestr("_rels/.rels", ROOT_RELS)
         z.writestr("3D/_rels/3dmodel.model.rels", rels_xml)
         z.writestr("3D/3dmodel.model", model)
         for k, (_name, mesh) in enumerate(objects, 1):
-            z.writestr(f"3D/Objects/object_{k}.model", _object_file(k, mesh))
+            z.writestr(f"3D/Objects/object_{k}.model", _object_file(k, mesh, version))
         z.writestr("Metadata/model_settings.config", cfg)
-        for name in _COPIED[1:]:
-            z.writestr(name, zt.read(name))
+        for name, data in copied.items():
+            if name != "[Content_Types].xml":
+                z.writestr(name, data)
     return path
 
 

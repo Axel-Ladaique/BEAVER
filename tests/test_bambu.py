@@ -56,7 +56,7 @@ def test_write_project(tmp_path):
     with zipfile.ZipFile(out) as z, zipfile.ZipFile(FIXTURE) as zt:
         names = z.namelist()
         for n in ("Metadata/project_settings.config", "Metadata/slice_info.config",
-                  "[Content_Types].xml", "_rels/.rels"):
+                  "[Content_Types].xml"):
             assert z.read(n) == zt.read(n)
         assert not [n for n in names if "plate_" in n and n.endswith((".png", ".json"))]
         assert sorted(n for n in names if n.startswith("3D/Objects/")) == [
@@ -66,7 +66,12 @@ def test_write_project(tmp_path):
         for k in (1, 2, 3):
             assert f"/3D/Objects/object_{k}.model" in rels
 
+        for rn in ("_rels/.rels", "3D/_rels/3dmodel.model.rels"):
+            for r in ET.fromstring(z.read(rn)):
+                assert r.get("Target").lstrip("/") in names
         cfg = ET.fromstring(z.read("Metadata/model_settings.config"))
+        assert all(o.find("metadata[@face_count]").get("face_count") == "12" for o in cfg.findall("object"))
+        assert all(o.find("part/mesh_stat").get("face_count") == "12" for o in cfg.findall("object"))
         plates = cfg.findall("plate")
         assert len(plates) == 3
         obj_ids = []
@@ -90,12 +95,13 @@ def test_write_project(tmp_path):
             tr = [float(x) for x in it.get("transform").split()]
             assert tr[9] == pytest.approx(ox + 128, abs=1e-6)
             assert tr[10] == pytest.approx(oy + 128, abs=1e-6)
-            assert tr[11] == pytest.approx(0, abs=1e-6)
+            assert tr[11] == pytest.approx(15, abs=1e-6)  # h/2
             assert it.get("objectid") == obj_ids[i]
         for k in (1, 2, 3):
             v, f = _read_mesh(z.read(f"3D/Objects/object_{k}.model"))
             assert len(f) == 12
-            assert v[:, 2].min() == pytest.approx(0, abs=1e-6)
+            assert v[:, 2].min() + 15 == pytest.approx(0, abs=1e-6)
+            assert v[:, 2].max() == pytest.approx(15, abs=1e-6)
             c = (v[:, :2].min(0) + v[:, :2].max(0)) / 2
             assert c == pytest.approx([0, 0], abs=1e-6)
 

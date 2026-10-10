@@ -16,7 +16,6 @@ import trimesh
 # Fichiers du gabarit recopiés à l'identique (octets) : on ne reconstruit jamais les réglages.
 _COPIED = (
     "[Content_Types].xml",
-    "_rels/.rels",
     "Metadata/project_settings.config",
     "Metadata/slice_info.config",
 )
@@ -74,6 +73,14 @@ def _uid(*parts) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, "aerorib/" + "/".join(map(str, parts))))
 
 
+ROOT_RELS = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n'
+    ' <Relationship Target="/3D/3dmodel.model" Id="rel-1" '
+    'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>\n'
+    "</Relationships>"
+)
+
 _NS = (
     'unit="millimeter" xml:lang="en-US" '
     'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" '
@@ -87,7 +94,12 @@ _XML = '<?xml version="1.0" encoding="UTF-8"?>\n'
 def _centered(mesh: trimesh.Trimesh) -> np.ndarray:
     v = np.asarray(mesh.vertices, dtype=float)
     lo, hi = v.min(axis=0), v.max(axis=0)
-    return v - np.array([(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2]])
+    return v - (lo + hi) / 2
+
+
+def _height(mesh: trimesh.Trimesh) -> float:
+    v = np.asarray(mesh.vertices, dtype=float)
+    return float(v[:, 2].max() - v[:, 2].min())
 
 
 def _object_file(k: int, mesh: trimesh.Trimesh) -> str:
@@ -118,10 +130,10 @@ def write_project(
     W, D = template.bed
 
     res, items, rels, objcfg, plates, assemble = [], [], [], [], [], []
-    for k, (name, _mesh) in enumerate(objects, 1):
+    for k, (name, mesh) in enumerate(objects, 1):
         oid = 2 * k
         ox, oy = plate_origin(k - 1, n, template.bed)
-        tr = f"{_IDENTITY} {_fmt(ox + W / 2)} {_fmt(oy + D / 2)} 0"
+        tr = f"{_IDENTITY} {_fmt(ox + W / 2)} {_fmt(oy + D / 2)} {_fmt(_height(mesh) / 2)}"
         qn = quoteattr(name)
         res.append(
             f'  <object id="{oid}" p:UUID="{_uid("res", k)}" type="model">\n'
@@ -141,9 +153,12 @@ def write_project(
             f'  <object id="{oid}">\n'
             f'    <metadata key="name" value={qn}/>\n'
             '    <metadata key="extruder" value="1"/>\n'
+            f'    <metadata face_count="{len(mesh.faces)}"/>\n'
             '    <part id="1" subtype="normal_part">\n'
             f'      <metadata key="name" value={qn}/>\n'
             '      <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>\n'
+            f'      <mesh_stat face_count="{len(mesh.faces)}" edges_fixed="0" degenerate_facets="0" '
+            'facets_removed="0" facets_reversed="0" backwards_edges="0"/>\n'
             "    </part>\n  </object>\n"
         )
         plates.append(
@@ -183,12 +198,12 @@ def write_project(
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(template.path) as zt, zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("[Content_Types].xml", zt.read("[Content_Types].xml"))
-        z.writestr("_rels/.rels", zt.read("_rels/.rels"))
+        z.writestr("_rels/.rels", ROOT_RELS)
         z.writestr("3D/_rels/3dmodel.model.rels", rels_xml)
         z.writestr("3D/3dmodel.model", model)
         for k, (_name, mesh) in enumerate(objects, 1):
             z.writestr(f"3D/Objects/object_{k}.model", _object_file(k, mesh))
         z.writestr("Metadata/model_settings.config", cfg)
-        for name in _COPIED[2:]:
+        for name in _COPIED[1:]:
             z.writestr(name, zt.read(name))
     return path

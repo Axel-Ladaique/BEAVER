@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from build123d import Solid
+from OCP.Standard import Standard_Failure
 from shapely.geometry import Point, Polygon
 
 from aerorib.classify import Model
@@ -98,16 +99,35 @@ def generate_skin(skin: Solid, spars: list[tuple[str, Solid]], cfg: Config) -> t
     return solids[0], tuple(bores), len(plates)
 
 
+# erreurs de géométrie possibles (build123d / OpenCascade) : traduites en PipelineError
+_GEOMETRY_ERRORS = (ValueError, RuntimeError, Standard_Failure)
+
+
 def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambda m: None) -> RunResult:
+    skins = model.of("skin")
+    if len(skins) > 1:
+        names = ", ".join(s.body.name for s in skins)
+        raise PipelineError(
+            f"plusieurs peaux ({names}) : en P1, traiter une pièce à la fois "
+            "(exporter chaque aile dans son propre STEP)"
+        )
     progress("orientation…")
-    o = orient(model, cfg)
+    try:
+        o = orient(model, cfg)
+    except _GEOMETRY_ERRORS as exc:
+        raise PipelineError(f"orientation impossible : {exc}") from exc
     progress(f"orientation : {o.source}")
     spars = [(s.body.name, s.body.solid.moved(o.location)) for s in model.of("spar")]
     bodies = []
-    for s in model.of("skin"):
+    for s in skins:
         skin = s.body.solid.moved(o.location)
         progress(f"{s.body.name} : surface médiane, trous et nervures…")
-        result, bores, n = generate_skin(skin, spars, cfg)
+        try:
+            result, bores, n = generate_skin(skin, spars, cfg)
+        except PipelineError:
+            raise
+        except _GEOMETRY_ERRORS as exc:
+            raise PipelineError(f"{s.body.name} : génération impossible ({type(exc).__name__} : {exc})") from exc
         progress(f"{s.body.name} : {n} nervures, {len(bores)} trou(s) relié(s) — validation…")
         report = validate(result, cfg, original=skin)
         bodies.append(BodyResult(s.body.name, skin, result, report, bores, n))

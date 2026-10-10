@@ -89,3 +89,44 @@ def test_tilted_spar_is_refused():
     spar = Cylinder(4, 40).moved(Location((30, camber(30), 20), (0, 3, 0)))
     with pytest.raises(PipelineError, match="incliné de 3.0°"):
         generate_skin(skin, [("SBAR_penche", spar)], HALF)
+
+
+# --- erreurs lisibles (G4) et plusieurs peaux (G5) ---------------------------------------------
+
+
+def test_orientation_failure_is_pipeline_error(monkeypatch):
+    def boom(model, cfg):
+        raise ValueError("section d'emplanture introuvable")
+
+    monkeypatch.setattr(pipeline, "orient", boom)
+    with pytest.raises(PipelineError, match="orientation impossible : section d'emplanture introuvable"):
+        run_model(classify(wing_x_bodies(), FAST), FAST)
+
+
+@pytest.mark.parametrize("exc", [ValueError("Null TopoDS_Shape"), RuntimeError("BRep_API: command not done")])
+def test_generation_failure_is_pipeline_error(monkeypatch, exc):
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(pipeline, "generate_skin", boom)
+    with pytest.raises(PipelineError, match="Aile_test : génération impossible"):
+        run_model(classify(wing_x_bodies(), FAST), FAST)
+
+
+def test_occ_failure_is_pipeline_error(monkeypatch):
+    from OCP.Standard import Standard_Failure
+
+    def boom(*a, **k):
+        raise Standard_Failure("BOPAlgo")
+
+    monkeypatch.setattr(pipeline, "generate_skin", boom)
+    with pytest.raises(PipelineError, match="génération impossible"):
+        run_model(classify(wing_x_bodies(), FAST), FAST)
+
+
+def test_several_skins_refused():
+    from build123d import Box
+
+    bodies = wing_x_bodies() + [NamedBody(("Aile_B",), Box(10, 10, 10))]
+    with pytest.raises(PipelineError, match=r"plusieurs peaux \(Aile_test, Aile_B\) : en P1, traiter une pièce"):
+        run_model(classify(bodies, FAST), FAST)

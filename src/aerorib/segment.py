@@ -17,15 +17,15 @@ MIN_SEGMENT = 10.0  # mm : longueur minimale d'un tronçon
 def plan_cuts(height: float, max_height: float, cuts_at: list[float] | None = None) -> list[float]:
     """Hauteurs de coupe internes (vide si la pièce tient d'un seul tenant).
 
-    Chaque tronçon doit mesurer au moins MIN_SEGMENT mm : une hauteur utile
-    < 2·MIN_SEGMENT ne permet donc de rien découper.
+    Chaque tronçon doit mesurer au moins MIN_SEGMENT mm : une hauteur n'est découpable que si elle se répartit
+    en n tronçons de longueur comprise entre MIN_SEGMENT et max_height ; sinon SegmentError.
     """
     if not (math.isfinite(height) and math.isfinite(max_height)) or height <= 0 or max_height <= 0:
         raise SegmentError(f"hauteur de pièce ({height}) ou hauteur utile ({max_height}) invalide")
     if cuts_at is None:
         if height <= max_height * (1 + 1e-9):
             return []
-        n = math.ceil(height / max_height - 1e-9)
+        n = math.ceil(height / (max_height * (1 + 1e-9)))
         cuts = [height * i / n for i in range(1, n)]
     else:
         cuts = sorted(float(c) for c in cuts_at)

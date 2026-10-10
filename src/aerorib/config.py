@@ -136,7 +136,22 @@ class PassageSettings(_Strict):
 
 class OutputSettings(_Strict):
     dir: str = "out"
-    formats: list[Literal["step", "stl"]] = ["step", "stl"]
+    formats: list[Literal["step", "stl", "3mf"]] = ["step", "stl"]
+
+
+class SegmentSettings(_Strict):
+    # auto : coupe en tronçons perpendiculaires à l'envergure quand la pièce dépasse la hauteur utile
+    mode: Literal["auto", "off"] = "auto"
+    margin: float = Field(default=5.0, ge=0)  # mm retirés de la hauteur d'impression (jupe, purge)
+    cuts_at: list[float] = Field(default_factory=list)  # altitudes de coupe forcées (mm, repère d'impression)
+    # force la hauteur utile (sinon : hauteur du gabarit Bambu − marge ; sans gabarit : imprimante − marge)
+    max_height: float | None = Field(default=None, gt=0)
+
+
+class BambuSettings(_Strict):
+    # gabarit de projet Bambu Studio (.3mf) ; None = aucun (le profil matière fournit le gabarit embarqué)
+    template: str | None = None
+    open: bool = False  # ouvre le projet dans Bambu Studio après génération
 
 
 class ValidationSettings(_Strict):
@@ -161,6 +176,8 @@ class Config(_Strict):
     spars: dict[str, dict[str, Any]] = Field(default_factory=dict)
     passages: PassageSettings = Field(default_factory=PassageSettings)
     output: OutputSettings = Field(default_factory=OutputSettings)
+    segment: SegmentSettings = Field(default_factory=SegmentSettings)
+    bambu: BambuSettings = Field(default_factory=BambuSettings)
 
     @field_validator("material")
     @classmethod

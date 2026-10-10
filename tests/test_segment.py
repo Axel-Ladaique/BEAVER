@@ -72,7 +72,7 @@ def test_split_part_invalid_cuts():
 
 
 def test_split_part_cut_on_internal_face():
-    # poche borgne ouverte en bas, plafond à z = 40 : la coupe à 40 tombe sur cette face interne
+    # face horizontale (plafond de poche) : poche borgne ouverte en bas, plafond à z = 40 ; coupe à 40
     part = Box(40, 40, 100, align=(Align.CENTER, Align.CENTER, Align.MIN))
     part = part - Box(10, 10, 40, align=(Align.CENTER, Align.CENTER, Align.MIN))
     assert part.bounding_box().min.Z == pytest.approx(0, abs=1e-9)
@@ -94,3 +94,8 @@ def test_split_part_min_segment_and_non_numeric():
 
 def test_plan_cuts_epsilon_consistent():
     assert len(plan_cuts(490.0000001, 245)) == 1  # 2 tronçons, pas d'erreur parasite
+
+
+def test_plan_cuts_small_heights_and_auto_count_tolerance():
+    assert plan_cuts(25, 15) == [12.5]
+    assert len(plan_cuts(2450 * (1 + 5e-10), 245)) == 9

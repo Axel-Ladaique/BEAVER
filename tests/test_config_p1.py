@@ -166,3 +166,28 @@ def test_passage_modes(mode):
 def test_passage_mode_auto_no_longer_exists():
     with pytest.raises(ConfigError):
         load_config(overrides={"passages": {"mode": "auto"}})
+
+
+def test_segment_and_bambu_defaults():
+    cfg = load_config()
+    assert cfg.segment.mode == "auto" and cfg.segment.margin == 5.0
+    assert cfg.segment.cuts_at == [] and cfg.segment.max_height is None
+    assert cfg.bambu.open is False
+    assert cfg.output.formats == ["step", "stl"]
+
+
+def test_segment_values_accepted():
+    cfg = load_config(overrides={"segment": {"mode": "off", "margin": 0, "cuts_at": [80, 160], "max_height": 120}})
+    assert cfg.segment.mode == "off" and cfg.segment.cuts_at == [80, 160] and cfg.segment.max_height == 120
+
+
+@pytest.mark.parametrize("seg", [{"margin": -1}, {"max_height": 0}, {"mode": "x"}])
+def test_segment_invalid_rejected(seg):
+    with pytest.raises(ConfigError):
+        load_config(overrides={"segment": seg})
+
+
+def test_3mf_format_accepted():
+    assert load_config(overrides={"output": {"formats": ["3mf"]}}).output.formats == ["3mf"]
+    with pytest.raises(ConfigError):
+        load_config(overrides={"output": {"formats": ["obj"]}})

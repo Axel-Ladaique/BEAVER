@@ -276,6 +276,8 @@ aerorib check   <fichier.step|stl> [-c config.yaml]
 | P6 | Add-in Fusion 360, macro SolidWorks | appel depuis la CAO |
 | P7 | GUI avec aperçu 3D | réglages interactifs |
 
+Orientation simple avancée en P1 (axe du premier longeron, ou axe forcé en config) — voir `2026-10-10-p1-addendum.md`.
+
 Chaque phase a son propre plan d'implémentation et se termine avec ses tests au vert sur la CI.
 
 ## 16. Risques

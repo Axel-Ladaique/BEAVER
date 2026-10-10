@@ -18,7 +18,7 @@ from aerorib.pipeline import PipelineError, run_model
 from aerorib.report import format_text, write_html
 from aerorib.validate import validate
 
-app = typer.Typer(no_args_is_help=True, add_completion=False)
+app = typer.Typer(no_args_is_help=True, add_completion=False, pretty_exceptions_show_locals=False)
 
 
 def _print_version(value: bool) -> None:
@@ -139,6 +139,17 @@ def check(
         raise typer.Exit(1)
 
 
+def format_bores(bores) -> str:
+    """Trous reliés à la peau (décisions autonomes rendues visibles), repère d'impression."""
+    items = [
+        f"{b.name} (longeron, Ø{2 * b.radius:.1f})"
+        if b.cut_hole
+        else f"{b.name} (Ø{2 * b.radius:.1f}, x={b.x:.1f}, y={b.y:.1f})"
+        for b in bores
+    ]
+    return "  trous reliés : " + (" ; ".join(items) if items else "aucun")
+
+
 @app.command()
 def run(
     file: Path = typer.Argument(..., help="Pièce CAO à traiter (STEP)."),
@@ -150,11 +161,21 @@ def run(
     model = _classify(file, cfg)
     try:
         result = run_model(model, cfg, progress=lambda m: typer.echo(f"… {m}"))
+        for b in result.bodies:
+            typer.echo(format_text(b.report, title=b.name))
+            typer.echo(format_bores(b.bores))
+        target = out or Path(cfg.output.dir)
+        try:
+            paths = export_results(result, target, file.stem, list(cfg.output.formats))
+        except OSError as exc:
+            _fail(f"écriture impossible : {exc.filename or target} ({exc.strerror or exc})")
+        for path in paths:
+            typer.echo(f"  fichier : {path}")
     except PipelineError as exc:
         _fail(str(exc))
-    for b in result.bodies:
-        typer.echo(format_text(b.report, title=b.name))
-    for path in export_results(result, out or Path(cfg.output.dir), file.stem, list(cfg.output.formats)):
-        typer.echo(f"  fichier : {path}")
+    except typer.Exit:
+        raise
+    except Exception as exc:  # dernier recours : jamais de trace Python pour l'utilisateur
+        _fail(f"erreur interne : {type(exc).__name__}: {exc} (merci de transmettre le fichier STEP)")
     if not result.ok:
         raise typer.Exit(1)

@@ -303,7 +303,7 @@ def _check_template_path(data: dict[str, Any], base: Path) -> None:
     """Un gabarit relatif d'un YAML projet s'entend relativement au dossier de ce YAML."""
     bambu = data.get("bambu")
     if isinstance(bambu, dict) and isinstance(bambu.get("template"), str):
-        data["bambu"] = {**bambu, "template": str((base / bambu["template"]).resolve())}
+        data["bambu"] = {**bambu, "template": str((base / Path(bambu["template"]).expanduser()).resolve())}
 
 
 def load_config(path: Path | None = None, overrides: dict[str, Any] | None = None) -> Config:
@@ -332,15 +332,18 @@ def load_config(path: Path | None = None, overrides: dict[str, Any] | None = Non
     try:
         return Config.model_validate(data)
     except ValidationError as exc:
-        overriding = [d for d in (project, over) if d]
+        # la clé `material` ne dit rien sur l'origine de l'erreur : elle ne compte pas comme « projet »
+        overriding = [d for d in ({k: v for k, v in d.items() if k != "material"} for d in (project, over)) if d]
         locs = [e["loc"] for e in exc.errors()]
         from_profile = bool(profile_files) and all(
             loc and not any(_set_in(d, loc) for d in overriding) for loc in locs
         )
         if from_profile or (profile_files and not overriding):
-            files = ", ".join(str(f) for f in profile_files)
-            raise ConfigError(f"profil matière {files} invalide :\n{exc}") from exc
-        raise ConfigError(f"configuration invalide :\n{exc}") from exc
+            head = "profil matière invalide"
+        else:
+            head = "configuration invalide"
+        used = f"\n(profil matière utilisé : {', '.join(str(f) for f in profile_files)})" if profile_files else ""
+        raise ConfigError(f"{head} :\n{exc}{used}") from exc
 
 
 def _set_in(data: Any, loc: tuple) -> bool:

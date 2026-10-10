@@ -124,7 +124,7 @@ def test_error_blames_project_when_project_fields_fail(tmp_path, monkeypatch):
     c.write_text("slit_width: 0\n", encoding="utf-8")
     with pytest.raises(ConfigError) as e:
         load_config(c)
-    assert "configuration invalide" in str(e.value) and str(f) not in str(e.value)
+    assert str(e.value).startswith("configuration invalide") and "profil matière utilisé : " in str(e.value) and str(f) in str(e.value)
 
 
 def test_user_profile_new_name(tmp_path, monkeypatch):
@@ -200,3 +200,30 @@ def test_cli_profils_flags_missing_template(tmp_path, monkeypatch):
     line = next(l for l in r.output.splitlines() if "pla_aero" in l)
     assert "absent.3mf (introuvable)" in line
     assert "(introuvable)" not in next(l for l in r.output.splitlines() if "asa_aero" in l)
+
+
+def test_error_always_cites_profile_used(tmp_path, monkeypatch):
+    f = user_profile(tmp_path, monkeypatch, "pla_aero", "slit_width: 0.05\n")
+    c = tmp_path / "c.yaml"
+    c.write_text("material: pla_aero\noutput: {dir: sortie}\n", encoding="utf-8")
+    with pytest.raises(ConfigError) as e:
+        load_config(c)
+    assert "profil matière utilisé : " in str(e.value) and str(f) in str(e.value)
+
+
+def test_error_in_project_still_cites_profile_used(tmp_path, monkeypatch):
+    f = user_profile(tmp_path, monkeypatch, "pla_aero", "split: {gap: 0.9}\n")
+    c = tmp_path / "c.yaml"
+    c.write_text("slit_width: 0\n", encoding="utf-8")
+    with pytest.raises(ConfigError) as e:
+        load_config(c)
+    assert str(e.value).startswith("configuration invalide") and "profil matière utilisé : " in str(e.value) and str(f) in str(e.value)
+
+
+def test_project_template_expands_user_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "t.3mf").write_bytes(b"x")
+    c = tmp_path / "sub" / "c.yaml"
+    c.parent.mkdir()
+    c.write_text("bambu: {template: '~/t.3mf'}\n", encoding="utf-8")
+    assert resolve_template(load_config(c)) == (tmp_path / "t.3mf").resolve()

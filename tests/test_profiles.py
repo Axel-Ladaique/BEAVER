@@ -191,3 +191,12 @@ def test_copy_omits_template_and_inherits(tmp_path):
 def test_cli_copier_unknown():
     r = runner.invoke(app, ["profils", "--copier", "nope"])
     assert r.exit_code == 1 and "embarqué" in r.output
+
+
+def test_cli_profils_flags_missing_template(tmp_path, monkeypatch):
+    user_profile(tmp_path, monkeypatch, "pla_aero", "bambu: {template: absent.3mf}\n")
+    r = runner.invoke(app, ["profils"])
+    assert r.exit_code == 0, r.output
+    line = next(l for l in r.output.splitlines() if "pla_aero" in l)
+    assert "absent.3mf (introuvable)" in line
+    assert "(introuvable)" not in next(l for l in r.output.splitlines() if "asa_aero" in l)

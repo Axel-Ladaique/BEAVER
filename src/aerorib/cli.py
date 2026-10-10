@@ -167,8 +167,10 @@ def profils(
         except ProfileError as exc:
             typer.echo(f"  {info.name:<12} {info.origin:<11} ⚠ {exc}")
             continue
-        typer.echo(f"  {info.name:<12} {info.origin:<11} gabarit Bambu : {Path(template).name if template else 'aucun'}"
-                   f"   ({info.path})")
+        label = "aucun"
+        if template:
+            label = Path(template).name + ("" if Path(template).is_file() else " (introuvable)")
+        typer.echo(f"  {info.name:<12} {info.origin:<11} gabarit Bambu : {label}   ({info.path})")
 
 
 def format_bores(bores, filled=()) -> str:
@@ -249,7 +251,9 @@ def run(
             typer.echo(f"  fichier : {path}")
         if open_:
             project = next((p for p in paths if p.suffix == ".3mf"), None)
-            if project is not None:
+            if project is not None and not result.ok:
+                typer.echo("  ⚠ projet non imprimable : non ouvert dans Bambu Studio (fichiers écrits pour inspection)")
+            elif project is not None:
                 try:
                     open_in_bambu(project)
                 except BambuError as exc:

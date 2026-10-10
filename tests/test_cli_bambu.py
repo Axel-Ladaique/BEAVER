@@ -52,6 +52,21 @@ def test_open_calls_popen_once(tmp_path, monkeypatch):
     assert len(calls) == 1 and str(out / "aile.3mf") in calls[0]
 
 
+def test_open_skipped_when_not_printable(tmp_path, monkeypatch):
+    from aerorib.pipeline import RunResult
+
+    calls = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: calls.append(a[0]))
+    monkeypatch.setattr(RunResult, "ok", property(lambda self: False))
+    src = write_step(tmp_path / "aile.step", wing_x_bodies())
+    out = tmp_path / "res"
+    r = runner.invoke(app, ["run", str(src), "-c", str(_cfg(tmp_path)), "--out", str(out), "--open"])
+    assert r.exit_code == 1, r.output
+    assert calls == []
+    assert "projet non imprimable : non ouvert dans Bambu Studio" in r.output
+    assert (out / "aile.3mf").exists()
+
+
 def test_open_failure_does_not_fail_run(tmp_path, monkeypatch):
     def boom(*a, **k):
         raise FileNotFoundError(2, "No such file")

@@ -9,7 +9,7 @@ def test_p1_defaults():
     assert cfg.split.gap == 0.6 and cfg.split.min_rib_depth == 1.0 and cfg.split.grid == (101, 22)
     assert cfg.rib_layers == [RibLayer()]
     assert cfg.rib_layers[0].spacing == 30.0 and cfg.rib_layers[0].pattern == "diamond"
-    assert cfg.passages.mode == "auto" and cfg.passages.strip == 1.0
+    assert cfg.passages.mode == "fill" and cfg.passages.strip == 1.0
     assert cfg.output.dir == "out" and cfg.output.formats == ["step", "stl"]
     assert cfg.validation.tessellation_tol == 0.02
 
@@ -111,3 +111,39 @@ def test_slits_narrower_than_slicer_threshold_rejected(overrides):
 def test_split_grid_needs_two_points_per_axis(grid):
     with pytest.raises(ConfigError, match="grid"):
         load_config(overrides={"split": {"grid": grid}})
+
+
+# --- P1b : attache du longeron côté opposé, rebouchage des trous parasites ----------------------
+
+
+def test_anchor_defaults():
+    s = load_config().spar_settings("SBAR")
+    assert s.anchor is True and s.anchor_gap == 1.0
+
+
+@pytest.mark.parametrize(
+    "overrides", [{"spars": {"default": {"anchor_gap": 0.2}}}, {"spars": {"SBAR_x": {"anchor_gap": 0.2}}}]
+)
+def test_anchor_gap_below_line_width_rejected(overrides):
+    with pytest.raises(ConfigError, match="anchor_gap.*largeur de ligne"):
+        load_config(overrides=overrides)
+
+
+def test_anchor_gap_must_be_positive():
+    with pytest.raises(ConfigError):
+        load_config(overrides={"spars": {"default": {"anchor_gap": 0}}})
+
+
+def test_anchor_gap_ignored_when_anchor_off():
+    cfg = load_config(overrides={"spars": {"default": {"anchor": False, "anchor_gap": 0.2}}})
+    assert cfg.spar_settings("SBAR").anchor is False
+
+
+@pytest.mark.parametrize("mode", ["fill", "link", "off"])
+def test_passage_modes(mode):
+    assert load_config(overrides={"passages": {"mode": mode}}).passages.mode == mode
+
+
+def test_passage_mode_auto_no_longer_exists():
+    with pytest.raises(ConfigError):
+        load_config(overrides={"passages": {"mode": "auto"}})

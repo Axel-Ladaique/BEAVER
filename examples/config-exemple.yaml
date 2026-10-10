@@ -11,13 +11,17 @@ rib_layers:
     pattern: diamond
     spacing: 30             # mm entre nervures parallèles
     # angle: 45             # défaut = min(45, surplomb max de la matière)
-# Réglages des longerons (défauts : clearance 0.15, sleeve 0.8, strip 2.0, slit_side top, slit_width 0.15).
+# Réglages des longerons (défauts : clearance 0.15, sleeve 0.8, strip 2.0, slit_side top, slit_width 0.15,
+# anchor true, anchor_gap 1.0). L'attache (anchor) est une fente borgne du trou vers la peau opposée à la
+# fente, arrêtée à anchor_gap (≥ largeur de ligne) de la peau : elle accroche le manchon des deux côtés.
 # Laissé en commentaire : une clé `spars:` active ne serait plus égale aux défauts.
 # spars:
-#   default: {clearance: 0.15, sleeve: 0.8, strip: 2.0, slit_side: top, slit_width: 0.15}
+#   default: {clearance: 0.15, sleeve: 0.8, strip: 2.0, slit_side: top, slit_width: 0.15, anchor: true, anchor_gap: 1.0}
 #   SBAR_arriere: {slit_side: bottom}
 passages:
-  mode: auto                # relie à la peau les alésages existants (ex. joncs) ; off pour désactiver
+  mode: fill                # alésages hors longerons : fill = rebouchés ; link = reliés à la peau par une fente
+                            # (ex. joncs) ; off = laissés tels quels (le validateur signale les trous isolés)
+  # réglages ci-dessous : mode link seulement
   sleeve: 0.8               # matière gardée autour du trou (≥ largeur de ligne)
   strip: 1.0
   slit_side: top

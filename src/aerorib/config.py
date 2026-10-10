@@ -110,10 +110,15 @@ class BoreSettings(_Strict):
     strip: float = Field(default=2.0, gt=0)  # largeur de la bande sans nervure jusqu'à la peau
     slit_side: Literal["top", "bottom"] = "top"  # top = extrados (+Y)
     slit_width: float = Field(default=0.15, gt=0)  # largeur de la fente trou → peau (≥ 1,1 × min_slit_width)
+    # attache côté opposé : fente borgne du trou jusqu'à `anchor_gap` de la peau opposée (≥ largeur de ligne)
+    anchor: bool = True
+    anchor_gap: float = Field(default=1.0, gt=0)
 
 
 class PassageSettings(_Strict):
-    mode: Literal["auto", "off"] = "auto"
+    # fill : rebouche les alésages qui ne logent pas un longeron ; link : les relie à la peau par une fente ;
+    # off : n'y touche pas (le validateur signale les trous isolés)
+    mode: Literal["fill", "link", "off"] = "fill"
     sleeve: float = Field(default=0.8, gt=0)  # cf. BoreSettings : ≥ largeur de ligne
     strip: float = Field(default=1.0, gt=0)
     slit_side: Literal["top", "bottom"] = "top"
@@ -204,6 +209,13 @@ class Config(_Strict):
                 raise ValueError(
                     f"{where} : manchon (sleeve) {sleeve} mm < largeur de ligne {lw} mm — "
                     "la matière autour du trou serait plus fine qu'une ligne"
+                )
+        for name in self.spars or {"default": {}}:
+            s = self.spar_settings(name)
+            if s.anchor and s.anchor_gap < lw:
+                raise ValueError(
+                    f"spars '{name}' : anchor_gap {s.anchor_gap} mm < largeur de ligne {lw} mm — "
+                    "le pont entre l'attache et la peau ne serait pas imprimable"
                 )
         need = SLIT_MARGIN * self.preset.min_slit_width
         for layer in self.rib_layers:

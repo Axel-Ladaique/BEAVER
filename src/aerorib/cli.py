@@ -11,7 +11,10 @@ import typer
 from aerorib import __version__
 from aerorib.classify import ClassifyError, classify
 from aerorib.config import Config, ConfigError, load_config
+from aerorib.export import export_results
 from aerorib.io_step import StepReadError, read_step
+from aerorib.orient import orient
+from aerorib.pipeline import PipelineError, run_model
 from aerorib.report import format_text, write_html
 from aerorib.validate import validate
 
@@ -94,24 +97,38 @@ def check(
     config: Optional[Path] = typer.Option(None, "-c", "--config", help="Fichier de configuration YAML."),
     original: Optional[Path] = typer.Option(None, "--original", help="STEP d'origine, pour vérifier la peau."),
     html: Optional[Path] = typer.Option(None, "--html", help="Écrit un rapport HTML."),
+    orient_flag: bool = typer.Option(
+        False, "--orient", help="Oriente la pièce (axe du longeron) avant de vérifier."
+    ),
 ) -> None:
     """Vérifie qu'une pièce est imprimable en vase mode."""
     cfg = _load(config)
-    skins = _skins(file, cfg)
+    model = _classify(file, cfg)
+    skins = model.of("skin")
+    loc = None
+    if orient_flag:
+        try:
+            loc = orient(model, cfg).location
+        except ValueError as exc:
+            _fail(str(exc))
+
+    def placed(solid):
+        return solid if loc is None else solid.moved(loc)
+
     originals = {}
     if original is not None:
         orig_skins = _skins(original, cfg)
-        by_name = {s.body.name: s.body.solid for s in orig_skins}
+        by_name = {s.body.name: placed(s.body.solid) for s in orig_skins}
         for s in skins:
             if s.body.name in by_name:
                 originals[s.body.name] = by_name[s.body.name]
             elif len(skins) == 1 and len(orig_skins) == 1:
-                originals[s.body.name] = orig_skins[0].body.solid
+                originals[s.body.name] = placed(orig_skins[0].body.solid)
             else:
                 _fail(f"pas de peau d'origine pour {s.body.name}")
     all_ok = True
     for s in skins:
-        report = validate(s.body.solid, cfg, original=originals.get(s.body.name))
+        report = validate(placed(s.body.solid), cfg, original=originals.get(s.body.name))
         all_ok &= report.ok
         typer.echo(format_text(report, title=s.body.display))
         if html is not None:
@@ -119,4 +136,25 @@ def check(
             write_html(report, target, title=s.body.display)
             typer.echo(f"  rapport : {target}")
     if not all_ok:
+        raise typer.Exit(1)
+
+
+@app.command()
+def run(
+    file: Path = typer.Argument(..., help="Pièce CAO à traiter (STEP)."),
+    config: Optional[Path] = typer.Option(None, "-c", "--config", help="Fichier de configuration YAML."),
+    out: Optional[Path] = typer.Option(None, "--out", help="Dossier de sortie (défaut : output.dir de la config)."),
+) -> None:
+    """Génère les nervures, vérifie et exporte la pièce imprimable en vase mode."""
+    cfg = _load(config)
+    model = _classify(file, cfg)
+    try:
+        result = run_model(model, cfg, progress=lambda m: typer.echo(f"… {m}"))
+    except PipelineError as exc:
+        _fail(str(exc))
+    for b in result.bodies:
+        typer.echo(format_text(b.report, title=b.name))
+    for path in export_results(result, out or Path(cfg.output.dir), file.stem, list(cfg.output.formats)):
+        typer.echo(f"  fichier : {path}")
+    if not result.ok:
         raise typer.Exit(1)

@@ -93,7 +93,7 @@ uv run aerorib run piece.step -c examples/config-doubles-nervures.yaml --out out
 - Manchons, bandes sans nervure et attaches des longerons s'appliquent aux deux réseaux.
 - Durée : chaque nervure coûte ~1,4 s de coupe sur une aile CAO réelle ; le réseau de peau à 10 mm
   multiplie le nombre de nervures : 338 au lieu d'une soixantaine sur l'aile de 200 × 210 mm,
-  6 min 30 à 10 min au total selon la charge du Mac (contre 1 à 3 min avec le seul réseau principal),
+  de 6 min 30 à une vingtaine de minutes selon la charge du Mac (contre 1 à 3 min avec le seul réseau principal),
   et un `.step` d'environ 420 Mo (le `.stl` reste à ~4 Mo).
 
 ## Nommage dans la CAO

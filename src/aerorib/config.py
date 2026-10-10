@@ -90,15 +90,16 @@ class RibLayer(_Strict):
     pattern: Literal["diamond"] = "diamond"
     angle: float | None = Field(default=None, gt=0, lt=90)  # None → min(45, max_overhang_deg du preset)
     spacing: float = Field(default=30.0, gt=0)
+    # full : jusqu'à la bande de séparation ; d (mm) : seulement à moins de d de la peau (mesuré selon Y)
     depth: Literal["full"] | float = "full"
-    phase: float = 0.0
+    phase: float = 0.0  # décalage du motif (mm, le long de X)
     samples: int = Field(default=16, ge=4)
 
     @field_validator("depth")
     @classmethod
-    def _full_only(cls, v: object) -> object:
-        if v != "full":
-            raise ValueError("profondeur partielle des nervures prévue en phase P3 (utiliser depth: full)")
+    def _positive_depth(cls, v: object) -> object:
+        if v != "full" and not v > 0:  # type: ignore[operator]
+            raise ValueError(f"depth : profondeur de nervure > 0 mm attendue (ou full), reçu {v}")
         return v
 
 
@@ -232,6 +233,12 @@ class Config(_Strict):
                 raise ValueError(
                     f"{where} : fente (slit_width) {width} mm < {need:.3f} mm (1,1 × min_slit_width) — "
                     "le slicer la refermerait"
+                )
+        for layer in self.rib_layers:
+            if layer.depth != "full" and layer.depth < 2 * lw - 1e-9:
+                raise ValueError(
+                    f"rib_layers '{layer.name}' : profondeur {layer.depth} mm < 2 × largeur de ligne ({2 * lw:.2f} mm) — "
+                    "les deux murs de la nervure de peau se confondraient"
                 )
         if self.split.gap < lw:
             raise ValueError(

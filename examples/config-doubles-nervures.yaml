@@ -1,0 +1,10 @@
+# Doubles nervures : un réseau principal profond + un réseau fin et peu profond qui tient la peau.
+# Tout le reste est aux défauts (voir config-exemple.yaml).
+rib_layers:
+  # réseau principal : de la peau jusqu'à la bande de séparation (raideur, tenue des deux peaux)
+  - {name: principal, spacing: 30, depth: full}
+  # réseau de peau : nervures tous les 10 mm, seulement dans les 3 mm sous la peau (mesurés selon
+  # l'épaisseur) ; depth ≥ 2 × largeur de ligne (0,9 mm en pla_aero). Là où la pièce est plus mince
+  # que 2 × 3 mm, la nervure descend jusqu'à la bande de séparation, comme une nervure principale.
+  # phase 5 = un demi-pas : les nervures fines tombent entre les principales, pas dessus.
+  - {name: peau, spacing: 10, depth: 3, phase: 5}

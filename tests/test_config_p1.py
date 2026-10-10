@@ -26,9 +26,27 @@ def test_rib_angle_above_overhang_rejected():
         load_config(overrides={"material": "asa_aero", "rib_layers": [{"angle": 45}]})
 
 
-def test_partial_depth_is_p3():
-    with pytest.raises(ConfigError, match="P3"):
-        load_config(overrides={"rib_layers": [{"depth": 3}]})
+def test_partial_depth_accepted():
+    cfg = load_config(overrides={"rib_layers": [{}, {"name": "peau", "spacing": 10, "depth": 3, "phase": 5}]})
+    assert [layer.depth for layer in cfg.rib_layers] == ["full", 3.0]
+
+
+@pytest.mark.parametrize("depth", [0, -1])
+def test_partial_depth_must_be_positive(depth):
+    with pytest.raises(ConfigError, match=r"depth.*> 0"):
+        load_config(overrides={"rib_layers": [{"depth": depth}]})
+
+
+def test_partial_depth_below_two_lines_rejected():
+    # 0,5 < 2 × 0,45 : les deux murs de la nervure de peau se confondraient
+    with pytest.raises(ConfigError, match=r"rib_layers 'principal' : profondeur 0.5 mm < 2 × largeur de ligne"):
+        load_config(overrides={"rib_layers": [{"depth": 0.5}]})
+    load_config(overrides={"rib_layers": [{"depth": 0.9}]})  # limite : 2 × 0,45
+
+
+def test_partial_depth_rejects_other_strings():
+    with pytest.raises(ConfigError):
+        load_config(overrides={"rib_layers": [{"depth": "moitie"}]})
 
 
 def test_orientation_axis():

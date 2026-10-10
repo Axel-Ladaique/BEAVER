@@ -84,3 +84,42 @@ def test_real_wing_v2_double_ribs():
             depths.append(outer[-1][1] - cols[-1][1])
         x += 0.02
     assert any(abs(d - 3.0) <= 0.3 for d in depths), sorted(depths)
+
+
+def _bambu_wing(tmp_path, overrides):
+    """Aile v2 réelle, config par défaut (+ overrides) : run, export STEP/STL/3MF, plateaux lus dans le 3MF."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+
+    from aerorib.bambu import read_template
+    from aerorib.config import resolve_template
+    from aerorib.export import export_results
+
+    cfg = load_config(overrides=overrides)
+    run = run_model(classify(read_step(FUSION_V2), cfg), cfg)
+    (body,) = run.bodies
+    assert body.report.ok, [i.message for i in body.report.errors][:5]
+    paths = export_results(run, tmp_path, "aile", ["stl", "3mf"], template=read_template(resolve_template(cfg)))
+    with zipfile.ZipFile(tmp_path / "aile.3mf") as z:
+        plates = ET.fromstring(z.read("Metadata/model_settings.config")).findall("plate")
+    return body, paths, plates
+
+
+@pytest.mark.slow
+def test_real_wing_v2_bambu_one_segment(tmp_path):
+    body, paths, plates = _bambu_wing(tmp_path, {})
+    assert len(body.segments) == 1 and len(plates) == 1  # 210 mm <= 245 mm
+    (seg,) = body.segments
+    assert seg.is_valid and len(seg.solids()) == 1
+    assert sorted(p.name for p in paths) == ["aile-rapport.html", "aile.3mf", "aile.stl"]
+
+
+@pytest.mark.slow
+def test_real_wing_v2_bambu_two_segments(tmp_path):
+    body, paths, plates = _bambu_wing(tmp_path, {"segment": {"max_height": 120}})
+    assert len(body.segments) == 2 and len(plates) == 2
+    for seg in body.segments:
+        assert seg.is_valid and len(seg.solids()) == 1
+        bb = seg.bounding_box()
+        assert bb.min.Z == pytest.approx(0.0, abs=1e-3) and bb.max.Z == pytest.approx(105.0, abs=0.5)
+    assert sorted(p.name for p in paths) == ["aile-rapport.html", "aile-t1.stl", "aile-t2.stl", "aile.3mf"]

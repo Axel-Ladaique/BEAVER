@@ -96,6 +96,62 @@ uv run aerorib run piece.step -c examples/config-doubles-nervures.yaml --out out
   de 6 min 30 à une vingtaine de minutes selon la charge du Mac (contre 1 à 3 min avec le seul réseau principal),
   et un `.step` d'environ 420 Mo (le `.stl` reste à ~4 Mo).
 
+## Projet Bambu (3MF multi-plateaux)
+
+```bash
+uv run aerorib run piece.step --3mf --out out              # écrit aussi out/<nom>.3mf
+uv run aerorib run piece.step --open                       # idem, puis ouvre le projet dans Bambu Studio
+uv run aerorib run piece.step -c examples/config-2-troncons.yaml --3mf --out out
+```
+
+- Le `.3mf` part d'un **gabarit** : un projet Bambu Studio enregistré avec imprimante, filament et vase mode
+  réglés. Les réglages du gabarit sont recopiés tels quels ; seuls les objets sont remplacés
+  (jamais de réglage Bambu reconstruit à la main). Le gabarit PLA Aero (P1S) est embarqué.
+- **Un plateau par tronçon** (en vase mode, un seul objet par plateau), disposés comme dans Bambu Studio,
+  chaque tronçon centré et posé sur son plateau, emplanture en bas.
+- Découpe automatique quand la pièce dépasse la hauteur utile = hauteur du gabarit − marge. La découpe
+  se fait **après** les nervures : motif et longeron restent continus d'un tronçon à l'autre.
+  Réglages `segment` (voir `examples/config-2-troncons.yaml`) :
+  - `max_height` : force la hauteur utile (mm) ;
+  - `margin` : marge retirée de la hauteur du gabarit (défaut 5 mm) ;
+  - `cuts_at: [z, …]` : altitudes de coupe imposées (mm, emplanture = 0) ;
+  - `mode: off` : pas de découpe.
+- Si un tronçon dépasse l'emprise du plateau, ou si le gabarit est introuvable, le message d'erreur le dit ;
+  les autres anomalies (repli sur la taille de l'imprimante, volume limite) sortent en avertissements.
+- Autre gabarit (autre imprimante, autre réglage) : dans Bambu Studio, créer un projet avec la bonne imprimante,
+  le bon filament et le vase mode, l'enregistrer en `.3mf`, puis renseigner `bambu: {template: chemin.3mf}`
+  dans la config projet (chemin relatif à ce fichier).
+- **Limite connue : aucune vérification de slicing automatique.** Le slicing en ligne de commande de
+  Bambu Studio plante sur la machine de développement. Ouvrir le projet (`--open`), trancher, et vérifier
+  que la spirale est continue (aucune rétraction entre le début et la fin de chaque plateau) ainsi que la
+  disposition des plateaux.
+
+## Profils matière (PLA Aero / ASA Aero)
+
+`material: pla_aero` (défaut) ou `asa_aero` charge un **profil matière** : un fichier YAML qui regroupe les
+paramètres géométriques de la matière (largeur de ligne, hauteur de couche, densité, seuils de fente,
+épaisseur des nervures, bande de séparation, réseau de nervures, longerons, alésages) et le **gabarit
+Bambu** (`bambu.template`). Ordre de priorité : défauts du code < profil < config projet (`-c`) < options CLI.
+
+Où ils vivent (priorité croissante) :
+
+1. profils **embarqués** dans le paquet (`pla_aero`, `asa_aero`) ;
+2. dossier `./profiles/` du répertoire de travail ;
+3. dossier désigné par la variable d'environnement `AERORIB_PROFILES`.
+
+Un profil utilisateur est **fusionné sur** le profil embarqué de même nom : n'y écrire que ce qui change
+(un profil qui ne contient que `material_settings: {line_width: 0.45}` suffit). Sans équivalent embarqué,
+c'est un nouveau profil, utilisé seul.
+
+```bash
+uv run aerorib profils                    # liste les profils (origine, fichiers, gabarit)
+uv run aerorib profils --copier asa_aero  # copie le profil embarqué dans ./profiles/ pour l'éditer
+```
+
+L'**ASA Aero n'a pas encore de gabarit Bambu** : enregistrer un projet ASA Aero dans Bambu Studio
+(imprimante, filament ASA, vase mode), puis renseigner `bambu.template` dans `./profiles/asa_aero.yaml`
+(`aerorib profils --copier asa_aero`). Sans cela, `--3mf` s'arrête avec un message explicite.
+
 ## Nommage dans la CAO
 
 | Préfixe | Rôle |

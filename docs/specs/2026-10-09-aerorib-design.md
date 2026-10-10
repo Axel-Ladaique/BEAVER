@@ -150,6 +150,7 @@ Repère : après orientation, Z est l'axe de construction.
 - Si aucune orientation n'est valide, l'outil explique pourquoi (ex. « la pièce doit être découpée »).
 
 ### 7.7 Découpe en tronçons (`segment`)
+- Mise en œuvre en P2 : voir `docs/plans/2026-10-10-p2-bambu-troncons.md` (découpe après génération des nervures, un plateau Bambu par tronçon).
 - Faite **avant** la génération des features.
 - Plans perpendiculaires à Z. Nombre minimal de tronçons tels que hauteur ≤ Z max et emprise ≤ XY max, avec une marge (défaut 5 mm).
 - Positions optimisées pour éviter les zones `NORIB`, les sections trop petites et les variations brusques de section. Forçage possible par `cuts_at: [...]` ou par des corps `CUT_*`.
@@ -242,6 +243,8 @@ Table dans la config : volume utile, gabarit 3MF associé.
 | X2D | à reprendre de la fiche technique Bambu officielle à l'implémentation |
 
 ## 12. Intégration Bambu Studio
+
+> Mise en œuvre en P2 : voir `docs/plans/2026-10-10-p2-bambu-troncons.md`. Limite connue : pas de vérification de slicing automatique (le slicing CLI de Bambu Studio plante sur la machine de développement) ; le projet s'ouvre et se tranche à la main.
 
 - **Approche gabarit** : l'utilisateur enregistre une fois depuis Bambu Studio un projet vide par couple imprimante/matière (filament PLA Aero ou ASA Aero, vase mode activé, couches du bas réglées). `aerorib` copie le gabarit et n'y remplace que les objets. On ne reconstruit jamais les réglages à la main, ce qui reste compatible avec les versions de Bambu Studio.
 - En vase mode, il n'y a qu'**un objet par plateau** : le 3MF contient un plateau par tronçon.

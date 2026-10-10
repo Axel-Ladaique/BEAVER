@@ -188,8 +188,10 @@ def _print_volume(cfg: Config) -> tuple[tuple[float, float, float], str | None]:
         return (t.bed[0], t.bed[1], t.height), None
     except BambuError as exc:
         warn = f"gabarit Bambu illisible ({exc}) — volume de l'imprimante {cfg.printer} utilisé"
-    except ConfigError:
-        warn = None
+    except ConfigError as exc:
+        warn = (
+            f"{exc} — volume de l'imprimante {cfg.printer} utilisé" if cfg.bambu.template is not None else None
+        )
     return tuple(cfg.printer_spec.volume), warn
 
 

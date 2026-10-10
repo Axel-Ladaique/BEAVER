@@ -17,6 +17,7 @@ from aerorib.io_step import read_step
 from aerorib.pipeline import PipelineError, run_model
 from aerorib.testing.synthetic import wing_x_bodies
 
+NS = {"c": "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"}
 FIXTURE = Path(__file__).parent / "fixtures" / "bambu_p1s_pla_aero.3mf"
 
 
@@ -63,12 +64,18 @@ def test_export_segments(run3, tmp_path):
     assert len(plates) == 3
     with zipfile.ZipFile(tmp_path / "aile.3mf") as z:
         root = ET.fromstring(z.read("Metadata/model_settings.config"))
-    objs = [o for o in root.findall("object")]
-    names = [next(m.get("value") for m in o.findall("metadata") if m.get("key") == "name") for o in objs]
-    assert names == ["Aile_test_t1", "Aile_test_t2", "Aile_test_t3"]
-    from aerorib.slicing import to_mesh
-    for s in run.bodies[0].segments:
-        assert to_mesh(s, 0.02).extents[2] == pytest.approx(s.bounding_box().max.Z, abs=0.05)
+        obj_names = [
+            next(m.get("value") for m in o.findall("metadata") if m.get("key") == "name")
+            for o in root.findall("object")
+        ]
+        assert obj_names == ["Aile_test_t1", "Aile_test_t2", "Aile_test_t3"]
+        heights = []
+        for k in (1, 2, 3):
+            m = ET.fromstring(z.read(f"3D/Objects/object_{k}.model"))
+            zs = [float(v.get("z")) for v in m.iterfind(".//c:vertex", NS)]
+            heights.append(max(zs) - min(zs))
+    for h, seg in zip(heights, run.bodies[0].segments):
+        assert h == pytest.approx(seg.bounding_box().max.Z, abs=0.05)
 
 
 def test_3mf_without_template_writes_nothing(run3, tmp_path):
@@ -157,3 +164,10 @@ def test_too_wide(tmp_path):
     cfg = _cfg(template=small, max_height=30)
     with pytest.raises(PipelineError, match="plus grand que le plateau"):
         run_model(classify(wing_x_bodies(), cfg), cfg)
+
+
+def test_missing_template_warns(tmp_path):
+    msgs = []
+    cfg = _cfg(template=tmp_path / "absent.3mf")
+    pieces, warns = pipeline._segment("B", _part(), cfg, msgs.append)
+    assert len(pieces) == 1 and any("introuvable" in w and "volume de l'imprimante" in w for w in warns)

@@ -69,7 +69,10 @@ def orientation_location(skin: Solid, axis: np.ndarray, tol: float = 0.02) -> Lo
     le = flat[np.argmax(np.linalg.norm(flat - te, axis=1))]
     chord = te - le
     chord = chord - chord.dot(z_dir) * z_dir
-    chord /= np.linalg.norm(chord)
+    norm = float(np.linalg.norm(chord))
+    if norm < 1e-9:
+        raise ValueError("corde de longueur nulle : section d'emplanture dégénérée (vérifier l'axe d'orientation)")
+    chord /= norm
     origin = centre + axis * root_t
     loc = Location(Plane(origin=tuple(origin), x_dir=tuple(chord), z_dir=tuple(z_dir))).inverse()
     if _needs_flip(skin.moved(loc), inset, tol):

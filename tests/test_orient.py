@@ -77,3 +77,13 @@ def test_flip_branch_is_exercised():
     o = orientation_location(w, np.array([1.0, 0, 0]))
     upside = w.moved(o).moved(Location((0, 0, 100)) * Location((0, 0, 0), (180, 0, 0)))
     assert _needs_flip(upside, 0.5, 0.02) is True
+
+
+def test_degenerate_root_section_has_french_error(monkeypatch):
+    import aerorib.orient as orient_mod
+    from build123d import Box
+
+    # section d'emplanture dégénérée (tous les sommets confondus) : corde de longueur nulle
+    monkeypatch.setattr(orient_mod, "_section_area", lambda mesh, axis, t: (1.0, np.zeros((3, 3))))
+    with pytest.raises(ValueError, match="corde de longueur nulle"):
+        orientation_location(Box(10, 10, 10).solids()[0], np.array([0.0, 0, 1]))

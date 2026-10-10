@@ -77,6 +77,13 @@ class SplitSettings(_Strict):
     min_rib_depth: float = Field(default=1.0, ge=0)  # nervure plus courte → non coupée (bords d'attaque/fuite)
     grid: tuple[int, int] = (101, 22)  # résolution (nx, nz) de la surface médiane
 
+    @field_validator("grid")
+    @classmethod
+    def _grid_min(cls, v: tuple[int, int]) -> tuple[int, int]:
+        if min(v) < 2:
+            raise ValueError("split.grid : au moins 2 points par axe (nx, nz)")
+        return v
+
 
 class RibLayer(_Strict):
     name: str = "principal"

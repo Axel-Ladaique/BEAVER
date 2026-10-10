@@ -105,3 +105,9 @@ def test_slit_defaults_survive_slicer_closing():
 def test_slits_narrower_than_slicer_threshold_rejected(overrides):
     with pytest.raises(ConfigError, match="fente"):
         load_config(overrides=overrides)
+
+
+@pytest.mark.parametrize("grid", [[1, 22], [101, 1], [0, 0]])
+def test_split_grid_needs_two_points_per_axis(grid):
+    with pytest.raises(ConfigError, match="grid"):
+        load_config(overrides={"split": {"grid": grid}})

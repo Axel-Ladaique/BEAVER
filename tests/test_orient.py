@@ -6,7 +6,7 @@ from aerorib.classify import classify
 from aerorib.config import load_config
 from aerorib.io_step import NamedBody
 from aerorib.midsurface import camber_offset
-from aerorib.orient import choose_axis, orient, orientation_location
+from aerorib.orient import _needs_flip, choose_axis, orient, orientation_location
 from aerorib.slicing import slice_layers
 from aerorib.testing.synthetic import naca_wing
 
@@ -16,7 +16,7 @@ X_SPAN = Location((0, 0, 0), (0, 90, 0))  # envergure Z → X (comme l'aile Fusi
 def wing_along_x(flip: bool = False):
     wing, _ = naca_wing(chord=150.0, span=100.0)
     if flip:  # extrados vers −Y avant orientation
-        wing = wing.moved(Location((0, 0, 0), (0, 0, 180)))
+        wing = wing.moved(Location((0, 0, 0), (180, 0, 0)))
     return wing.moved(Location((-30, 12, 5)) * X_SPAN).solids()[0]
 
 
@@ -34,7 +34,7 @@ def test_wing_stands_on_root_with_chord_x_and_extrados_up(flip):
 
 
 def test_root_is_the_larger_end():
-    cone = Cone(20, 10, 100).moved(X_SPAN)  # grand rayon côté x négatif après rotation ? on teste les deux sens
+    cone = Cone(20, 10, 100).moved(X_SPAN)  # on teste les deux sens de l'axe
     for axis in (np.array([1.0, 0, 0]), np.array([-1.0, 0, 0])):
         oc = cone.moved(orientation_location(cone, axis))
         low, high = slice_layers(oc, [1.0, 99.0])
@@ -64,3 +64,16 @@ def test_orient_model_uses_spar():
     o = orient(model, load_config())
     assert o.source == "longeron SBAR_a"
     assert w.moved(o.location).bounding_box().min.Z == pytest.approx(0.0, abs=1e-3)
+
+
+def test_flip_branch_is_exercised():
+    for flip in (False, True):
+        w = wing_along_x(flip)
+        o = orientation_location(w, np.array([1.0, 0, 0]))
+        # sans correction de cambrure, l'aile retournée aurait l'extrados vers −Y
+        assert _needs_flip(w.moved(o), 0.5, 0.02) is False
+    # vérifie la décision elle-même sur l'aile retournée en +Y puis forcée à l'envers
+    w = wing_along_x(False)
+    o = orientation_location(w, np.array([1.0, 0, 0]))
+    upside = w.moved(o).moved(Location((0, 0, 100)) * Location((0, 0, 0), (180, 0, 0)))
+    assert _needs_flip(upside, 0.5, 0.02) is True

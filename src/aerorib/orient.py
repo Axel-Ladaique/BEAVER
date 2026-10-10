@@ -43,6 +43,11 @@ def _section_area(mesh, axis: np.ndarray, t: float) -> tuple[float, np.ndarray |
     return float(sum(p.area for p in planar.polygons_full)), np.asarray(section.vertices)
 
 
+def _needs_flip(skin_moved: Solid, inset: float, tol: float) -> bool:
+    (root,) = slice_layers(skin_moved, [inset], tol)
+    return bool(root.polygons) and camber_offset(max(root.polygons, key=lambda p: p.area)) < 0
+
+
 def orientation_location(skin: Solid, axis: np.ndarray, tol: float = 0.02) -> Location:
     axis = np.asarray(axis, dtype=float)
     axis = axis / np.linalg.norm(axis)
@@ -56,6 +61,8 @@ def orientation_location(skin: Solid, axis: np.ndarray, tol: float = 0.02) -> Lo
     z_dir = axis if root_is_lo else -axis
     root_t = lo if root_is_lo else hi
     verts = v_lo if root_is_lo else v_hi
+    if verts is None:
+        raise ValueError("section d'emplanture introuvable")
     flat = verts - np.outer(verts @ axis, axis)
     centre = flat.mean(axis=0)
     te = flat[np.argmax(np.linalg.norm(flat - centre, axis=1))]
@@ -65,14 +72,18 @@ def orientation_location(skin: Solid, axis: np.ndarray, tol: float = 0.02) -> Lo
     chord /= np.linalg.norm(chord)
     origin = centre + axis * root_t
     loc = Location(Plane(origin=tuple(origin), x_dir=tuple(chord), z_dir=tuple(z_dir))).inverse()
-    (root,) = slice_layers(skin.moved(loc), [inset], tol)
-    if root.polygons and camber_offset(max(root.polygons, key=lambda p: p.area)) < 0:
+    if _needs_flip(skin.moved(loc), inset, tol):
+        # Convention : une rotation propre ne peut pas inverser Y seul ; la corde reste sur X
+        # mais le BA passe en +X quand la pièce a dû être tournée pour mettre l'extrados en +Y.
         loc = Location((0, 0, 0), (0, 0, 180)) * loc
     return loc
 
 
 def orient(model: Model, cfg: Config) -> Orientation:
+    skins = model.of("skin")
+    if not skins:
+        raise ValueError("aucune peau à orienter")
     axis, source = choose_axis(model, cfg)
-    skin = model.of("skin")[0].body.solid
+    skin = skins[0].body.solid
     loc = orientation_location(skin, axis, cfg.validation.tessellation_tol)
     return Orientation(loc, tuple(float(c) for c in axis), source)

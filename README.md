@@ -66,6 +66,34 @@ Limites de la phase P1 :
   2 min 17 s sur le même Mac très chargé) ; variable selon la machine et la complexité.
 - `examples/config-exemple.yaml` montre les réglages principaux (le détail complet est dans la spec §10).
 
+### Doubles nervures (réseau de peau)
+
+Par défaut, un seul réseau de nervures traverse la pièce de la peau jusqu'à la bande de séparation.
+Pour ajouter un second réseau, fin et peu profond, qui tient la peau entre les nervures principales,
+déclarer un second niveau avec une profondeur `depth` en mm (voir `examples/config-doubles-nervures.yaml`) :
+
+```yaml
+rib_layers:
+  - {name: principal, spacing: 30, depth: full}
+  - {name: peau, spacing: 10, depth: 3, phase: 5}
+```
+
+```bash
+uv run aerorib run piece.step -c examples/config-doubles-nervures.yaml --out out
+```
+
+- `depth: 3` : la nervure ne descend qu'à 3 mm sous la peau (mesurés selon l'épaisseur de la pièce,
+  pas selon la normale à la peau : écart négligeable sur un profil d'aile). Là où la pièce est plus mince
+  que 2 × 3 mm, la nervure va jusqu'à la bande de séparation, comme une nervure principale.
+- `depth` doit valoir au moins 2 × la largeur de ligne (0,9 mm en `pla_aero`), sinon les deux murs de la
+  nervure se confondent.
+- `phase: 5` décale le motif d'un demi-pas : les nervures fines tombent entre les principales.
+- Manchons, bandes sans nervure et attaches des longerons s'appliquent aux deux réseaux.
+- Durée : chaque nervure coûte ~1,4 s de coupe sur une aile CAO réelle ; le réseau de peau à 10 mm
+  multiplie le nombre de nervures : 338 au lieu d'une soixantaine sur l'aile de 200 × 210 mm,
+  6 min 30 à 10 min au total selon la charge du Mac (contre 1 à 3 min avec le seul réseau principal),
+  et un `.step` d'environ 420 Mo (le `.stl` reste à ~4 Mo).
+
 ## Nommage dans la CAO
 
 | Préfixe | Rôle |

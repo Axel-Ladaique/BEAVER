@@ -11,6 +11,11 @@ rib_layers:
     pattern: diamond
     spacing: 30             # mm entre nervures parallèles
     # angle: 45             # défaut = min(45, surplomb max de la matière)
+    # depth: full           # full = jusqu'à la bande de séparation ; un nombre (mm) = seulement près de la peau
+    # phase: 0              # décalage du motif (mm)
+# Doubles nervures (voir config-doubles-nervures.yaml) : ajouter un second niveau, fin et peu profond,
+# qui tient la peau ; phase = un demi-pas pour que ses nervures tombent entre les principales.
+#  - {name: peau, spacing: 10, depth: 3, phase: 5}   # depth ≥ 2 × largeur de ligne (0,9 mm)
 # Réglages des longerons (défauts : clearance 0.15, sleeve 0.8, strip 2.0, slit_side top, slit_width 0.15,
 # anchor true, anchor_gap 1.0). L'attache (anchor) est une fente borgne du trou vers la peau opposée à la
 # fente, arrêtée à anchor_gap (≥ largeur de ligne) de la peau : elle accroche le manchon des deux côtés.

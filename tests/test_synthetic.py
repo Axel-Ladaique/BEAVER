@@ -30,7 +30,7 @@ def test_ribbed_wing_removes_material():
     assert ribbed.volume < wing.volume
 
 
-@pytest.mark.parametrize("kind", ["hole", "island", "narrow", "skin"])
+@pytest.mark.parametrize("kind", ["hole", "island", "narrow", "skin", "hole_narrow"])
 def test_broken_variants_are_valid_solids(kind):
     part = broken_wing(kind)
     assert part.is_valid
@@ -46,7 +46,7 @@ def test_island_variant_has_two_solids():
     assert len(broken_wing("island").solids()) == 2
 
 
-@pytest.mark.parametrize("kind", ["hole", "narrow", "skin"])
+@pytest.mark.parametrize("kind", ["hole", "narrow", "skin", "hole_narrow"])
 def test_non_island_variants_have_one_solid(kind):
     assert len(broken_wing(kind).solids()) == 1
 

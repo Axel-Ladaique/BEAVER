@@ -1,7 +1,8 @@
+import pytest
 from shapely.geometry import Point, Polygon, box
 
 from aerorib.slicing import Layer
-from aerorib.validate import check_connectivity, check_narrow_slits, check_skin
+from aerorib.validate import check_connectivity, check_narrow_slits, check_skin, slicer_closing
 
 BASE = box(0, 0, 20, 10)
 
@@ -39,6 +40,7 @@ def test_narrow_slit_detected():
     issues = check_narrow_slits(Layer(1.0, (notch(10, 0.05),)), min_width=0.08)
     assert len(issues) == 1
     assert issues[0].check == "narrow_slit"
+    assert issues[0].severity == "warning"
     x0, _, x1, _ = issues[0].bounds
     assert 9.9 < x0 and x1 < 10.1
 
@@ -67,3 +69,15 @@ def test_skin_threshold_uses_real_missing_length():
     # ouverture réelle de 0.55 mm > 0.5 : détectée (la portion érodée ne mesure que ~0.45)
     assert len(check_skin(Layer(1.0, (notch(10, 0.55),)), orig, max_mouth=0.5, tol=0.05)) == 1
     assert check_skin(Layer(1.0, (notch(10, 0.45),)), orig, max_mouth=0.5, tol=0.05) == []
+
+
+def test_slicer_closing_closes_narrow_notch_only():
+    narrow, wide = notch(10, 0.05), notch(10, 0.1)
+    assert slicer_closing([narrow], 0.08)[0].area == pytest.approx(BASE.area, abs=1e-3)
+    assert slicer_closing([wide], 0.08)[0].area == pytest.approx(wide.area, abs=1e-3)
+
+
+def test_skin_ignores_enlarged_inner_hole():
+    orig = Layer(1.0, (BASE.difference(Point(10, 5).buffer(2.0)),))
+    res = Layer(1.0, (BASE.difference(Point(10, 5).buffer(2.3)),))
+    assert check_skin(res, orig, max_mouth=0.5, tol=0.05) == []

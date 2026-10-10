@@ -91,7 +91,7 @@ def ribbed_wing(
     return wing - Compound(tools)
 
 
-def broken_wing(kind: Literal["hole", "island", "narrow", "skin"]) -> Part:
+def broken_wing(kind: Literal["hole", "island", "narrow", "skin", "hole_narrow"]) -> Part:
     wing, camber = naca_wing()
     if kind == "hole":
         return wing - Cylinder(4, 200).moved(Location((45, camber(45), 50)))
@@ -101,4 +101,7 @@ def broken_wing(kind: Literal["hole", "island", "narrow", "skin"]) -> Part:
         return wing - _slit(100, camber(100) + 0.3, True, 0.05, 100)
     if kind == "skin":
         return wing - _slit(100, camber(100) + 0.3, True, 3.0, 100)
+    if kind == "hole_narrow":
+        hole = Cylinder(4, 200).moved(Location((45, camber(45), 50)))
+        return wing - hole - _slit(45, camber(45), True, 0.05, 100)
     raise ValueError(f"variante inconnue : {kind}")

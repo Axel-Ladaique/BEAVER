@@ -44,3 +44,10 @@ def test_html_contains_svg_per_failed_layer(tmp_path: Path):
 def test_write_html_creates_parent_dir(tmp_path: Path):
     out = write_html(failing(), tmp_path / "a" / "b" / "r.html")
     assert out.exists()
+
+
+def test_text_lists_warnings():
+    issues = (Issue("narrow_slit", "warning", 0.3, "fente plus étroite que 0.08 mm (refermée par le slicer)"),)
+    text = format_text(Report(issues, STATS, {}))
+    assert text.splitlines()[0] == "✔ imprimable en vase mode"
+    assert "  ⚠ fente trop fine : 1 couche(s) (avertissement)" in text

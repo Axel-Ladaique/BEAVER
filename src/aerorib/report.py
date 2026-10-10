@@ -29,6 +29,12 @@ def format_text(report: Report, title: str = "") -> str:
             f"  - {LABELS.get(check, check)} : {len(zs)} couche(s), "
             f"z = {zs[0]:.1f} – {zs[-1]:.1f} mm, ex. : {issues[0].message}"
         )
+    warn_by_check: dict[str, list[Issue]] = defaultdict(list)
+    for issue in report.warnings:
+        warn_by_check[issue.check].append(issue)
+    for check, issues in warn_by_check.items():
+        n = len({i.z for i in issues})
+        lines.append(f"  ⚠ {LABELS.get(check, check)} : {n} couche(s) (avertissement)")
     s = report.stats
     lines.append(
         f"  couches : {int(s['layers'])} · hauteur : {s['height_mm']:.1f} mm · "

@@ -21,7 +21,7 @@ def test_good_ribbed_wing_passes():
 
 @pytest.mark.parametrize(
     "kind, expected",
-    [("hole", ["connectivity"]), ("island", ["connectivity"]), ("narrow", ["narrow_slit"])],
+    [("hole", ["connectivity"]), ("island", ["connectivity"]), ("hole_narrow", ["connectivity"])],
 )
 def test_broken_variants_detected(kind, expected):
     report = validate(broken_wing(kind), CFG, heights=ZS)
@@ -51,3 +51,18 @@ def test_default_heights_cover_part():
     report = validate(wing, CFG)
     assert report.stats["layers"] == 10  # 2 mm / 0.2 mm
     assert report.stats["height_mm"] == pytest.approx(2.0)
+
+
+def test_narrow_slit_is_only_a_warning():
+    report = validate(broken_wing("narrow"), CFG, heights=ZS)
+    assert report.ok
+    assert {i.check for i in report.warnings} == {"narrow_slit"}
+
+
+def test_parallel_and_serial_agree():
+    part = broken_wing("hole")
+    heights = [1.0 + i * 1.5 for i in range(66)]  # ≥ PARALLEL_MIN_LAYERS → parallèle
+    par = validate(part, CFG, heights=heights)
+    ser = validate(part, CFG, heights=heights[:10])
+    assert not par.ok and not ser.ok
+    assert len(par.errors) == 66 and len(ser.errors) == 10

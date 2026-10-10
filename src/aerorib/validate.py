@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -17,6 +18,7 @@ Severity = Literal["error", "warning"]
 MAX_FAILED_LAYERS = 20
 # Une fente détectée doit avoir une aire > min_width * NARROW_AREA_FACTOR (sinon : bruit de buffer).
 NARROW_AREA_FACTOR = 0.5
+PARALLEL_MIN_LAYERS = 64
 
 
 @dataclass(frozen=True)
@@ -39,12 +41,26 @@ class Report:
         return [i for i in self.issues if i.severity == "error"]
 
     @property
+    def warnings(self) -> list[Issue]:
+        return [i for i in self.issues if i.severity == "warning"]
+
+    @property
     def ok(self) -> bool:
         return not self.errors
 
 
 def _parts(geom):
     return list(getattr(geom, "geoms", [geom])) if not geom.is_empty else []
+
+
+def slicer_closing(polygons: Sequence[Polygon], min_width: float) -> tuple[Polygon, ...]:
+    """Ce que le slicer imprime : les fentes plus étroites que min_width sont refermées."""
+    r = min_width / 2
+    out: list[Polygon] = []
+    for poly in polygons:
+        closed = poly.buffer(r, join_style="mitre").buffer(-r, join_style="mitre")
+        out.extend(p for p in _parts(closed) if isinstance(p, Polygon))
+    return tuple(out)
 
 
 def check_connectivity(layer: Layer) -> list[Issue]:
@@ -76,7 +92,13 @@ def check_narrow_slits(layer: Layer, min_width: float) -> list[Issue]:
         for part in _parts(closed.difference(poly)):
             if part.area > min_width * NARROW_AREA_FACTOR:
                 issues.append(
-                    Issue("narrow_slit", "error", layer.z, f"fente plus étroite que {min_width} mm", part.bounds)
+                    Issue(
+                        "narrow_slit",
+                        "warning",
+                        layer.z,
+                        f"fente plus étroite que {min_width} mm (refermée par le slicer)",
+                        part.bounds,
+                    )
                 )
     return issues
 
@@ -84,7 +106,7 @@ def check_narrow_slits(layer: Layer, min_width: float) -> list[Issue]:
 def check_skin(layer: Layer, original: Layer, max_mouth: float, tol: float) -> list[Issue]:
     if not original.polygons:
         return []
-    orig_boundary = unary_union([p.boundary for p in original.polygons])
+    orig_boundary = unary_union([p.exterior for p in original.polygons])
     res_boundary = unary_union([p.boundary for p in layer.polygons]) if layer.polygons else None
     missing = orig_boundary if res_boundary is None else orig_boundary.difference(res_boundary.buffer(tol))
     issues = []
@@ -97,6 +119,17 @@ def check_skin(layer: Layer, original: Layer, max_mouth: float, tol: float) -> l
                 Issue("skin", "error", layer.z, f"peau entamée sur {missing_length:.1f} mm", piece.bounds)
             )
     return issues
+
+
+def _check_layer(args) -> list[Issue]:
+    """Contrôles d'une couche ; fonction de module (picklable) pour le pool de processus."""
+    z, polygons, original_polygons, min_slit, max_mouth, skin_tol = args
+    layer = Layer(z, polygons)
+    found = check_connectivity(Layer(z, slicer_closing(polygons, min_slit)))
+    found += check_narrow_slits(layer, min_slit)
+    if original_polygons is not None:
+        found += check_skin(layer, Layer(z, original_polygons), max_mouth, skin_tol)
+    return found
 
 
 def validate(
@@ -115,12 +148,24 @@ def validate(
     issues: list[Issue] = []
     failed: dict[float, tuple[Polygon, ...]] = {}
     path_mm = 0.0
-    for i, layer in enumerate(layers):
-        found = check_connectivity(layer) + check_narrow_slits(layer, preset.min_slit_width)
-        if originals is not None:
-            found += check_skin(
-                layer, originals[i], cfg.validation.max_mouth_width, cfg.validation.skin_tolerance
-            )
+    v = cfg.validation
+    jobs = [
+        (
+            layer.z,
+            layer.polygons,
+            originals[i].polygons if originals is not None else None,
+            preset.min_slit_width,
+            v.max_mouth_width,
+            v.skin_tolerance,
+        )
+        for i, layer in enumerate(layers)
+    ]
+    if len(jobs) >= PARALLEL_MIN_LAYERS:
+        with ProcessPoolExecutor() as pool:
+            per_layer = list(pool.map(_check_layer, jobs, chunksize=16))
+    else:
+        per_layer = [_check_layer(job) for job in jobs]
+    for layer, found in zip(layers, per_layer):
         if any(x.severity == "error" for x in found) and len(failed) < MAX_FAILED_LAYERS:
             failed[layer.z] = layer.polygons
         issues.extend(found)

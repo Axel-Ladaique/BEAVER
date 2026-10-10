@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 
 import numpy as np
 from build123d import Face, Solid, Vector, Wire, extrude
@@ -16,6 +17,10 @@ from aerorib.midsurface import MidSurface
 
 _FAR = 1e4
 _DEPTH_STEP = 0.5  # mm, pas d'échantillonnage de l'épaisseur le long d'une plaque
+# mm : pas max des sommets du bord intérieur d'une plaque peu profonde (depth en mm). Le bord suit alors
+# la peau décalée ; à 16 sommets, la corde d'une peau convexe creusait jusqu'à ~0,9 mm de trop au bord d'attaque.
+_PARTIAL_EDGE_STEP = 5.0
+_SAME_LINE = 1e-6  # mm : deux plaques de même famille et même c sont confondues
 
 
 _ZONE_SEGMENTS = 64
@@ -77,6 +82,8 @@ def plate_profiles_2d(
     runs = _deep_runs(ss, deep)
     if not runs:
         return []
+    if edge_vertices is not None and depth is not None:
+        edge_vertices = max(edge_vertices, math.ceil((ss[-1] - ss[0]) / _PARTIAL_EDGE_STEP) + 1)
     coarse = ss if edge_vertices is None else np.linspace(ss[0], ss[-1], edge_vertices)
     out = []
     for top in (True, False):
@@ -119,30 +126,45 @@ def plate_solid(poly: Polygon, c: float, d0: float, d1: float, zmin: float, slit
     return extrude(face, amount=slit / 2, dir=Vector(d1, 0, -d0), both=True)
 
 
+def _plate_length(bb, angle_deg: float) -> float:
+    return (bb.max.Z - bb.min.Z) / math.cos(math.radians(angle_deg)) + 10
+
+
+def plate_lines(bb, layer: RibLayer, angle_deg: float) -> list[tuple[int, float]]:
+    """Plans du motif losange : (famille ±1, abscisse c de la plaque en z = zmin)."""
+    ang = math.radians(angle_deg)
+    reach = _plate_length(bb, angle_deg) * math.sin(ang)
+    origin = bb.min.X + layer.phase
+    out = []
+    for sign in (1, -1):
+        lo = bb.min.X - (reach if sign > 0 else 0) - layer.spacing
+        hi = bb.max.X + (reach if sign < 0 else 0) + layer.spacing
+        for k in range(math.floor((lo - origin) / layer.spacing), math.ceil((hi - origin) / layer.spacing) + 1):
+            out.append((sign, origin + k * layer.spacing))
+    return out
+
+
 def diamond_plates(
     bb, mid: MidSurface, bores: list[Bore], layer: RibLayer, *, angle_deg: float, gap: float, slit: float,
-    min_depth: float,
+    min_depth: float, exclude: Sequence[tuple[int, float]] = (),
 ) -> list[Solid]:
+    """Plaques d'un niveau ; `exclude` : plans (famille, c) déjà coupés par un niveau plus profond."""
     ang = math.radians(angle_deg)
     zmin, zmax = bb.min.Z, bb.max.Z
     ytop, ybot = bb.max.Y + 5, bb.min.Y - 5
-    length = (zmax - zmin) / math.cos(ang) + 10
+    length = _plate_length(bb, angle_deg)
     # échantillonnage fin (≈ 0,5 mm) pour situer les transitions d'épaisseur ; bord à `samples` sommets
     ss = np.linspace(-5, length, max(layer.samples, math.ceil((length + 5) / _DEPTH_STEP) + 1))
     plates: list[Solid] = []
-    for sign in (1, -1):
+    for sign, c in plate_lines(bb, layer, angle_deg):
+        if any(es == sign and abs(ec - c) < _SAME_LINE for es, ec in exclude):
+            continue
         d0, d1 = sign * math.sin(ang), math.cos(ang)
-        reach = length * abs(d0)
-        lo = bb.min.X - (reach if sign > 0 else 0) - layer.spacing
-        hi = bb.max.X + (reach if sign < 0 else 0) + layer.spacing
-        origin = bb.min.X + layer.phase
-        for k in range(math.floor((lo - origin) / layer.spacing), math.ceil((hi - origin) / layer.spacing) + 1):
-            c = origin + k * layer.spacing
-            ym, th = mid.at(c + ss * d0, zmin + ss * d1)
-            zones = [z for b in bores for z in bore_zones_2d(b, c, d0, d1, zmin, zmax, slit=slit)]
-            for _, poly in plate_profiles_2d(
-                ss, ym, th, zones, gap=gap, min_depth=min_depth, ytop=ytop, ybot=ybot, edge_vertices=layer.samples,
-                depth=None if layer.depth == "full" else layer.depth,
-            ):
-                plates.append(plate_solid(poly, c, d0, d1, zmin, slit))
+        ym, th = mid.at(c + ss * d0, zmin + ss * d1)
+        zones = [z for b in bores for z in bore_zones_2d(b, c, d0, d1, zmin, zmax, slit=slit)]
+        for _, poly in plate_profiles_2d(
+            ss, ym, th, zones, gap=gap, min_depth=min_depth, ytop=ytop, ybot=ybot, edge_vertices=layer.samples,
+            depth=None if layer.depth == "full" else layer.depth,
+        ):
+            plates.append(plate_solid(poly, c, d0, d1, zmin, slit))
     return plates

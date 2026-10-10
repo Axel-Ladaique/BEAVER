@@ -275,7 +275,7 @@ def test_fill_refused_when_bore_breaks_the_surface(no_ribs):
 
     base = Box(60, 30, 40, align=(Align.CENTER, Align.CENTER, Align.MIN))
     skin = (base - Cylinder(1.2, 40).moved(Location((0, 15 - 1.21, 20)))).solids()[0]  # paroi de 0,01 mm
-    with pytest.raises(PipelineError, match=r"passage 1 \(x=0.0, y=13.8, Ø2.4\) : paroi de -0.01 mm entre le rebouchage \(Ø2.44\) et la surface — rebouchage impossible"):
+    with pytest.raises(PipelineError, match=r"passage 1 \(x=0.0, y=13.8, Ø2.4\) : le rebouchage \(Ø2.44\) dépasserait la surface de 0.01 mm — rebouchage impossible"):
         generate_skin(skin, [], HALF)
 
 
@@ -351,3 +351,34 @@ def test_double_ribs_skin_notches_are_shallow(double_run):
     assert shallow, sorted(depths)
     # et le réseau principal descend toujours jusqu'à la bande de séparation (plus profond que 3,3 mm)
     assert any(d > 3.5 for d in depths), sorted(depths)
+
+
+def test_fill_refused_with_thin_positive_wall_keeps_wall_wording(no_ribs, monkeypatch):
+    from build123d import Align, Box
+
+    monkeypatch.setattr(pipeline, "_FILL_WALL", 0.05)  # paroi restante de ~0,03 mm : refusée, mais positive
+    base = Box(60, 30, 40, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    skin = (base - Cylinder(1.2, 40).moved(Location((0, 15 - 1.25, 20)))).solids()[0]
+    with pytest.raises(PipelineError, match=r"paroi de 0.03 mm entre le rebouchage \(Ø2.44\) et la surface"):
+        generate_skin(skin, [], HALF)
+
+
+def test_partial_layer_skips_plates_of_deeper_layers(monkeypatch):
+    # phase 0 : une nervure de peau sur trois tombe sur une principale (contenue dedans) → pas recoupée
+    from aerorib.features import ribs
+
+    seen = {}
+
+    def spy(bb, mid, bores, layer, **kw):
+        seen[layer.name] = len(ribs.diamond_plates(bb, mid, bores, layer, **kw))
+        return []
+
+    monkeypatch.setattr(pipeline, "diamond_plates", spy)
+    skin, spar, _ = _half_span_case()
+    same = load_config(overrides={"rib_layers": [{"spacing": 30}, {"name": "peau", "spacing": 10, "depth": 3}]})
+    alone = load_config(overrides={"rib_layers": [{"name": "peau", "spacing": 10, "depth": 3}]})
+    generate_skin(skin, [("SBAR_demi", spar)], same)
+    with_main = dict(seen)
+    generate_skin(skin, [("SBAR_demi", spar)], alone)
+    assert 0 < with_main["peau"] < seen["peau"]
+    assert with_main["peau"] + with_main["principal"] >= seen["peau"]  # chaque doublon est couvert par une principale

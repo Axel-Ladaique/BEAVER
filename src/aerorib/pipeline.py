@@ -25,7 +25,7 @@ from aerorib.features.bores import (
     passages_to_fill,
     spar_bores,
 )
-from aerorib.features.ribs import diamond_plates
+from aerorib.features.ribs import diamond_plates, plate_lines
 from aerorib.midsurface import MidSurface
 from aerorib.orient import Orientation, orient
 from aerorib.slicing import slice_layers
@@ -98,9 +98,13 @@ def fill_skin(skin: Solid, passages: list[tuple[str, Passage]], tol: float) -> S
         dist = min(r.distance(p) for r in rings) if rings else 0.0  # centre → surface extérieure
         wall = dist - fill_radius(f)  # paroi restante autour du cylindre de rebouchage
         if wall < _FILL_WALL:
+            tool = f"Ø{2 * fill_radius(f):.2f}"
+            why = (
+                f"le rebouchage ({tool}) dépasserait la surface de {-wall:.2f} mm" if wall <= 0
+                else f"paroi de {wall:.2f} mm entre le rebouchage ({tool}) et la surface"
+            )
             raise PipelineError(
-                f"{name} (x={f.x:.1f}, y={f.y:.1f}, Ø{2 * f.r:.1f}) : paroi de {wall:.2f} mm entre le rebouchage "
-                f"(Ø{2 * fill_radius(f):.2f}) et la surface — rebouchage impossible sans déformer la peau "
+                f"{name} (x={f.x:.1f}, y={f.y:.1f}, Ø{2 * f.r:.1f}) : {why} — rebouchage impossible sans déformer la peau "
                 "(corriger le modèle, ou passages: {mode: link} / {mode: off})"
             )
     filled = skin.fuse(*fill_tools([f for _, f in passages])).clean()
@@ -108,6 +112,27 @@ def fill_skin(skin: Solid, passages: list[tuple[str, Passage]], tol: float) -> S
     if not filled.is_valid or len(solids) != 1:
         raise PipelineError(f"rebouchage invalide ({len(solids)} solide(s), valide={filled.is_valid})")
     return solids[0]
+
+
+def _deeper_lines(cfg: Config, bb, i: int) -> list[tuple[int, float]]:
+    """Plans (famille, c) des niveaux au moins aussi profonds que le niveau i peu profond, de même angle :
+    une plaque peu profonde sur l'un d'eux y est contenue (booléen inutile, faces coplanaires)."""
+    layer = cfg.rib_layers[i]
+    if layer.depth == "full":
+        return []
+
+    def deeper(j: int) -> bool:
+        other = cfg.rib_layers[j]
+        if other.depth == "full":
+            return True
+        return other.depth > layer.depth or (other.depth == layer.depth and j < i)
+
+    return [
+        line
+        for j, other in enumerate(cfg.rib_layers)
+        if j != i and deeper(j) and cfg.rib_angle(other) == cfg.rib_angle(layer)
+        for line in plate_lines(bb, other, cfg.rib_angle(other))
+    ]
 
 
 class Generated(NamedTuple):
@@ -132,10 +157,10 @@ def generate_skin(skin: Solid, spars: list[tuple[str, Solid]], cfg: Config) -> G
         raise PipelineError(str(exc)) from exc
     skin = fill_skin(skin, to_fill, tol)
     plates = []
-    for layer in cfg.rib_layers:
+    for i, layer in enumerate(cfg.rib_layers):
         plates += diamond_plates(
             bb, mid, bores, layer, angle_deg=cfg.rib_angle(layer), gap=cfg.split.gap,
-            slit=cfg.slit_width, min_depth=cfg.split.min_rib_depth,
+            slit=cfg.slit_width, min_depth=cfg.split.min_rib_depth, exclude=_deeper_lines(cfg, bb, i),
         )
     result = skin.cut(*plates, *bore_cut_tools(bores, bb, mid))
     solids = result.solids()

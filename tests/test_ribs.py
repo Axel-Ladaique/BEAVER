@@ -167,3 +167,28 @@ def test_diamond_plates_partial_depth_on_box():
     for p in plates:  # chaque plaque reste dans les 3 mm sous la peau (y = ±10)
         pb = p.bounding_box()
         assert pb.min.Y >= 7.0 - 1e-6 or pb.max.Y <= -7.0 + 1e-6
+
+
+def _naca_half_thickness(x, chord=200.0, t=0.12):
+    xi = np.clip(x / chord, 0.0, 1.0)
+    return 5 * t * chord * (0.2969 * np.sqrt(xi) - 0.1260 * xi - 0.3516 * xi**2 + 0.2843 * xi**3 - 0.1036 * xi**4)
+
+
+def test_partial_depth_edge_follows_a_curved_skin():
+    # plaque à 45° sur une corde NACA 4412-like de 200 mm : l'épaisseur varie fortement près du bord d'attaque.
+    # Le bord intérieur (moins de sommets que d'échantillons) ne doit pas creuser plus de depth + 0,15.
+    d0 = math.sin(math.radians(45))
+    ss = np.linspace(-5, 300, 611)
+    half = _naca_half_thickness(ss * d0)
+    th = 2 * half
+    depth = 3.0
+    (top,) = [p for t, p in plate_profiles_2d(ss, np.zeros_like(ss), th, [], **KW, edge_vertices=16, depth=depth) if t]
+    free = half - depth > KW["gap"] / 2 + 1e-9  # régions non ramenées sur la bande de séparation
+    worst = 0.0
+    for s in np.linspace(0, 280, 1121):
+        i = np.searchsorted(ss, s)
+        if not free[max(i - 12, 0): i + 12].all():  # à ±6 mm d'une zone ramenée : non contrôlé (corde plus courte)
+            continue
+        (seg,) = column(top, s)
+        worst = max(worst, float(np.interp(s, ss, half)) - seg.bounds[1])
+    assert depth - 0.01 < worst <= depth + 0.15

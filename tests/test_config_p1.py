@@ -44,9 +44,10 @@ def test_partial_depth_below_two_lines_rejected():
     load_config(overrides={"rib_layers": [{"depth": 0.9}]})  # limite : 2 × 0,45
 
 
-def test_partial_depth_rejects_other_strings():
-    with pytest.raises(ConfigError):
-        load_config(overrides={"rib_layers": [{"depth": "moitie"}]})
+@pytest.mark.parametrize("depth", ["moitie", True, False, None, [3]])
+def test_partial_depth_rejects_other_values(depth):
+    with pytest.raises(ConfigError, match=r"rib_layers.depth : 'full' ou une profondeur en mm"):
+        load_config(overrides={"rib_layers": [{"depth": depth}]})
 
 
 def test_orientation_axis():

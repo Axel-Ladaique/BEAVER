@@ -95,6 +95,13 @@ class RibLayer(_Strict):
     phase: float = 0.0  # décalage du motif (mm, le long de X)
     samples: int = Field(default=16, ge=4)
 
+    @field_validator("depth", mode="before")
+    @classmethod
+    def _full_or_number(cls, v: object) -> object:
+        if v == "full" or (isinstance(v, (int, float)) and not isinstance(v, bool)):
+            return v
+        raise ValueError(f"rib_layers.depth : 'full' ou une profondeur en mm (reçu {v!r})")
+
     @field_validator("depth")
     @classmethod
     def _positive_depth(cls, v: object) -> object:

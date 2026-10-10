@@ -26,15 +26,17 @@ uv run aerorib check piece.step --orient     # oriente la pièce selon le longer
 
 `run` produit, pour le corps `SKIN`/`Aile`/…, une pièce avec nervures internes en diagonale
 (motif en losange, fentes de 0,1 mm, soit 0,14 mm en tranche à 45°) et des fentes de 0,15 mm vers les
-logements de longerons et les alésages existants. Dans le dossier `--out` :
+logements de longerons. Chaque longeron reçoit aussi une **attache** du côté opposé à sa fente : une fente
+borgne qui part du trou et s'arrête à 1 mm de la peau opposée (`anchor_gap`), pour accrocher le manchon
+aux deux peaux. Les autres alésages de la peau sont **rebouchés** par défaut. Dans le dossier `--out` :
 
 - `<nom>.step` : pièce nervurée, dans le repère d'impression (Z vers le haut, emplanture au plateau) ;
 - `<nom>.stl` ;
 - `<nom>-rapport.html` : rapport vase mode (couches en défaut s'il y en a).
 
 La commande retourne le code d'erreur 1 quand le résultat n'est pas imprimable ; les fichiers sont écrits
-quand même, pour inspection. Elle affiche aussi la liste des trous reliés à la peau
-(`trous reliés : SBAR_14mm_1 (longeron, Ø14.3) ; passage 1 (Ø2.4, x=…, y=…) ; …`, repère d'impression).
+quand même, pour inspection. Elle affiche aussi les trous traités, dans le repère d'impression
+(`trous : SBAR_14mm_1 (longeron, Ø14.3, attache intrados) ; rebouchés : 4 × Ø2.4 (x=…, y=… / …)`).
 
 Défauts principaux : jeu du longeron 0,15 mm, manchon sans nervure 0,8 mm autour de chaque trou,
 bande de séparation 0,6 mm, nervures tous les 30 mm à 45°. Le rapport signale notamment les contours
@@ -53,8 +55,13 @@ Limites de la phase P1 :
 - L'orientation suit l'axe du premier longeron détecté (`orientation: auto`), ou un axe imposé par la config.
 - `check --orient` sert à vérifier un fichier CAO brut (ex. l'export d'origine) : il l'oriente d'abord selon le longeron.
   Le `.step` généré est déjà orienté : le vérifier avec `check` simple.
-- Les alésages existants (ex. joncs carbone) sont reliés automatiquement à la peau par une fente ;
-  désactivable avec `passages: {mode: off}`.
+- Les alésages existants qui ne logent pas un longeron sont rebouchés (`passages: {mode: fill}`, défaut) ;
+  `mode: link` les relie à la peau par une fente (ex. joncs carbone) ; `mode: off` n'y touche pas (le
+  rapport les signale alors comme trous isolés). Un alésage à moins de 0,02 mm de la surface, ou incliné,
+  ne peut pas être rebouché : la génération s'arrête avec un message.
+- Attache du longeron : `spars: {default: {anchor: false}}` la désactive ; `anchor_gap` (défaut 1,0 mm,
+  ≥ largeur de ligne) règle le pont laissé contre la peau opposée. Là où la peau opposée est trop proche
+  du trou (moins de rayon + anchor_gap + 0,2 mm), l'attache est omise.
 - Durée indicative : 1 à 3 minutes pour une aile de 200 × 210 mm (54 s mesurées sur un Mac au repos ;
   2 min 17 s sur le même Mac très chargé) ; variable selon la machine et la complexité.
 - `examples/config-exemple.yaml` montre les réglages principaux (le détail complet est dans la spec §10).

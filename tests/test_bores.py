@@ -1,5 +1,5 @@
 import pytest
-from build123d import Box, Cylinder, Location
+from build123d import Box, Cylinder, GeomType, Location, fillet
 
 from aerorib.config import load_config
 from aerorib.features.bores import Bore, BoreError, bore_cut_tools, find_passages, passage_bores, spar_bores
@@ -57,3 +57,28 @@ def test_bore_cut_tools_counts():
     slit_down = tools[2].bounding_box()
     assert slit_down.max.Y == pytest.approx(3.0) and slit_down.min.Y < -15
     assert slit_down.max.X - slit_down.min.X == pytest.approx(0.1)
+
+
+def inner_corner_fillet_box():
+    # Encoche d'angle : l'arête verticale rentrante (10, 0) est arrondie -> arc partiel concave ∥ Z
+    part = Box(60, 30, 40) - Box(20, 15, 40).moved(Location((20, 7.5, 0)))
+    edges = [e for e in part.edges() if e.geom_type == GeomType.LINE and abs(e.center().X - 10) < 1e-6 and abs(e.center().Y) < 1e-6]
+    assert len(edges) == 1
+    return fillet(edges, 3)
+
+
+def test_partial_arc_is_not_a_passage():
+    assert find_passages(inner_corner_fillet_box(), 5.0) == []
+
+
+def test_counterbored_hole_is_one_passage():
+    part = Box(60, 30, 40) - Cylinder(1.2, 60).moved(Location((10, 3, 0))) - Cylinder(2.5, 5).moved(
+        Location((10, 3, 17.5))
+    )
+    found = find_passages(part, 5.0)
+    assert found == [(10.0, 3.0, 1.2)]
+
+
+def test_spar_without_cylinder_rejected():
+    with pytest.raises(BoreError, match="aucun cylindre"):
+        spar_bores([("SBAR_box", Box(10, 10, 10))], CFG)

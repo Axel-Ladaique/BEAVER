@@ -38,7 +38,9 @@ def spar_bores(spars: list[tuple[str, Solid]], cfg: Config) -> list[Bore]:
     out = []
     for name, solid in spars:
         info = detect_spar(solid)
-        if info is None or abs(info.axis_dir[2]) < limit:
+        if info is None:
+            raise BoreError(f"{name} : aucun cylindre détecté")
+        if abs(info.axis_dir[2]) < limit:
             raise BoreError(f"{name} : longeron non parallèle à l'axe d'impression (pris en charge en P5)")
         s = cfg.spar_settings(name)
         out.append(
@@ -56,21 +58,42 @@ def spar_bores(spars: list[tuple[str, Solid]], cfg: Config) -> list[Bore]:
     return out
 
 
+_TOL = 1e-4  # tolérance de regroupement des faces d'un même alésage (mm)
+_FULL_SPAN = 2 * math.pi * 0.99  # un alésage complet : somme des arcs ≥ 99 % de 2π
+
+
 def find_passages(skin: Solid, max_tilt_deg: float) -> list[tuple[float, float, float]]:
     limit = math.cos(math.radians(max_tilt_deg))
-    found: list[tuple[float, float, float]] = []
+    groups: list[list[float]] = []  # [x, y, r, arc total]
     for face in skin.faces():
         if face.geom_type != GeomType.CYLINDER or face.wrapped.Orientation() != TopAbs_REVERSED:
             continue
-        cyl = BRepAdaptor_Surface(face.wrapped).Cylinder()
+        ad = BRepAdaptor_Surface(face.wrapped)
+        cyl = ad.Cylinder()
         d = cyl.Axis().Direction()
         if abs(d.Z()) < limit:
             continue
         p = cyl.Axis().Location()
-        key = (round(p.X(), 6), round(p.Y(), 6), round(cyl.Radius(), 6))
-        if key not in found:
-            found.append(key)
-    return found
+        x, y, r = p.X(), p.Y(), cyl.Radius()
+        span = ad.LastUParameter() - ad.FirstUParameter()
+        for g in groups:
+            if abs(g[0] - x) < _TOL and abs(g[1] - y) < _TOL and abs(g[2] - r) < _TOL:
+                g[3] += span
+                break
+        else:
+            groups.append([x, y, r, span])
+    # alésages complets seulement (un arc de congé ou de poche n'est pas un passage)
+    full = [g for g in groups if g[3] >= _FULL_SPAN]
+    # alésages concentriques (lamage) : une seule entrée, le plus petit rayon
+    merged: list[list[float]] = []
+    for g in full:
+        for m in merged:
+            if abs(m[0] - g[0]) < _TOL and abs(m[1] - g[1]) < _TOL:
+                m[2] = min(m[2], g[2])
+                break
+        else:
+            merged.append(list(g))
+    return [(round(m[0], 6), round(m[1], 6), round(m[2], 6)) for m in merged]
 
 
 def passage_bores(skin: Solid, cfg: Config, exclude: list[Bore]) -> list[Bore]:

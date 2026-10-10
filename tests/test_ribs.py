@@ -192,3 +192,27 @@ def test_partial_depth_edge_follows_a_curved_skin():
         (seg,) = column(top, s)
         worst = max(worst, float(np.interp(s, ss, half)) - seg.bounds[1])
     assert depth - 0.01 < worst <= depth + 0.15
+
+
+def test_partial_depth_clamped_band_keeps_the_gap():
+    # Là où la nervure de peau est ramenée sur la bande de séparation, les plaques haute et basse doivent
+    # garder entre elles exactement `gap` (mêmes sommets en haut et en bas, comme une plaque full) : simplifiées
+    # séparément, la bande s'amincissait et, au bord d'attaque de l'aile réelle, laissait un col trop fin.
+    d0 = math.sin(math.radians(45))
+    ss = np.linspace(-5, 300, 611)
+    th = 2 * _naca_half_thickness(ss * d0)
+    ym = 0.02 * (ss * d0 - 100) ** 2 / 100 - 2  # surface médiane courbée
+    profs = plate_profiles_2d(ss, ym, th, [], **dict(KW, ytop=30.0, ybot=-30.0), edge_vertices=16, depth=3.0)
+    tops = [p for t, p in profs if t]
+    bots = [p for t, p in profs if not t]
+    clamped = (th / 2 - 3.0 <= KW["gap"] / 2) & (th > KW["gap"] + 2 * KW["min_depth"])
+    checked = 0
+    for s in np.linspace(0, 280, 561):
+        i = np.searchsorted(ss, s)
+        if not clamped[max(i - 2, 0): i + 2].all():
+            continue
+        (a,) = [seg for p in tops for seg in column(p, s)]
+        (b,) = [seg for p in bots for seg in column(p, s)]
+        assert a.bounds[1] - b.bounds[3] >= KW["gap"] - 1e-6, s  # plus large à une transition, jamais plus fine
+        checked += 1
+    assert checked > 10

@@ -64,6 +64,25 @@ def _deep_runs(ss: np.ndarray, deep: np.ndarray) -> list[tuple[float, float]]:
     return runs
 
 
+def _partial_edge_vertices(s_run, y_run, free, grid_edge) -> np.ndarray:
+    """Abscisses des sommets du bord d'une plaque peu profonde sur un tronçon profond.
+
+    Parties ramenées sur la bande de séparation : mêmes sommets qu'une plaque full (`grid_edge` : bornes du
+    tronçon + grille régulière) — la bande reste construite comme celle du réseau principal. Parties libres
+    (à plus de _PARTIAL_EDGE_TOL au-dessus de la bande) : échantillons fins simplifiés à _PARTIAL_EDGE_TOL près,
+    donc jamais sous la bande.
+    """
+    keep = [grid_edge[0], grid_edge[-1]]
+    inside_free = np.zeros(len(grid_edge), dtype=bool)
+    idx = np.flatnonzero(np.diff(np.concatenate([[0], free.astype(int), [0]])))
+    for a, b in zip(idx[::2], idx[1::2]):  # échantillons libres a … b−1
+        seg = list(zip(s_run[a:b], y_run[a:b]))
+        keep += [p[0] for p in (LineString(seg).simplify(_PARTIAL_EDGE_TOL).coords if len(seg) > 1 else seg)]
+        inside_free |= (grid_edge > s_run[a]) & (grid_edge < s_run[b - 1])
+    keep += list(grid_edge[~inside_free])
+    return np.unique(np.asarray(keep, dtype=float))
+
+
 def plate_profiles_2d(
     ss, ym, th, zones, *, gap, min_depth, ytop, ybot, edge_vertices: int | None = None,
     depth: float | None = None,
@@ -86,7 +105,7 @@ def plate_profiles_2d(
     if not runs:
         return []
     simplify = depth is not None and edge_vertices is not None
-    coarse = ss if edge_vertices is None or simplify else np.linspace(ss[0], ss[-1], edge_vertices)
+    coarse = ss if edge_vertices is None else np.linspace(ss[0], ss[-1], edge_vertices)
     out = []
     for top in (True, False):
         far = ytop if top else ybot
@@ -103,10 +122,10 @@ def plate_profiles_2d(
                 # bord lu sur les seuls échantillons profonds du tronçon : aux bornes (entre deux échantillons),
                 # pas de mélange avec l'épaisseur d'un échantillon trop mince (marche, pas de rampe)
                 run = deep & (ss >= lo) & (ss <= hi)
+                if simplify:
+                    free = th[run] / 2 - depth > gap / 2 + _PARTIAL_EDGE_TOL
+                    s_edge = _partial_edge_vertices(ss[run], inner[run], free, s_edge)
                 y_edge = np.interp(s_edge, ss[run], inner[run])
-                if simplify and len(s_edge) > 2:
-                    edge = LineString(list(zip(s_edge, y_edge))).simplify(_PARTIAL_EDGE_TOL)
-                    s_edge, y_edge = (np.asarray(a) for a in zip(*edge.coords))
             pieces.append(Polygon(list(zip(s_edge, y_edge)) + [(hi, far), (lo, far)]).buffer(0))
         poly = unary_union(pieces)
         if zones:

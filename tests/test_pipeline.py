@@ -1,9 +1,17 @@
-import pytest
+import dataclasses
 
+import pytest
+from build123d import Cylinder, Location
+from shapely.geometry import box
+from shapely.ops import unary_union
+
+from aerorib import pipeline
 from aerorib.classify import classify
 from aerorib.config import load_config
-from aerorib.pipeline import run_model
-from aerorib.testing.synthetic import wing_x_bodies
+from aerorib.io_step import NamedBody
+from aerorib.pipeline import PipelineError, generate_skin, run_model, spar_obstruction
+from aerorib.slicing import slice_layers
+from aerorib.testing.synthetic import naca_wing, wing_x_bodies
 
 FAST = load_config(overrides={"material_settings": {"layer_height": 1.0}, "rib_layers": [{"spacing": 20}]})
 
@@ -24,10 +32,60 @@ def test_synthetic_wing_is_printable():
 
 
 def test_spar_outside_skin_is_ignored():
-    from build123d import Cylinder, Location
-
-    from aerorib.io_step import NamedBody
-
     bodies = wing_x_bodies() + [NamedBody(("SBAR_far",), Cylinder(4, 80).moved(Location((40, 200, 0), (0, 90, 0))))]
     run = run_model(classify(bodies, FAST), FAST)
     assert [b.name for b in run.bodies[0].bores if b.cut_hole] == ["SBAR_8"]
+
+
+# --- étendue des longerons et contrôle final d'obstruction (G1) ---------------------------------
+
+# 60 mm et phase 15 : à z = 60, aucune nervure ne passe en x = 30 (position du longeron)
+HALF = load_config(overrides={"rib_layers": [{"spacing": 60, "phase": 15}]})
+
+
+def _half_span_case():
+    wing, camber = naca_wing(chord=100.0, span=80.0)
+    spar = Cylinder(4, 40).moved(Location((30, camber(30), 20)))  # z de 0 à 40 sur 80
+    return wing.solids()[0], spar, camber
+
+
+@pytest.fixture(scope="module")
+def half_span():
+    skin, spar, camber = _half_span_case()
+    result, bores, _ = generate_skin(skin, [("SBAR_demi", spar)], HALF)
+    return skin, spar, camber, result, bores
+
+
+def test_half_span_spar_has_no_slit_beyond_its_end(half_span):
+    _, _, camber, result, bores = half_span
+    (b,) = [b for b in bores if b.cut_hole]
+    assert (b.z0, b.z1) == (pytest.approx(0.0), pytest.approx(40.0))
+    yc = camber(30)
+    probe = box(29.9, yc + 4.6, 30.1, yc + 5.4)  # entre le haut du trou et l'extrados, sur l'axe de la fente
+    low, high = slice_layers(result, [20.0, 60.0])
+    assert not unary_union(low.polygons).contains(probe)  # fente présente sous z1
+    assert unary_union(high.polygons).contains(probe)  # rien au-dessus de z1 + marge
+    assert unary_union(high.polygons).contains(box(29, yc - 1, 31, yc + 1))  # ni trou
+
+
+def test_spar_obstruction(half_span):
+    skin, spar, _, result, _ = half_span
+    assert spar_obstruction(spar, skin) > 1000  # peau pleine : le longeron est dans la matière
+    assert spar_obstruction(spar, result) < 1.0
+    assert spar_obstruction(spar.moved(Location((1, 0, 0))), result) > 1.0
+
+
+def test_offset_spar_is_refused(monkeypatch):
+    skin, spar, _ = _half_span_case()
+    real = pipeline.spar_bores
+    monkeypatch.setattr(pipeline, "spar_bores", lambda *a: [dataclasses.replace(b, x=b.x + 2) for b in real(*a)])
+    monkeypatch.setattr(pipeline, "diamond_plates", lambda *a, **k: [])  # rapide : seul le trou compte
+    with pytest.raises(PipelineError, match="traverse la matière"):
+        generate_skin(skin, [("SBAR_demi", spar)], HALF)
+
+
+def test_tilted_spar_is_refused():
+    skin, _, camber = _half_span_case()
+    spar = Cylinder(4, 40).moved(Location((30, camber(30), 20), (0, 3, 0)))
+    with pytest.raises(PipelineError, match="incliné de 3.0°"):
+        generate_skin(skin, [("SBAR_penche", spar)], HALF)

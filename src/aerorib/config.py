@@ -96,6 +96,7 @@ class BoreSettings(_Strict):
     sleeve: float = Field(default=0.5, gt=0)  # matière gardée autour du trou, sans nervure
     strip: float = Field(default=2.0, gt=0)  # largeur de la bande sans nervure jusqu'à la peau
     slit_side: Literal["top", "bottom"] = "top"  # top = extrados (+Y)
+    slit_width: float = Field(default=0.1, gt=0)  # largeur de la fente trou → peau
 
 
 class PassageSettings(_Strict):
@@ -103,6 +104,7 @@ class PassageSettings(_Strict):
     sleeve: float = Field(default=0.5, gt=0)  # cf. BoreSettings : > 0 obligatoire
     strip: float = Field(default=1.0, gt=0)
     slit_side: Literal["top", "bottom"] = "top"
+    slit_width: float = Field(default=0.1, gt=0)
     max_tilt_deg: float = Field(default=5.0, gt=0, lt=90)
 
 

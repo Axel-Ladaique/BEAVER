@@ -10,7 +10,14 @@ from shapely.geometry import Point, Polygon
 
 from aerorib.classify import Model
 from aerorib.config import Config
-from aerorib.features.bores import Bore, BoreError, bore_cut_tools, passage_bores, spar_bores
+from aerorib.features.bores import (
+    Bore,
+    BoreError,
+    bore_cut_tools,
+    extend_to_existing_bores,
+    passage_bores,
+    spar_bores,
+)
 from aerorib.features.ribs import diamond_plates
 from aerorib.midsurface import MidSurface
 from aerorib.orient import Orientation, orient
@@ -54,26 +61,40 @@ def _spars_inside(skin: Solid, spars: list[tuple[str, Solid]], tol: float) -> li
     return kept
 
 
+MAX_SPAR_OBSTRUCTION = 1.0  # mm³ : au-delà, le longeron ne rentre pas dans la pièce générée
+
+
+def spar_obstruction(spar: Solid, result: Solid) -> float:
+    """Volume (mm³) de matière de la pièce générée occupé par le longeron (0 si le longeron rentre)."""
+    common = spar.intersect(result)
+    return 0.0 if common is None else sum(s.volume for s in common.solids())
+
+
 def generate_skin(skin: Solid, spars: list[tuple[str, Solid]], cfg: Config) -> tuple[Solid, tuple[Bore, ...], int]:
     tol = cfg.validation.tessellation_tol
     bb = skin.bounding_box()
     nx, nz = cfg.split.grid
     mid = MidSurface.from_skin(skin, nx, nz, tol)
+    inside = _spars_inside(skin, spars, tol)
     try:
-        bores = spar_bores(_spars_inside(skin, spars, tol), cfg)
+        bores = extend_to_existing_bores(spar_bores(inside, cfg), skin, cfg)
+        bores += passage_bores(skin, cfg, exclude=bores)
     except BoreError as exc:
         raise PipelineError(str(exc)) from exc
-    bores += passage_bores(skin, cfg, exclude=bores)
     plates = []
     for layer in cfg.rib_layers:
         plates += diamond_plates(
             bb, mid, bores, layer, angle_deg=cfg.rib_angle(layer), gap=cfg.split.gap,
             slit=cfg.slit_width, min_depth=cfg.split.min_rib_depth,
         )
-    result = skin.cut(*plates, *bore_cut_tools(bores, bb, cfg.slit_width))
+    result = skin.cut(*plates, *bore_cut_tools(bores, bb))
     solids = result.solids()
     if not result.is_valid or len(solids) != 1:
         raise PipelineError(f"découpe invalide ({len(solids)} solide(s), valide={result.is_valid})")
+    for name, spar in inside:
+        blocked = spar_obstruction(spar, solids[0])
+        if blocked > MAX_SPAR_OBSTRUCTION:
+            raise PipelineError(f"{name} : le longeron traverse la matière ({blocked:.0f} mm³) — vérifier son axe")
     return solids[0], tuple(bores), len(plates)
 
 

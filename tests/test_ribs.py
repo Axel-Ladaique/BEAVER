@@ -39,8 +39,9 @@ def test_shallow_region_not_cut():
 
 @pytest.mark.parametrize("top_side", [True, False])
 def test_every_column_reaches_the_skin_around_a_bore(top_side):
-    b = Bore("S", 40.0 * math.sin(math.radians(45)), 0.0, 4.0, 0.5, 2.0, 1, True)
-    zones = bore_zones_2d(b, 0.0, math.sin(math.radians(45)))
+    b = Bore("S", 40.0 * math.sin(math.radians(45)), 0.0, 4.0, 0.5, 2.0, 1, True, 0.0, 100.0, 0.1, 0.15)
+    d = math.sin(math.radians(45))
+    zones = bore_zones_2d(b, 0.0, d, d, 0.0, 100.0)
     polys = [p for t, p in plate_profiles_2d(SS, YM, TH, zones, **KW) if t is top_side]
     far = 15.0 if top_side else -15.0
     for s in np.linspace(0, 99, 200):
@@ -61,3 +62,14 @@ def test_diamond_plates_on_box():
     assert plates and all(p.is_valid for p in plates)
     cut = part.cut(*plates)
     assert cut.is_valid and len(cut.solids()) == 1  # la bande de séparation garde la pièce d'un seul tenant
+
+
+def test_bore_zones_limited_to_bore_extent():
+    # trou de z = 0 (débouchant) à z = 30 dans une pièce de 100 mm ; plaque à 45° : z = s·cos45
+    d = math.sin(math.radians(45))
+    b = Bore("S", 40.0 * d, 0.0, 4.0, 0.5, 2.0, 1, True, 0.0, 30.0, 0.1, 0.15)
+    zones = bore_zones_2d(b, 0.0, d, d, 0.0, 100.0)
+    s_hi = (30.0 + 0.15) / d
+    assert max(z.bounds[2] for z in zones) == pytest.approx(s_hi)
+    above = bore_zones_2d(b, 0.0 - 40 * d, d, d, 0.0, 100.0)  # plaque qui croise l'axe à z ≈ 56
+    assert above == []

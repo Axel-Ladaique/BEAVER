@@ -11,19 +11,23 @@ from shapely.geometry import Point, Polygon, box
 from shapely.ops import unary_union
 
 from aerorib.config import RibLayer
-from aerorib.features.bores import Bore
+from aerorib.features.bores import Bore, bore_extent
 from aerorib.midsurface import MidSurface
 
 _FAR = 1e4
 
 
-def bore_zones_2d(b: Bore, c: float, d0: float) -> list[Polygon]:
+def bore_zones_2d(b: Bore, c: float, d0: float, d1: float, zmin: float, zmax: float) -> list[Polygon]:
+    """Zones sans nervure d'un trou dans le repère (s, y) de la plaque (x = c + s·d0, z = zmin + s·d1)."""
     r = b.radius + b.sleeve
     s0 = (b.x - c) / d0
     ellipse = affinity.scale(Point(s0, b.y).buffer(1.0, 32), r / abs(d0), r)
     half = (b.strip / 2) / abs(d0)
     band = box(s0 - half, min(b.y, b.y + _FAR * b.side), s0 + half, max(b.y, b.y + _FAR * b.side))
-    return [ellipse, band]
+    # limitées à l'étendue du trou le long de Z (même marge que les outils de coupe)
+    lo, hi = bore_extent(b, zmin, zmax)
+    extent = box((lo - zmin) / d1, -_FAR, (hi - zmin) / d1, _FAR)
+    return [z for z in (ellipse.intersection(extent), band.intersection(extent)) if not z.is_empty]
 
 
 def plate_profiles_2d(ss, ym, th, zones, *, gap, min_depth, ytop, ybot) -> list[tuple[bool, Polygon]]:
@@ -76,7 +80,7 @@ def diamond_plates(
         for k in range(math.floor((lo - origin) / layer.spacing), math.ceil((hi - origin) / layer.spacing) + 1):
             c = origin + k * layer.spacing
             ym, th = mid.at(c + ss * d0, zmin + ss * d1)
-            zones = [z for b in bores for z in bore_zones_2d(b, c, d0)]
+            zones = [z for b in bores for z in bore_zones_2d(b, c, d0, d1, zmin, zmax)]
             for _, poly in plate_profiles_2d(ss, ym, th, zones, gap=gap, min_depth=min_depth, ytop=ytop, ybot=ybot):
                 plates.append(plate_solid(poly, c, d0, d1, zmin, slit))
     return plates

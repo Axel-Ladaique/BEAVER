@@ -72,16 +72,25 @@ def test_split_part_invalid_cuts():
 
 
 def test_split_part_cut_on_internal_face():
-    # boîte avec une fente borgne se terminant exactement à z = 40 ; coupe à 40
-    part = Box(20, 20, 100, align=(Align.CENTER, Align.CENTER, Align.MIN))
-    part = part - Pos(0, 0, 0) * Box(4, 4, 80, align=(Align.CENTER, Align.CENTER, Align.MIN))
-    part = part - Pos(0, 0, 60) * Box(4, 4, 20, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    # poche borgne ouverte en bas, plafond à z = 40 : la coupe à 40 tombe sur cette face interne
+    part = Box(40, 40, 100, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    part = part - Box(10, 10, 40, align=(Align.CENTER, Align.CENTER, Align.MIN))
     assert part.bounding_box().min.Z == pytest.approx(0, abs=1e-9)
-    try:
-        pieces = split_part(part, [40])
-    except SegmentError:
-        return
+    pieces = split_part(part, [40])
+    # résultat observé : 2 solides valides (OCC coupe proprement sur la face interne)
     assert len(pieces) == 2
-    for p in pieces:
-        assert p.is_valid
-        assert p.bounding_box().min.Z == pytest.approx(0, abs=1e-6)
+    for piece, h in zip(pieces, [40, 60]):
+        assert piece.is_valid
+        assert piece.bounding_box(optimal=True).min.Z == pytest.approx(0, abs=1e-6)
+        assert piece.bounding_box(optimal=True).size.Z == pytest.approx(h, abs=1e-3)
+
+
+def test_split_part_min_segment_and_non_numeric():
+    part = ribbed_wing()
+    for cuts in ([3], [97], [40, 45], ["a"], [None]):
+        with pytest.raises(SegmentError):
+            split_part(part, cuts)
+
+
+def test_plan_cuts_epsilon_consistent():
+    assert len(plan_cuts(490.0000001, 245)) == 1  # 2 tronçons, pas d'erreur parasite

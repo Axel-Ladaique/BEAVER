@@ -15,11 +15,15 @@ MIN_SEGMENT = 10.0  # mm : longueur minimale d'un tronçon
 
 
 def plan_cuts(height: float, max_height: float, cuts_at: list[float] | None = None) -> list[float]:
-    """Hauteurs de coupe internes (vide si la pièce tient d'un seul tenant)."""
+    """Hauteurs de coupe internes (vide si la pièce tient d'un seul tenant).
+
+    Chaque tronçon doit mesurer au moins MIN_SEGMENT mm : une hauteur utile
+    < 2·MIN_SEGMENT ne permet donc de rien découper.
+    """
     if not (math.isfinite(height) and math.isfinite(max_height)) or height <= 0 or max_height <= 0:
         raise SegmentError(f"hauteur de pièce ({height}) ou hauteur utile ({max_height}) invalide")
     if cuts_at is None:
-        if height <= max_height:
+        if height <= max_height * (1 + 1e-9):
             return []
         n = math.ceil(height / max_height - 1e-9)
         cuts = [height * i / n for i in range(1, n)]
@@ -33,7 +37,7 @@ def plan_cuts(height: float, max_height: float, cuts_at: list[float] | None = No
             raise SegmentError(f"coupes en double : {', '.join(f'{c:g}' for c in dups)}")
     bounds = [0.0, *cuts, float(height)]
     for a, b in zip(bounds, bounds[1:]):
-        if b - a > max_height + 1e-9:
+        if b - a > max_height * (1 + 1e-9):
             raise SegmentError(f"tronçon de {b - a:g} mm > hauteur utile {max_height:g} mm")
         if b - a < MIN_SEGMENT - 1e-9:
             raise SegmentError(f"tronçon de {b - a:g} mm trop court (minimum {MIN_SEGMENT:g} mm)")
@@ -41,14 +45,25 @@ def plan_cuts(height: float, max_height: float, cuts_at: list[float] | None = No
 
 
 def split_part(solid: Shape, cuts: list[float]) -> list[Solid]:
-    """Coupe par plans z = cte ; chaque tronçon est ramené à min Z = 0 (emplanture → saumon)."""
+    """Coupe par plans z = cte ; chaque tronçon est ramené à min Z = 0 (emplanture → saumon).
+
+    Applique MIN_SEGMENT mais pas la hauteur utile : l'appelant fournit des coupes déjà planifiées
+    (voir plan_cuts).
+    """
     bb = solid.bounding_box(optimal=True)
-    cuts = sorted(float(c) for c in cuts)
+    try:
+        cuts = sorted(float(c) for c in cuts)
+    except (TypeError, ValueError) as exc:
+        raise SegmentError(f"coupes non numériques : {cuts!r}") from exc
     for c in cuts:
         if not math.isfinite(c) or not bb.min.Z < c < bb.max.Z:
             raise SegmentError(f"coupe à z = {c:g} mm hors de la pièce ({bb.min.Z:g} à {bb.max.Z:g} mm)")
     if any(a == b for a, b in zip(cuts, cuts[1:])):
         raise SegmentError("coupes en double")
+    edges = [bb.min.Z, *cuts, bb.max.Z]
+    for a, b in zip(edges, edges[1:]):
+        if b - a < MIN_SEGMENT - 1e-9:
+            raise SegmentError(f"tronçon de {b - a:g} mm trop court (minimum {MIN_SEGMENT:g} mm)")
     pad = 10.0
     sx, sy = bb.size.X + 2 * pad, bb.size.Y + 2 * pad
     cx, cy = (bb.min.X + bb.max.X) / 2, (bb.min.Y + bb.max.Y) / 2

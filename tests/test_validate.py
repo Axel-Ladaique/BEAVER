@@ -1,5 +1,9 @@
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
+
 import pytest
 
+from aerorib import validate as validate_mod
 from aerorib.config import load_config
 from aerorib.testing.synthetic import broken_wing, naca_wing, ribbed_wing
 from aerorib.validate import validate
@@ -59,13 +63,62 @@ def test_narrow_slit_is_only_a_warning():
     assert {i.check for i in report.warnings} == {"narrow_slit"}
 
 
-def test_parallel_and_serial_agree():
-    part = broken_wing("hole")
-    heights = [1.0 + i * 1.5 for i in range(66)]  # ≥ PARALLEL_MIN_LAYERS → parallèle
+@pytest.fixture(scope="module")
+def hole_layers():
+    heights = [1.0 + i * 0.45 for i in range(200)]  # ≥ PARALLEL_MIN_LAYERS, espacées sur l'envergure
+    assert len(heights) >= validate_mod.PARALLEL_MIN_LAYERS
+    return broken_wing("hole"), heights
+
+
+def _serial(monkeypatch, part, heights):
+    with monkeypatch.context() as m:
+        m.setattr(validate_mod, "PARALLEL_MIN_LAYERS", 10**9)
+        return validate(part, CFG, heights=heights)
+
+
+def test_parallel_and_serial_agree(monkeypatch, hole_layers):
+    part, heights = hole_layers
+    pools = []
+
+    class SpyPool(ProcessPoolExecutor):
+        def __init__(self, *a, **k):
+            pools.append(self)
+            super().__init__(*a, **k)
+
+    monkeypatch.setattr(validate_mod, "ProcessPoolExecutor", SpyPool)
     par = validate(part, CFG, heights=heights)
-    ser = validate(part, CFG, heights=heights[:10])
-    assert not par.ok and not ser.ok
-    assert len(par.errors) == 66 and len(ser.errors) == 10
+    assert len(pools) == 1  # le pool a bien servi
+    ser = _serial(monkeypatch, part, heights)
+    assert len(pools) == 1  # … et pas en série
+    assert not par.ok and len(par.errors) == 200
+    assert par.issues == ser.issues and par.stats == ser.stats
+
+
+class _NoProcesses:
+    def __init__(self, *a, **k):
+        raise OSError("processus indisponibles")
+
+
+class _BrokenPool:
+    def __init__(self, *a, **k):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def map(self, *a, **k):
+        raise BrokenProcessPool("un processus est mort")
+
+
+@pytest.mark.parametrize("pool", [_NoProcesses, _BrokenPool])
+def test_parallel_failure_falls_back_to_serial(monkeypatch, hole_layers, pool):
+    part, heights = hole_layers
+    ser = _serial(monkeypatch, part, heights)
+    monkeypatch.setattr(validate_mod, "ProcessPoolExecutor", pool)
+    assert validate(part, CFG, heights=heights).issues == ser.issues
 
 
 def test_thin_neck_detected_by_validate():

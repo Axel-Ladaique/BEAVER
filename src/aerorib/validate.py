@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -18,7 +19,8 @@ Severity = Literal["error", "warning"]
 MAX_FAILED_LAYERS = 20
 # Une fente détectée doit avoir une aire > min_width * NARROW_AREA_FACTOR (sinon : bruit de buffer).
 NARROW_AREA_FACTOR = 0.5
-PARALLEL_MIN_LAYERS = 64
+# en dessous, le coût de démarrage des processus (spawn sous macOS/Windows) dépasse le gain
+PARALLEL_MIN_LAYERS = 200
 
 
 @dataclass(frozen=True)
@@ -158,6 +160,16 @@ def _check_layer(args) -> list[Issue]:
     return found
 
 
+def _run_checks(jobs: list) -> list[list[Issue]]:
+    if len(jobs) >= PARALLEL_MIN_LAYERS:
+        try:
+            with ProcessPoolExecutor() as pool:
+                return list(pool.map(_check_layer, jobs, chunksize=16))
+        except (BrokenProcessPool, OSError):
+            pass  # processus indisponibles ou morts : repli en série, même résultat
+    return [_check_layer(job) for job in jobs]
+
+
 def validate(
     shape: Shape,
     cfg: Config,
@@ -187,11 +199,7 @@ def validate(
         )
         for i, layer in enumerate(layers)
     ]
-    if len(jobs) >= PARALLEL_MIN_LAYERS:
-        with ProcessPoolExecutor() as pool:
-            per_layer = list(pool.map(_check_layer, jobs, chunksize=16))
-    else:
-        per_layer = [_check_layer(job) for job in jobs]
+    per_layer = _run_checks(jobs)
     for layer, found in zip(layers, per_layer):
         if any(x.severity == "error" for x in found) and len(failed) < MAX_FAILED_LAYERS:
             failed[layer.z] = layer.polygons

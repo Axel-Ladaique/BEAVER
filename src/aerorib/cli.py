@@ -266,3 +266,15 @@ def run(
         _fail(f"erreur interne : {type(exc).__name__}: {exc} (merci de transmettre le fichier STEP)")
     if not result.ok:
         raise typer.Exit(1)
+
+
+@app.command("gui")
+def gui(
+    dossier: Path = typer.Option(Path("projets"), "--dossier", help="Dossier racine des projets."),
+    port: int = typer.Option(0, "--port", help="Port d'écoute (0 = port libre)."),
+    sans_navigateur: bool = typer.Option(False, "--sans-navigateur", help="N'ouvre pas le navigateur."),
+) -> None:
+    """Lance l'interface graphique locale dans le navigateur."""
+    from aerorib.gui import server
+
+    server.run_gui(dossier, port, not sans_navigateur)

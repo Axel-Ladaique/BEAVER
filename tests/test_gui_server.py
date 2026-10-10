@@ -1,6 +1,9 @@
+import errno
 import socket
 import time
 
+import pytest
+from fastapi import APIRouter
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
@@ -93,17 +96,53 @@ def test_port_occupe(tmp_path, monkeypatch):
 
 
 def test_route_api_ajoutee_protegee(tmp_path):
-    a = create_app(tmp_path, TOKEN)
+    extra = APIRouter(prefix="/api")
 
+    @extra.get("/autre")
     def autre():
         return {"x": 1}
 
-    a.add_api_route("/api/autre", autre)
-    a.router.routes.insert(0, a.router.routes.pop())  # avant le montage statique
-
-    c = TestClient(a, base_url="http://127.0.0.1")
+    c = TestClient(create_app(tmp_path, TOKEN, routers=[extra]), base_url="http://127.0.0.1")
     assert c.get("/api/autre").status_code == 401
     assert c.get("/api/autre", headers={"X-AeroRib-Token": TOKEN}).status_code == 200
+
+
+def test_toutes_les_routes_api_exigent_le_jeton(tmp_path):
+    extra = APIRouter(prefix="/api")
+    extra.add_api_route("/autre", lambda: {})
+    app = create_app(tmp_path, TOKEN, routers=[extra])
+    c = TestClient(app, base_url="http://127.0.0.1")
+    # FastAPI récent enveloppe les routeurs inclus : on déplie pour atteindre les routes réelles
+    toutes = [
+        sub for r in app.routes for sub in (r.original_router.routes if hasattr(r, "original_router") else [r])
+    ]
+    chemins = [r for r in toutes if getattr(r, "path", "").startswith("/api")]
+    assert len(chemins) >= 8
+    for r in chemins:
+        path = r.path.replace("{nom}", "x")
+        for method in r.methods - {"HEAD", "OPTIONS"}:
+            assert c.request(method, path).status_code == 401, (method, r.path)
+
+
+def test_montage_statique_en_dernier(tmp_path):
+    app = create_app(tmp_path, TOKEN)
+    assert app.routes[-1].path == ""  # Mount("/") : après toutes les routes /api
+
+
+def test_bind_erreur_autre_que_port_occupe(monkeypatch):
+    class Boom:
+        def setsockopt(self, *a):
+            pass
+
+        def bind(self, addr):
+            raise OSError(errno.EACCES, "Permission denied")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(server.socket, "socket", lambda *a, **k: Boom())
+    with pytest.raises(OSError, match="impossible d'ouvrir le port 80 : Permission denied"):
+        server.bind_socket(80)
 
 
 def test_api_inconnue_sans_jeton(tmp_path):

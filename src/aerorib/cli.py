@@ -254,7 +254,7 @@ def run(
                     open_in_bambu(project)
                 except BambuError as exc:
                     typer.echo(f"  ⚠ {exc}")
-    except PipelineError as exc:
+    except (PipelineError, BambuError) as exc:
         _fail(str(exc))
     except typer.Exit:
         raise

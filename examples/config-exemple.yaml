@@ -33,4 +33,12 @@ passages:
   slit_width: 0.15          # fente trou → peau (≥ 1,1 × seuil de fermeture du slicer 0,10)
 output:
   dir: out
-  formats: [step, stl]
+  formats: [step, stl]       # step | stl | 3mf (projet Bambu Studio, voir --3mf)
+segment:
+  mode: auto                # auto : tronçons (un par plateau) si la pièce dépasse la hauteur utile ; off
+  margin: 5                 # mm retirés de la hauteur d'impression du gabarit
+  # cuts_at: [80, 160]      # altitudes de coupe forcées (mm depuis l'emplanture)
+  # max_height: 120         # force la hauteur utile (sinon hauteur du gabarit − marge)
+bambu:
+  # template: chemin.3mf    # gabarit Bambu Studio ; défaut = celui du profil matière
+  open: false               # ouvrir le projet dans Bambu Studio

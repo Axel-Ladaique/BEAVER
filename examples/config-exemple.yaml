@@ -11,14 +11,14 @@ rib_layers:
     pattern: diamond
     spacing: 30             # mm entre nervures parallèles
     # angle: 45             # défaut = min(45, surplomb max de la matière)
-# Réglages des longerons (défauts : clearance 0.15, sleeve 0.7, strip 2.0, slit_side top, slit_width 0.15).
+# Réglages des longerons (défauts : clearance 0.15, sleeve 0.8, strip 2.0, slit_side top, slit_width 0.15).
 # Laissé en commentaire : une clé `spars:` active ne serait plus égale aux défauts.
 # spars:
-#   default: {clearance: 0.15, sleeve: 0.7, strip: 2.0, slit_side: top, slit_width: 0.15}
+#   default: {clearance: 0.15, sleeve: 0.8, strip: 2.0, slit_side: top, slit_width: 0.15}
 #   SBAR_arriere: {slit_side: bottom}
 passages:
   mode: auto                # relie à la peau les alésages existants (ex. joncs) ; off pour désactiver
-  sleeve: 0.7               # matière gardée autour du trou (≥ largeur de ligne)
+  sleeve: 0.8               # matière gardée autour du trou (≥ largeur de ligne)
   strip: 1.0
   slit_side: top
   slit_width: 0.15          # fente trou → peau (≥ 1,1 × seuil de fermeture du slicer 0,10)

@@ -106,7 +106,7 @@ class BoreSettings(_Strict):
     clearance: float = Field(default=0.15, ge=0)  # jeu radial autour du longeron
     # strictement > 0 : le manchon est le seul pont entre les deux côtés du trou sur la plaque opposée à la fente
     # ≥ largeur de ligne du preset (vérifié par Config)
-    sleeve: float = Field(default=0.7, gt=0)  # matière gardée autour du trou, sans nervure
+    sleeve: float = Field(default=0.8, gt=0)  # matière gardée autour du trou, sans nervure
     strip: float = Field(default=2.0, gt=0)  # largeur de la bande sans nervure jusqu'à la peau
     slit_side: Literal["top", "bottom"] = "top"  # top = extrados (+Y)
     slit_width: float = Field(default=0.15, gt=0)  # largeur de la fente trou → peau (≥ 1,1 × min_slit_width)
@@ -114,7 +114,7 @@ class BoreSettings(_Strict):
 
 class PassageSettings(_Strict):
     mode: Literal["auto", "off"] = "auto"
-    sleeve: float = Field(default=0.7, gt=0)  # cf. BoreSettings : ≥ largeur de ligne
+    sleeve: float = Field(default=0.8, gt=0)  # cf. BoreSettings : ≥ largeur de ligne
     strip: float = Field(default=1.0, gt=0)
     slit_side: Literal["top", "bottom"] = "top"
     slit_width: float = Field(default=0.15, gt=0)

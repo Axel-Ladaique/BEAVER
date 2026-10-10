@@ -82,7 +82,7 @@ def test_widths_below_line_width_rejected(overrides, match):
 
 def test_p1_sleeve_defaults():
     cfg = load_config()
-    assert cfg.spar_settings("SBAR").sleeve == 0.7 and cfg.passages.sleeve == 0.7
+    assert cfg.spar_settings("SBAR").sleeve == 0.8 and cfg.passages.sleeve == 0.8
 
 
 def test_slit_defaults_survive_slicer_closing():

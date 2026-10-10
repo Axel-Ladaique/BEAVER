@@ -36,7 +36,7 @@ La commande retourne le code d'erreur 1 quand le résultat n'est pas imprimable 
 quand même, pour inspection. Elle affiche aussi la liste des trous reliés à la peau
 (`trous reliés : SBAR_14mm_1 (longeron, Ø14.3) ; passage 1 (Ø2.4, x=…, y=…) ; …`, repère d'impression).
 
-Défauts principaux : jeu du longeron 0,15 mm, manchon sans nervure 0,7 mm autour de chaque trou,
+Défauts principaux : jeu du longeron 0,15 mm, manchon sans nervure 0,8 mm autour de chaque trou,
 bande de séparation 0,6 mm, nervures tous les 30 mm à 45°. Le rapport signale notamment les contours
 non uniques, la **matière plus fine qu'une largeur de ligne** (0,45 mm) et les fentes que le slicer
 refermerait (< 0,10 mm).

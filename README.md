@@ -86,7 +86,7 @@ uv run aerorib run piece.step -c examples/config-doubles-nervures.yaml --out out
   pas selon la normale à la peau ; un peu moins profond là où la peau est pentue, près du bord d'attaque).
   Là où la pièce est plus mince que `2 × depth + gap` (6,6 mm ici), la nervure va jusqu'à la bande de
   séparation, comme une nervure principale.
-- `depth` doit valoir au moins 2 × la largeur de ligne (0,9 mm en `pla_aero`), sinon les deux murs de la
+- `depth` doit valoir au moins 2 × la largeur de ligne (2 × 0,42 = 0,84 mm en `pla_aero`), sinon les deux murs de la
   nervure se confondent.
 - `phase: 5` décale le motif d'un demi-pas : les nervures fines tombent entre les principales (une nervure
   fine qui tomberait exactement sur une principale n'est pas recoupée).
@@ -116,6 +116,9 @@ uv run aerorib run piece.step -c examples/config-2-troncons.yaml --3mf --out out
   - `margin` : marge retirée de la hauteur du gabarit (défaut 5 mm) ;
   - `cuts_at: [z, …]` : altitudes de coupe imposées (mm, emplanture = 0) ;
   - `mode: off` : pas de découpe.
+- Sorties d'une pièce découpée en plusieurs tronçons : `<nom>-t1.stl`, `<nom>-t2.stl`… (un STL par tronçon,
+  emplanture = t1) ; le `.step` contient tous les tronçons ; chaque tronçon est posé à z = 0 ; le `.3mf` a
+  un plateau par tronçon. Sans découpe : `<nom>.stl` et `<nom>.step` seuls.
 - Si un tronçon dépasse l'emprise du plateau, ou si le gabarit est introuvable, le message d'erreur le dit ;
   les autres anomalies (repli sur la taille de l'imprimante, volume limite) sortent en avertissements.
 - Autre gabarit (autre imprimante, autre réglage) : dans Bambu Studio, créer un projet avec la bonne imprimante,
@@ -132,6 +135,8 @@ uv run aerorib run piece.step -c examples/config-2-troncons.yaml --3mf --out out
 paramètres géométriques de la matière (largeur de ligne, hauteur de couche, densité, seuils de fente,
 épaisseur des nervures, bande de séparation, réseau de nervures, longerons, alésages) et le **gabarit
 Bambu** (`bambu.template`). Ordre de priorité : défauts du code < profil < config projet (`-c`) < options CLI.
+Une clé posée dans la config de la pièce l'emporte sur le profil : `examples/config-exemple.yaml` ne pose
+activement aucune clé du profil (tout y est commenté), sinon il écraserait le réglage matière.
 
 Où ils vivent (priorité croissante) :
 

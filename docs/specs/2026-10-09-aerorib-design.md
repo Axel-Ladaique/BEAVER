@@ -151,7 +151,7 @@ Repère : après orientation, Z est l'axe de construction.
 
 ### 7.7 Découpe en tronçons (`segment`)
 - Mise en œuvre en P2 : voir `docs/plans/2026-10-10-p2-bambu-troncons.md` (découpe après génération des nervures, un plateau Bambu par tronçon).
-- Faite **avant** la génération des features.
+- Faite **après** la génération des features (motif et longerons continus d'un tronçon à l'autre), sur la pièce complète.
 - Plans perpendiculaires à Z. Nombre minimal de tronçons tels que hauteur ≤ Z max et emprise ≤ XY max, avec une marge (défaut 5 mm).
 - Positions optimisées pour éviter les zones `NORIB`, les sections trop petites et les variations brusques de section. Forçage possible par `cuts_at: [...]` ou par des corps `CUT_*`.
 - Chaque tronçon est posé sur sa face de coupe. Les longerons traversent les joints.

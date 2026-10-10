@@ -1,19 +1,20 @@
-# Exemple de configuration AeroRib — toutes les valeurs ci-dessous sont les défauts du profil pla_aero
+# Exemple de configuration AeroRib — les réglages géométriques sont ceux du profil pla_aero (commentés ci-dessous)
 # (src/aerorib/profiles/ ; `aerorib profils` les liste, `aerorib profils --copier pla_aero` pour les éditer).
 material: pla_aero          # pla_aero | asa_aero
 printer: p1s
-slit_width: 0.1             # épaisseur des nervures (mm) ; vue 0,14 en tranche à 45°
 orientation: auto           # auto (axe du 1er longeron) ou {axis: [1, 0, 0]}
-split:
-  gap: 0.6                  # bande de séparation entre nervures hautes et basses
-  min_rib_depth: 1.0        # pas de nervure plus courte que ça (bords d'attaque / fuite)
-rib_layers:
-  - name: principal
-    pattern: diamond
-    spacing: 30             # mm entre nervures parallèles
-    # angle: 45             # défaut = min(45, surplomb max de la matière)
-    # depth: full           # full = jusqu'à la bande de séparation ; un nombre (mm) = seulement près de la peau
-    # phase: 0              # décalage du motif (mm)
+# Valeurs du profil matière ; décommenter une clé pour changer la pièce (une clé posée ici l'emporte sur le profil).
+# slit_width: 0.1             # épaisseur des nervures (mm) ; vue 0,14 en tranche à 45°
+# split:
+#   gap: 0.6                  # bande de séparation entre nervures hautes et basses
+#   min_rib_depth: 1.0        # pas de nervure plus courte que ça (bords d'attaque / fuite)
+# rib_layers:
+#   - name: principal
+#     pattern: diamond
+#     spacing: 30             # mm entre nervures parallèles
+#     # angle: 45             # défaut = min(45, surplomb max de la matière)
+#     # depth: full           # full = jusqu'à la bande de séparation ; un nombre (mm) = seulement près de la peau
+#     # phase: 0              # décalage du motif (mm)
 # Doubles nervures (voir config-doubles-nervures.yaml) : ajouter un second niveau, fin et peu profond,
 # qui tient la peau ; phase = un demi-pas pour que ses nervures tombent entre les principales.
 #  - {name: peau, spacing: 10, depth: 3, phase: 5}   # depth ≥ 2 × largeur de ligne (0,84 mm)
@@ -21,17 +22,17 @@ rib_layers:
 # anchor true, anchor_gap 1.0). L'attache (anchor) est une fente borgne du trou vers la peau opposée à la
 # fente, arrêtée à anchor_gap (≥ largeur de ligne) de la peau : elle accroche le manchon des deux côtés.
 # Les valeurs par défaut viennent du profil matière (clé spars.default) ; ne décommentez que pour les changer.
-# spars:
+# spars:  # valeurs du profil ; décommenter pour changer
 #   default: {clearance: 0.15, sleeve: 0.8, strip: 2.0, slit_side: top, slit_width: 0.15, anchor: true, anchor_gap: 1.0}
 #   SBAR_arriere: {slit_side: bottom}
-passages:
-  mode: fill                # alésages hors longerons : fill = rebouchés ; link = reliés à la peau par une fente
-                            # (ex. joncs) ; off = laissés tels quels (le validateur signale les trous isolés)
-  # réglages ci-dessous : mode link seulement
-  sleeve: 0.8               # matière gardée autour du trou (≥ largeur de ligne)
-  strip: 1.0
-  slit_side: top
-  slit_width: 0.15          # fente trou → peau (≥ 1,1 × seuil de fermeture du slicer 0,10)
+# passages:
+#   mode: fill                # alésages hors longerons : fill = rebouchés ; link = reliés à la peau par une fente
+#                             # (ex. joncs) ; off = laissés tels quels (le validateur signale les trous isolés)
+#   # réglages ci-dessous : mode link seulement
+#   sleeve: 0.8               # matière gardée autour du trou (≥ largeur de ligne)
+#   strip: 1.0
+#   slit_side: top
+#   slit_width: 0.15          # fente trou → peau (≥ 1,1 × seuil de fermeture du slicer 0,10)
 output:
   dir: out
   formats: [step, stl]       # step | stl | 3mf (projet Bambu Studio, voir --3mf)

@@ -97,7 +97,7 @@ def plate_profiles_2d(
 
     `depth` (mm, None = full) : la plaque ne descend qu'à `depth` sous la peau (y_peau = ym ± th/2),
     sans jamais dépasser la bande de séparation. Profondeur mesurée selon Y (épaisseur), pas selon la
-    normale à la peau : écart en 1/cos(pente de la peau), négligeable sur un profil d'aile.
+    normale à la peau : écart de l'ordre de depth·(1 − cos(pente de la peau)), négligeable sur un profil d'aile.
     """
     ss, ym, th = (np.asarray(a, dtype=float) for a in (ss, ym, th))
     deep = th > gap + 2 * min_depth

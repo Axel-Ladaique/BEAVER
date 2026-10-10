@@ -97,3 +97,14 @@ def test_depth_transition_is_a_step_not_a_ramp():
         (seg,) = column(top, s)
         assert seg.bounds[1] == pytest.approx(0.3)
     assert len(top.exterior.coords) <= 16 + 4  # le bord reste échantillonné grossièrement (coût booléen)
+
+
+@pytest.mark.parametrize("anchor_gap, below", [(0.0, False), (1.0, True)])
+def test_strip_on_both_sides_when_anchored(anchor_gap, below):
+    # plaque à 45°, trou en s0 = 40
+    d = math.sin(math.radians(45))
+    b = Bore("S", 40.0 * d, 0.0, 4.0, 0.5, 2.0, 1, True, 0.0, 100.0, 0.15, 0.15, anchor_gap)
+    zones = bore_zones_2d(b, 0.0, d, d, 0.0, 100.0, slit=0.1)
+    # bande sans nervure au-dessus (côté fente) toujours ; en dessous (côté attache) seulement si ancré
+    assert any(z.contains(Point(40.0, 10.0)) for z in zones)
+    assert any(z.contains(Point(40.0, -10.0)) for z in zones) is below

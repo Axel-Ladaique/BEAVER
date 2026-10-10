@@ -2,9 +2,13 @@ import pytest
 from build123d import Align, Box, Cylinder, GeomType, Location, fillet
 
 from aerorib.config import load_config
+from aerorib.midsurface import MidSurface
+import numpy as np
+
 from aerorib.features.bores import (
     Bore,
     BoreError,
+    anchor_tools,
     bore_cut_tools,
     bore_extent,
     extend_to_existing_bores,
@@ -14,11 +18,12 @@ from aerorib.features.bores import (
 )
 
 CFG = load_config()
+LINK = load_config(overrides={"passages": {"mode": "link"}})
 
 
 def bore(name="S", x=0.0, y=0.0, radius=7.15, *, sleeve=0.7, strip=2.0, side=1, cut_hole=True, z0=-20.0, z1=20.0,
-         slit=0.15, clearance=0.15):
-    return Bore(name, x, y, radius, sleeve, strip, side, cut_hole, z0, z1, slit, clearance)
+         slit=0.15, clearance=0.15, anchor_gap=0.0):
+    return Bore(name, x, y, radius, sleeve, strip, side, cut_hole, z0, z1, slit, clearance, anchor_gap)
 
 
 def drilled_box():
@@ -57,13 +62,15 @@ def test_tilted_spar_rejected():
 
 def test_passages_exclude_spar_bore_and_mode_off():
     spar = bore("SBAR", -15.0, 0.0)
-    ps = passage_bores(drilled_box(), CFG, exclude=[spar])
+    ps = passage_bores(drilled_box(), LINK, exclude=[spar])
     assert [(p.name, p.x, p.y, p.radius, p.cut_hole, p.strip, p.clearance) for p in ps] == [
         ("passage 1", 10.0, 3.0, 1.2, False, 1.0, 0.0)
     ]
     assert ps[0].slit == 0.15
     assert (ps[0].z0, ps[0].z1) == (pytest.approx(-20.0), pytest.approx(20.0))
     assert passage_bores(drilled_box(), load_config(overrides={"passages": {"mode": "off"}}), []) == []
+    assert passage_bores(drilled_box(), CFG, []) == []  # défaut fill : rebouchés, pas de fente
+    assert all(p.anchor_gap == 0.0 for p in ps)  # pas d'attache pour un passage
 
 
 def test_bore_cut_tools_counts():
@@ -115,7 +122,7 @@ def test_tiny_tilt_within_clearance_accepted_at_mid_height():
 def test_tilted_passage_rejected():
     part = Box(60, 30, 40) - Cylinder(1.2, 80).moved(Location((10, 3, 0), (0, 2, 0)))
     with pytest.raises(BoreError, match="passage 1.*incliné de 2.0°"):
-        passage_bores(part, CFG, exclude=[])
+        passage_bores(part, LINK, exclude=[])
 
 
 def inner_corner_fillet_box():
@@ -168,7 +175,7 @@ def test_coaxial_bore_not_linked_when_smaller_or_apart():
     (s,) = spar_bores([("SBAR", spar)], CFG)
     (b,) = extend_to_existing_bores([s], skin, CFG)
     assert (b.z0, b.z1) == (pytest.approx(0.0), pytest.approx(40.0))
-    (p,) = passage_bores(skin, CFG, exclude=[b])  # reste un passage ordinaire, avec sa fente
+    (p,) = passage_bores(skin, LINK, exclude=[b])  # reste un passage ordinaire, avec sa fente
     assert (p.x, p.y, p.radius, p.cut_hole) == (10.0, 0.0, 1.0, False)
     assert (p.z0, p.z1) == (pytest.approx(60.0), pytest.approx(100.0))
 
@@ -180,10 +187,69 @@ def test_linked_bores_must_touch_the_spar_range():
     s = bore("SBAR", 10.0, 0.0, 4.15, z0=0.0, z1=40.0)
     (b,) = extend_to_existing_bores([s], apart, CFG)
     assert (b.z0, b.z1) == (0.0, 40.0)
-    assert len(passage_bores(apart, CFG, exclude=[b])) == 1
+    assert len(passage_bores(apart, LINK, exclude=[b])) == 1
     chain = (
         base - Cylinder(4, 20).moved(Location((10, 0, 50))) - Cylinder(4.5, 40).moved(Location((10, 0, 80)))
     ).solids()[0]
     (c,) = extend_to_existing_bores([s], chain, CFG)
     assert (c.z0, c.z1) == (pytest.approx(0.0), pytest.approx(100.0))
-    assert passage_bores(chain, CFG, exclude=[c]) == []
+    assert passage_bores(chain, LINK, exclude=[c]) == []
+
+
+# --- attache côté opposé (P1b) ------------------------------------------------------------------
+
+
+def test_spar_bore_anchor_from_settings():
+    (b,) = spar_bores([("SBAR_14", Cylinder(7, 100))], CFG)
+    assert b.anchor_gap == 1.0
+    off = load_config(overrides={"spars": {"default": {"anchor": False}}})
+    (b,) = spar_bores([("SBAR_14", Cylinder(7, 100))], off)
+    assert b.anchor_gap == 0.0
+
+
+def _flat_mid(thick_at_z0=20.0, thick_at_z1=20.0, ymid=0.0):
+    xs, zs = np.linspace(-30, 30, 7), np.linspace(-20, 20, 5)
+    th = np.tile(np.linspace(thick_at_z0, thick_at_z1, 5), (7, 1))
+    return MidSurface(xs, zs, np.full((7, 5), ymid), th)
+
+
+BB = Box(60, 30, 40).bounding_box()
+
+
+@pytest.mark.parametrize("side, y_end", [(1, -9.0), (-1, 9.0)])
+def test_anchor_tool_stops_at_gap_from_opposite_skin(side, y_end):
+    b = bore(x=5.0, y=1.0, radius=4.0, side=side, z0=-10.0, z1=10.0, anchor_gap=1.0)
+    (t,) = anchor_tools(b, _flat_mid(), BB)
+    tb = t.bounding_box()
+    assert (tb.min.X, tb.max.X) == (pytest.approx(4.925), pytest.approx(5.075))  # largeur = fente du trou
+    lo, hi = sorted((1.0, y_end))  # du centre du trou jusqu'à 1 mm de la peau opposée (±10)
+    assert (tb.min.Y, tb.max.Y) == (pytest.approx(lo), pytest.approx(hi))
+    assert (tb.min.Z, tb.max.Z) == (pytest.approx(-10.15), pytest.approx(10.15))  # étendue du trou
+
+
+def test_anchor_tool_follows_the_skin_and_skips_where_no_room():
+    # épaisseur 30 → 6 mm en z : la peau opposée (y = −th/2) remonte ; pas d'attache quand th/2 < r + gap + 0,2
+    b = bore(radius=4.0, z0=-30.0, z1=30.0, anchor_gap=1.0)  # extrémités au bord : ouvert au-delà
+    (t,) = anchor_tools(b, _flat_mid(30.0, 6.0), BB)
+    tb = t.bounding_box()
+    # th/2 ≥ 5,2 ⇔ th ≥ 10,4 ⇔ z ≤ 20 − 40·(10,4 − 6)/24 ≈ 12,67
+    assert tb.max.Z < 12.67 and tb.max.Z > 10.0
+    assert tb.min.Z == pytest.approx(-30.0)
+    assert tb.min.Y == pytest.approx(-15.0 + 1.0, abs=1e-6)  # au bas de l'aile (épaisseur 30 en z ≤ −20)
+    # à z = 0 : épaisseur 18 → peau opposée en y = −9, fin de l'attache en −8
+    (sec,) = t.intersect(Box(10, 40, 0.1))
+    sec = sec.bounding_box()
+    assert sec.min.Y == pytest.approx(-8.0, abs=0.05) and sec.max.Y == pytest.approx(0.0)
+
+
+def test_anchor_tool_none_when_never_room():
+    b = bore(radius=4.0, z0=-10.0, z1=10.0, anchor_gap=1.0)
+    assert anchor_tools(b, _flat_mid(8.0, 8.0), BB) == []
+
+
+def test_bore_cut_tools_include_anchor():
+    b = bore(x=5.0, y=1.0, radius=4.0, z0=-10.0, z1=10.0, anchor_gap=1.0)
+    tools = bore_cut_tools([b], BB, _flat_mid())
+    assert len(tools) == 3  # trou, fente, attache
+    with pytest.raises(ValueError, match="surface médiane"):
+        bore_cut_tools([b], BB)

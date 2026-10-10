@@ -5,12 +5,15 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, replace
 
-from build123d import Align, Box, Cylinder, GeomType, Location, Solid
+import numpy as np
+from build123d import Align, Box, Cylinder, Face, GeomType, Location, Solid, Vector, Wire, extrude
 from OCP.BRepAdaptor import BRepAdaptor_Surface
 from OCP.TopAbs import TopAbs_REVERSED
+from shapely.geometry import Polygon
 
 from aerorib.classify import detect_spar
 from aerorib.config import Config
+from aerorib.midsurface import MidSurface
 
 
 class BoreError(ValueError):
@@ -31,6 +34,7 @@ class Bore:
     z1: float
     slit: float  # largeur de la fente vers la peau
     clearance: float  # marge en Z aux extrémités intérieures (longeron : jeu ; passage : 0)
+    anchor_gap: float = 0.0  # > 0 : attache côté opposé, arrêtée à cette distance de la peau (0 : pas d'attache)
 
 
 OPEN_END = 1.0  # extrémité à moins de 1 mm du bord de la pièce : le trou débouche
@@ -76,6 +80,7 @@ def spar_bores(spars: list[tuple[str, Solid]], cfg: Config) -> list[Bore]:
             Bore(
                 name, mid[0], mid[1], info.diameter / 2 + s.clearance, s.sleeve, s.strip, _side(s.slit_side),
                 True, min(start[2], z_end), max(start[2], z_end), s.slit_width, s.clearance,
+                s.anchor_gap if s.anchor else 0.0,
             )
         )
     return out
@@ -93,6 +98,9 @@ class Passage:
     z0: float
     z1: float
     tilt_deg: float
+    r_max: float = 0.0  # plus grand rayon (lamage) ; r = le plus petit
+
+
 
 
 def find_passages(skin: Solid, max_tilt_deg: float) -> list[Passage]:
@@ -126,32 +134,40 @@ def find_passages(skin: Solid, max_tilt_deg: float) -> list[Passage]:
     for g in full:
         for m in merged:
             if abs(m["x"] - g["x"]) < _TOL and abs(m["y"] - g["y"]) < _TOL:
-                m["r"] = min(m["r"], g["r"])
+                m["r"], m["rmax"] = min(m["r"], g["r"]), max(m["rmax"], g["r"])
                 m["z0"], m["z1"] = min(m["z0"], g["z0"]), max(m["z1"], g["z1"])
                 break
         else:
-            merged.append(dict(g))
+            merged.append(dict(g, rmax=g["r"]))
     out = []
     for m in merged:
         zc = (m["z0"] + m["z1"]) / 2
         out.append(
             Passage(
                 round(m["x"] + m["dx"] * zc, 6), round(m["y"] + m["dy"] * zc, 6), round(m["r"], 6),
-                m["z0"], m["z1"], round(_tilt_deg(m["dz"]), 6),
+                m["z0"], m["z1"], round(_tilt_deg(m["dz"]), 6), round(m["rmax"], 6),
             )
         )
     return out
 
 
-def passage_bores(skin: Solid, cfg: Config, exclude: list[Bore]) -> list[Bore]:
-    p = cfg.passages
-    if p.mode == "off":
-        return []
-    out = []
-    for f in find_passages(skin, p.max_tilt_deg):
+def free_passages(skin: Solid, cfg: Config, exclude: list[Bore]) -> list[tuple[str, Passage]]:
+    """Alésages de la peau qui ne logent pas un longeron (`exclude`), nommés « passage N »."""
+    out: list[tuple[str, Passage]] = []
+    for f in find_passages(skin, cfg.passages.max_tilt_deg):
         if any(_linked(b, f) for b in exclude if b.cut_hole):
             continue  # alésage du logement d'un longeron : déjà traité avec lui
-        name = f"passage {len(out) + 1}"
+        out.append((f"passage {len(out) + 1}", f))
+    return out
+
+
+def passage_bores(skin: Solid, cfg: Config, exclude: list[Bore]) -> list[Bore]:
+    """Mode `link` : chaque passage est relié à la peau par une fente (sans attache)."""
+    p = cfg.passages
+    if p.mode != "link":
+        return []
+    out = []
+    for name, f in free_passages(skin, cfg, exclude):
         drift = (f.z1 - f.z0) * math.tan(math.radians(f.tilt_deg))
         if drift > p.sleeve / 2:
             raise BoreError(
@@ -162,6 +178,37 @@ def passage_bores(skin: Solid, cfg: Config, exclude: list[Bore]) -> list[Bore]:
             Bore(name, f.x, f.y, f.r, p.sleeve, p.strip, _side(p.slit_side), False, f.z0, f.z1, p.slit_width, 0.0)
         )
     return out
+
+
+FILL_MARGIN = 0.02  # mm : le cylindre de rebouchage déborde de l'alésage pour une fusion franche
+
+
+def fill_radius(f: Passage) -> float:
+    return max(f.r, f.r_max) + FILL_MARGIN
+
+
+def passages_to_fill(skin: Solid, cfg: Config, exclude: list[Bore]) -> list[tuple[str, Passage]]:
+    """Mode `fill` : passages à reboucher (cylindre vertical ; un passage incliné est refusé)."""
+    if cfg.passages.mode != "fill":
+        return []
+    out = []
+    for name, f in free_passages(skin, cfg, exclude):
+        drift = (f.z1 - f.z0) * math.tan(math.radians(f.tilt_deg))
+        if drift / 2 > FILL_MARGIN:
+            raise BoreError(
+                f"{name} (x={f.x:.1f}, y={f.y:.1f}) : passage incliné de {f.tilt_deg:.1f}° par rapport à l'axe "
+                f"d'impression (dérive {drift:.1f} mm) — rebouchage impossible en P1 "
+                "(corriger le modèle, ou passages: {mode: link} / {mode: off})"
+            )
+        out.append((name, f))
+    return out
+
+
+def fill_tools(passages: list[Passage]) -> list[Solid]:
+    """Cylindres de rebouchage : rayon r + FILL_MARGIN, exactement sur [z0, z1] (pas au-delà de la pièce)."""
+    return [
+        Cylinder(fill_radius(f), f.z1 - f.z0).moved(Location((f.x, f.y, (f.z0 + f.z1) / 2))) for f in passages
+    ]
 
 
 _COAXIAL = 0.5  # mm : alésage sur l'axe d'un longeron
@@ -195,7 +242,37 @@ def extend_to_existing_bores(spars: list[Bore], skin: Solid, cfg: Config) -> lis
     return out
 
 
-def bore_cut_tools(bores: list[Bore], bb) -> list[Solid]:
+ANCHOR_STEP = 2.0  # mm, pas max d'échantillonnage de la peau opposée le long de Z
+ANCHOR_MIN = 0.2  # mm : attache plus courte (hors du trou) → omise à cette hauteur
+
+
+def anchor_tools(b: Bore, mid: MidSurface, bb) -> list[Solid]:
+    """Attache côté opposé à la fente : fente borgne dans le plan x = b.x, du centre du trou jusqu'à
+    `anchor_gap` de la peau opposée (lue dans la surface médiane), sur l'étendue en Z du trou.
+
+    Construite en 2D (z, y) puis extrudée de ± slit/2 en X. Aux hauteurs où la peau opposée est à moins de
+    `radius + anchor_gap + ANCHOR_MIN` du centre, pas d'attache (une plaque par portion continue).
+    """
+    lo, hi = bore_extent(b, bb.min.Z, bb.max.Z)
+    zs = np.linspace(lo, hi, max(2, math.ceil((hi - lo) / ANCHOR_STEP) + 1))
+    ym, th = mid.at(np.full_like(zs, b.x), zs)
+    skin = ym - b.side * th / 2  # peau opposée à la fente
+    room = (th > 0) & (b.side * (b.y - skin) >= b.radius + b.anchor_gap + ANCHOR_MIN)
+    y_end = skin + b.side * b.anchor_gap
+    faces = []
+    idx = np.flatnonzero(np.diff(np.concatenate([[0], room.astype(int), [0]])))
+    for i, j in zip(idx[::2], idx[1::2]):  # échantillons i … j−1 avec de la place
+        if j - i < 2:
+            continue
+        pts = [(zs[i], b.y), (zs[j - 1], b.y)] + [(zs[k], y_end[k]) for k in range(j - 1, i - 1, -1)]
+        poly = Polygon(pts).simplify(0.01)
+        ring = [Vector(b.x, y, z) for z, y in list(poly.exterior.coords)[:-1]]
+        faces.append(Face(Wire.make_polygon(ring, close=True)))
+    return [extrude(f, amount=b.slit / 2, dir=Vector(1, 0, 0), both=True) for f in faces]
+
+
+def bore_cut_tools(bores: list[Bore], bb, mid: MidSurface | None = None) -> list[Solid]:
+    """Outils de coupe des trous : trou (longeron), fente vers la peau, attache côté opposé (si anchor_gap)."""
     reach = (bb.max.Y - bb.min.Y) + 20
     tools = []
     for b in bores:
@@ -207,4 +284,8 @@ def bore_cut_tools(bores: list[Bore], bb) -> list[Solid]:
         tools.append(
             Box(b.slit, reach, height, align=(Align.CENTER, align_y, Align.CENTER)).moved(Location((b.x, b.y, zc)))
         )
+        if b.anchor_gap > 0:
+            if mid is None:
+                raise ValueError(f"{b.name} : attache impossible sans surface médiane")
+            tools += anchor_tools(b, mid, bb)
     return tools

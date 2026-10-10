@@ -37,7 +37,8 @@ def bore_zones_2d(
     unit = Point(s0, b.y).buffer(_CIRCUMSCRIBED, quad_segs=_ZONE_SEGMENTS // 4)
     ellipse = affinity.scale(unit, r / abs(d0), r, origin=(s0, b.y))
     half = (b.strip / 2) / abs(d0) + pad_s
-    y_lo, y_hi = sorted((b.y, b.y + _FAR * b.side))
+    # côté fente seulement ; des deux côtés si le longeron a une attache côté opposé
+    y_lo, y_hi = (b.y - _FAR, b.y + _FAR) if b.anchor_gap > 0 else sorted((b.y, b.y + _FAR * b.side))
     band = box(s0 - half, y_lo, s0 + half, y_hi)
     # limitées à l'étendue du trou le long de Z (même marge que les outils de coupe)
     lo, hi = bore_extent(b, zmin, zmax)

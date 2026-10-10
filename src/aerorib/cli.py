@@ -10,7 +10,8 @@ import typer
 
 from aerorib import __version__
 from aerorib.classify import ClassifyError, classify
-from aerorib.config import Config, ConfigError, load_config
+from aerorib.bambu import BambuError, open_in_bambu, read_template
+from aerorib.config import Config, ConfigError, load_config, resolve_template
 from aerorib.material_profiles import ProfileError, copy_profile, find_profiles, load_profile
 from aerorib.export import export_results
 from aerorib.io_step import StepReadError, read_step
@@ -194,27 +195,65 @@ def format_bores(bores, filled=()) -> str:
     return "  trous : " + (" ; ".join(items) if items else "aucun")
 
 
+def _format_segments(segments, first_plate: int | None) -> str:
+    z, spans = 0.0, []
+    for s in segments:
+        h = s.bounding_box().max.Z
+        spans.append(f"{z:.1f}–{z + h:.1f}".replace(".0–", "–").removesuffix(".0"))
+        z += h
+    line = f"  tronçons : {len(segments)} (z = {', '.join(spans)} mm)"
+    if first_plate is not None:
+        line += f" → plateaux {first_plate} à {first_plate + len(segments) - 1}"
+    return line
+
+
 @app.command()
 def run(
     file: Path = typer.Argument(..., help="Pièce CAO à traiter (STEP)."),
     config: Optional[Path] = typer.Option(None, "-c", "--config", help="Fichier de configuration YAML."),
     out: Optional[Path] = typer.Option(None, "--out", help="Dossier de sortie (défaut : output.dir de la config)."),
+    three_mf: bool = typer.Option(False, "--3mf", help="Écrit aussi le projet Bambu Studio multi-plateaux (.3mf)."),
+    open_: bool = typer.Option(False, "--open", help="Ouvre le projet dans Bambu Studio (implique --3mf)."),
 ) -> None:
     """Génère les nervures, vérifie et exporte la pièce imprimable en vase mode."""
     cfg = _load(config)
+    open_ = open_ or cfg.bambu.open
+    formats = list(cfg.output.formats)
+    if (three_mf or open_) and "3mf" not in formats:
+        formats.append("3mf")
+    template = None
+    if "3mf" in formats:
+        try:
+            template = read_template(resolve_template(cfg))
+        except (ConfigError, BambuError) as exc:
+            _fail(str(exc))
     model = _classify(file, cfg)
     try:
         result = run_model(model, cfg, progress=lambda m: typer.echo(f"… {m}"))
         for b in result.bodies:
             typer.echo(format_text(b.report, title=b.name))
             typer.echo(format_bores(b.bores, b.filled))
+        plate = 1
+        for b in result.bodies:
+            if len(b.segments) > 1:
+                typer.echo(_format_segments(b.segments, plate if template else None))
+            for w in b.warnings:
+                typer.echo(f"  ⚠ {w}")
+            plate += max(len(b.segments), 1)
         target = out or Path(cfg.output.dir)
         try:
-            paths = export_results(result, target, file.stem, list(cfg.output.formats))
+            paths = export_results(result, target, file.stem, formats, template)
         except OSError as exc:
             _fail(f"écriture impossible : {exc.filename or target} ({exc.strerror or exc})")
         for path in paths:
             typer.echo(f"  fichier : {path}")
+        if open_:
+            project = next((p for p in paths if p.suffix == ".3mf"), None)
+            if project is not None:
+                try:
+                    open_in_bambu(project)
+                except BambuError as exc:
+                    typer.echo(f"  ⚠ {exc}")
     except PipelineError as exc:
         _fail(str(exc))
     except typer.Exit:

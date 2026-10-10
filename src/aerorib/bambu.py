@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import subprocess
+import sys
 import uuid
 import zipfile
 from dataclasses import dataclass
@@ -207,3 +210,24 @@ def write_project(
         for name in _COPIED[1:]:
             z.writestr(name, zt.read(name))
     return path
+
+
+def open_in_bambu(path: Path) -> None:
+    """Ouvre le projet dans Bambu Studio sans bloquer ; BambuError (français) si l'ouverture échoue."""
+    path = Path(path)
+    try:
+        if sys.platform == "darwin":
+            if Path("/Applications/BambuStudio.app").exists():
+                subprocess.Popen(["open", "-a", "BambuStudio", str(path)])
+            else:
+                subprocess.Popen(["open", str(path)])
+        elif sys.platform == "win32":
+            exe = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Bambu Studio" / "bambu-studio.exe"
+            if exe.is_file():
+                subprocess.Popen([str(exe), str(path)])
+            else:
+                os.startfile(str(path))  # type: ignore[attr-defined]
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+    except OSError as exc:
+        raise BambuError(f"ouverture de Bambu Studio impossible : {exc.strerror or exc} (ouvrez {path} à la main)") from exc

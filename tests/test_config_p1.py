@@ -56,3 +56,11 @@ def test_spar_settings_validated_at_load():
 def test_negative_spacing_rejected():
     with pytest.raises(ConfigError):
         load_config(overrides={"rib_layers": [{"spacing": 0}]})
+
+
+@pytest.mark.parametrize(
+    "overrides", [{"spars": {"default": {"sleeve": 0}}}, {"passages": {"sleeve": 0}}]
+)
+def test_sleeve_must_be_positive(overrides):
+    with pytest.raises(ConfigError):
+        load_config(overrides=overrides)

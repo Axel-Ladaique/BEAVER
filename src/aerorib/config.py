@@ -92,14 +92,15 @@ class RibLayer(_Strict):
 
 class BoreSettings(_Strict):
     clearance: float = Field(default=0.15, ge=0)  # jeu radial autour du longeron
-    sleeve: float = Field(default=0.5, ge=0)  # matière gardée autour du trou, sans nervure
+    # strictement > 0 : le manchon est le seul pont entre les deux côtés du trou sur la plaque opposée à la fente
+    sleeve: float = Field(default=0.5, gt=0)  # matière gardée autour du trou, sans nervure
     strip: float = Field(default=2.0, gt=0)  # largeur de la bande sans nervure jusqu'à la peau
     slit_side: Literal["top", "bottom"] = "top"  # top = extrados (+Y)
 
 
 class PassageSettings(_Strict):
     mode: Literal["auto", "off"] = "auto"
-    sleeve: float = Field(default=0.5, ge=0)
+    sleeve: float = Field(default=0.5, gt=0)  # cf. BoreSettings : > 0 obligatoire
     strip: float = Field(default=1.0, gt=0)
     slit_side: Literal["top", "bottom"] = "top"
     max_tilt_deg: float = Field(default=5.0, gt=0, lt=90)

@@ -9,7 +9,7 @@ Voir la spec : `docs/specs/2026-10-09-aerorib-design.md`.
 1. Installer [uv](https://docs.astral.sh/uv/) : `brew install uv` (macOS) ou `winget install astral-sh.uv` (Windows).
 2. Dans ce dossier : `uv sync`
 
-## Usage (P0)
+## Analyser et vérifier une pièce
 
 ```bash
 uv run aerorib inspect piece.step              # corps trouvés et rôles
@@ -25,14 +25,23 @@ uv run aerorib check piece.step --orient     # oriente la pièce selon le longer
 ```
 
 `run` produit, pour chaque corps `SKIN`/`Aile`/…, une pièce avec nervures internes en diagonale
-(motif en losange), fentes de 0,1 mm vers les logements de longerons, et exporte STEP et STL
-dans le dossier `--out`. Un rapport de validation vase mode est calculé sur le résultat.
+(motif en losange) et des fentes de 0,1 mm vers les logements de longerons. Dans le dossier `--out` :
+
+- `<nom>.step` : pièce nervurée, dans le repère d'impression (Z vers le haut, emplanture au plateau) ;
+- `<nom>.stl` ;
+- `<nom>-rapport.html` : rapport vase mode (couches en défaut s'il y en a).
+
+Un STL et un rapport par corps s'il y en a plusieurs. La commande retourne le code d'erreur 1 quand le
+résultat n'est pas imprimable ; les fichiers sont écrits quand même, pour inspection.
 
 - L'orientation suit l'axe du premier longeron détecté (`orientation: auto`), ou un axe imposé par la config.
+- `check --orient` sert à vérifier un fichier CAO brut (ex. l'export d'origine) : il l'oriente d'abord selon le longeron.
+  Le `.step` généré est déjà orienté : le vérifier avec `check` simple.
 - Les alésages existants (ex. joncs carbone) sont reliés automatiquement à la peau par une fente ;
   désactivable avec `passages: {mode: off}`.
-- Durée indicative : environ 3 à 4 minutes pour une aile de 200 × 210 mm.
-- `examples/config-exemple.yaml` liste toutes les clés avec leurs valeurs par défaut.
+- Durée indicative : environ 1 minute (mesuré 54 s sur un Mac) pour une aile de 200 × 210 mm ;
+  variable selon la machine et la complexité.
+- `examples/config-exemple.yaml` montre les réglages principaux (le détail complet est dans la spec §10).
 
 ## Nommage dans la CAO
 

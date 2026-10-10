@@ -11,7 +11,8 @@ from OCP.Standard import Standard_Failure
 from shapely.geometry import Point, Polygon
 
 from aerorib.classify import Model
-from aerorib.config import Config
+from aerorib.bambu import BambuError, read_template
+from aerorib.config import Config, ConfigError, resolve_template
 from aerorib.features.bores import (
     Bore,
     BoreError,
@@ -28,6 +29,7 @@ from aerorib.features.bores import (
 from aerorib.features.ribs import diamond_plates, plate_lines
 from aerorib.midsurface import MidSurface
 from aerorib.orient import Orientation, orient
+from aerorib.segment import SegmentError, plan_cuts, split_part
 from aerorib.slicing import slice_layers
 from aerorib.validate import Report, validate
 
@@ -45,6 +47,7 @@ class BodyResult:
     bores: tuple[Bore, ...]
     plates: int
     filled: tuple[Passage, ...] = ()  # alésages rebouchés (passages: {mode: fill})
+    segments: tuple[Solid, ...] = ()  # tronçons imprimables, emplanture → saumon (un seul si pas de découpe)
 
 
 @dataclass(frozen=True)
@@ -177,6 +180,41 @@ def generate_skin(skin: Solid, spars: list[tuple[str, Solid]], cfg: Config) -> G
 _GEOMETRY_ERRORS = (ValueError, RuntimeError, Standard_Failure)
 
 
+def _print_volume(cfg: Config) -> tuple[float, float, float]:
+    """(largeur, profondeur, hauteur) du plateau : gabarit Bambu s'il existe, sinon imprimante."""
+    try:
+        t = read_template(resolve_template(cfg))
+        return t.bed[0], t.bed[1], t.height
+    except (ConfigError, BambuError):
+        x, y, z = cfg.printer_spec.volume
+        return x, y, z
+
+
+def _segment(body_name: str, result: Solid, cfg: Config, progress: Callable[[str], None]) -> tuple[Solid, ...]:
+    seg = cfg.segment
+    if seg.mode == "off":
+        return (result,)
+    W, D, H = _print_volume(cfg)
+    max_h = seg.max_height if seg.max_height is not None else H - seg.margin
+    bb = result.bounding_box(optimal=True)
+    try:
+        cuts = plan_cuts(bb.max.Z - bb.min.Z, max_h, seg.cuts_at or None)
+        pieces = split_part(result, cuts) if cuts else [result]
+    except SegmentError as exc:
+        raise PipelineError(f"{body_name} : {exc}") from exc
+    if cuts:
+        progress(f"{body_name} : découpe en {len(pieces)} tronçons")
+    for i, piece in enumerate(pieces, 1):
+        pb = piece.bounding_box(optimal=True)
+        w, d = pb.max.X - pb.min.X, pb.max.Y - pb.min.Y
+        if w > W - 2 * seg.margin or d > D - 2 * seg.margin:
+            raise PipelineError(
+                f"{body_name} : le tronçon {i} fait {w:.0f}×{d:.0f} mm, plus grand que le plateau "
+                f"({W:.0f}×{D:.0f} mm, marge {seg.margin:g} mm)"
+            )
+    return tuple(pieces)
+
+
 def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambda m: None) -> RunResult:
     skins = model.of("skin")
     if len(skins) > 1:
@@ -209,5 +247,6 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
         )
         # l'original reste la peau avant rebouchage : seuls ses contours extérieurs sont comparés
         report = validate(result, cfg, original=skin)
-        bodies.append(BodyResult(s.body.name, skin, result, report, bores, n, filled))
+        segments = _segment(s.body.name, result, cfg, progress)
+        bodies.append(BodyResult(s.body.name, skin, result, report, bores, n, filled, segments))
     return RunResult(o, tuple(bodies))

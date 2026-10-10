@@ -11,6 +11,7 @@ import typer
 from aerorib import __version__
 from aerorib.classify import ClassifyError, classify
 from aerorib.config import Config, ConfigError, load_config
+from aerorib.material_profiles import ProfileError, copy_profile, find_profiles, load_profile
 from aerorib.export import export_results
 from aerorib.io_step import StepReadError, read_step
 from aerorib.orient import orient
@@ -137,6 +138,32 @@ def check(
             typer.echo(f"  rapport : {target}")
     if not all_ok:
         raise typer.Exit(1)
+
+
+@app.command()
+def profils(
+    copier: Optional[str] = typer.Option(
+        None, "--copier", help="Copie le profil embarqué indiqué dans ./profiles/ pour l'éditer."
+    ),
+) -> None:
+    """Liste les profils matière (paramètres géométriques stockés) ou en copie un pour édition."""
+    if copier is not None:
+        try:
+            target = copy_profile(copier, Path.cwd() / "profiles")
+        except (ProfileError, OSError) as exc:
+            _fail(str(exc))
+        typer.echo(f"profil copié : {target}")
+        typer.echo("modifiez-le : il prend le pas sur le profil embarqué (dans ce dossier de travail).")
+        return
+    for info in find_profiles().values():
+        try:
+            data, _ = load_profile(info.name)
+            template = (data.get("bambu") or {}).get("template")
+        except ProfileError as exc:
+            typer.echo(f"  {info.name:<12} {info.origin:<11} ⚠ {exc}")
+            continue
+        typer.echo(f"  {info.name:<12} {info.origin:<11} gabarit Bambu : {Path(template).name if template else 'aucun'}"
+                   f"   ({info.path})")
 
 
 def format_bores(bores, filled=()) -> str:

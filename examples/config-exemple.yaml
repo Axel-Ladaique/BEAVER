@@ -1,4 +1,5 @@
-# Exemple de configuration AeroRib — toutes les valeurs ci-dessous sont les défauts.
+# Exemple de configuration AeroRib — toutes les valeurs ci-dessous sont les défauts du profil pla_aero
+# (src/aerorib/profiles/ ; `aerorib profils` les liste, `aerorib profils --copier pla_aero` pour les éditer).
 material: pla_aero          # pla_aero | asa_aero
 printer: p1s
 slit_width: 0.1             # épaisseur des nervures (mm) ; vue 0,14 en tranche à 45°
@@ -15,7 +16,7 @@ rib_layers:
     # phase: 0              # décalage du motif (mm)
 # Doubles nervures (voir config-doubles-nervures.yaml) : ajouter un second niveau, fin et peu profond,
 # qui tient la peau ; phase = un demi-pas pour que ses nervures tombent entre les principales.
-#  - {name: peau, spacing: 10, depth: 3, phase: 5}   # depth ≥ 2 × largeur de ligne (0,9 mm)
+#  - {name: peau, spacing: 10, depth: 3, phase: 5}   # depth ≥ 2 × largeur de ligne (0,84 mm)
 # Réglages des longerons (défauts : clearance 0.15, sleeve 0.8, strip 2.0, slit_side top, slit_width 0.15,
 # anchor true, anchor_gap 1.0). L'attache (anchor) est une fente borgne du trou vers la peau opposée à la
 # fente, arrêtée à anchor_gap (≥ largeur de ligne) de la peau : elle accroche le manchon des deux côtés.

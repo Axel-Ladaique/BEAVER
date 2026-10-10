@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from aerorib.config import MATERIALS, Config, ConfigError, load_config
+from aerorib.config import Config, ConfigError, load_config
 
 
 def test_defaults():
@@ -11,7 +11,7 @@ def test_defaults():
     assert cfg.printer == "p1s"
     assert cfg.slit_width == 0.1
     assert cfg.naming.spar == ["SPAR", "SBAR", "Longeron"]
-    assert cfg.preset == MATERIALS["pla_aero"]
+    assert cfg.preset.line_width == 0.42 and cfg.preset.max_overhang_deg == 45
     assert cfg.printer_spec.volume == (256, 256, 256)
 
 
@@ -36,7 +36,7 @@ def test_overrides_win_over_yaml(tmp_path: Path):
 def test_material_settings_patch_preset():
     cfg = load_config(overrides={"material_settings": {"layer_height": 0.25}})
     assert cfg.preset.layer_height == 0.25
-    assert cfg.preset.line_width == MATERIALS["pla_aero"].line_width
+    assert cfg.preset.line_width == 0.42
 
 
 def test_unknown_material_setting_rejected():

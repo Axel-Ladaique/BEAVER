@@ -40,7 +40,7 @@ quand même, pour inspection. Elle affiche aussi les trous traités, dans le rep
 
 Défauts principaux : jeu du longeron 0,15 mm, manchon sans nervure 0,8 mm autour de chaque trou,
 bande de séparation 0,6 mm, nervures tous les 30 mm à 45°. Le rapport signale notamment les contours
-non uniques, la **matière plus fine qu'une largeur de ligne** (0,45 mm) et les fentes que le slicer
+non uniques, la **matière plus fine qu'une largeur de ligne** (0,42 mm pour PLA Aero) et les fentes que le slicer
 refermerait (< 0,10 mm).
 
 Limites de la phase P1 :

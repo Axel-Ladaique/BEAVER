@@ -9,6 +9,8 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from aerorib.material_profiles import ProfileError, load_profile, profile_names
+
 Role = Literal["skin", "spar", "split", "norib", "cut", "ignore"]
 
 
@@ -20,26 +22,18 @@ class _Strict(BaseModel):
 
 
 class MaterialPreset(_Strict):
-    line_width: float = Field(gt=0)  # mm
-    layer_height: float = Field(gt=0)  # mm
-    density: float = Field(gt=0)  # g/cm³ effective du filament imprimé (estimation, à recaler par pesée)
+    # valeurs de repli (PLA Aero) ; les profils matière (aerorib/profiles/*.yaml) les remplacent
+    line_width: float = Field(default=0.42, gt=0)  # mm
+    layer_height: float = Field(default=0.2, gt=0)  # mm
+    density: float = Field(default=0.8, gt=0)  # g/cm³ effective du filament imprimé (estimation, à recaler par pesée)
     # mm ; en dessous, le slicer referme la fente (Bambu Studio / Orca : slice_closing_radius 0,049)
-    min_slit_width: float = Field(gt=0)
-    max_overhang_deg: float = Field(gt=0, le=90)  # inclinaison max des murs internes par rapport à Z
+    min_slit_width: float = Field(default=0.10, gt=0)
+    max_overhang_deg: float = Field(default=45, gt=0, le=90)  # inclinaison max des murs internes par rapport à Z
 
 
 class PrinterSpec(_Strict):
     volume: tuple[float, float, float]  # X, Y, Z utiles en mm
 
-
-MATERIALS: dict[str, MaterialPreset] = {
-    "pla_aero": MaterialPreset(
-        line_width=0.45, layer_height=0.2, density=0.8, min_slit_width=0.10, max_overhang_deg=45
-    ),
-    "asa_aero": MaterialPreset(
-        line_width=0.45, layer_height=0.2, density=0.7, min_slit_width=0.10, max_overhang_deg=40
-    ),
-}
 
 PRINTERS: dict[str, PrinterSpec] = {
     "p1s": PrinterSpec(volume=(256, 256, 256)),
@@ -182,8 +176,9 @@ class Config(_Strict):
     @field_validator("material")
     @classmethod
     def _known_material(cls, v: str) -> str:
-        if v not in MATERIALS:
-            raise ValueError(f"matière inconnue '{v}' (connues : {', '.join(sorted(MATERIALS))})")
+        names = profile_names()
+        if v not in names:
+            raise ValueError(f"matière inconnue '{v}' (profils disponibles : {', '.join(names)})")
         return v
 
     @field_validator("printer")
@@ -273,7 +268,7 @@ class Config(_Strict):
 
     @property
     def preset(self) -> MaterialPreset:
-        return MaterialPreset.model_validate({**MATERIALS[self.material].model_dump(), **self.material_settings})
+        return MaterialPreset.model_validate(self.material_settings)
 
     @property
     def printer_spec(self) -> PrinterSpec:
@@ -304,8 +299,16 @@ def _deep_merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _check_template_path(data: dict[str, Any], base: Path) -> None:
+    """Un gabarit relatif d'un YAML projet s'entend relativement au dossier de ce YAML."""
+    bambu = data.get("bambu")
+    if isinstance(bambu, dict) and isinstance(bambu.get("template"), str):
+        data["bambu"] = {**bambu, "template": str((base / bambu["template"]).resolve())}
+
+
 def load_config(path: Path | None = None, overrides: dict[str, Any] | None = None) -> Config:
-    data: dict[str, Any] = {}
+    """Défauts du code → profil de la matière → YAML projet → overrides (spec §10)."""
+    project: dict[str, Any] = {}
     if path is not None:
         try:
             loaded = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
@@ -317,10 +320,39 @@ def load_config(path: Path | None = None, overrides: dict[str, Any] | None = Non
             raise ConfigError(f"{path} : YAML mal formé ({exc})") from exc
         if not isinstance(loaded, dict):
             raise ConfigError(f"{path} : la config doit être un dictionnaire YAML")
-        data = loaded
-    if overrides:
-        data = _deep_merge(data, overrides)
+        project = loaded
+        _check_template_path(project, Path(path).resolve().parent)
+    over = overrides or {}
+    material = over.get("material", project.get("material", "pla_aero"))
+    try:
+        profile, profile_path = load_profile(material) if isinstance(material, str) else ({}, None)
+    except ProfileError as exc:
+        raise ConfigError(str(exc)) from exc
+    if profile_path is not None:
+        try:  # le profil doit être valide seul : l'erreur nomme alors son fichier
+            Config.model_validate({**profile, "material": material})
+        except ValidationError as exc:
+            raise ConfigError(f"profil matière {profile_path} invalide :\n{exc}") from exc
+    data = _deep_merge(_deep_merge(profile, project), over)
     try:
         return Config.model_validate(data)
     except ValidationError as exc:
         raise ConfigError(f"configuration invalide :\n{exc}") from exc
+
+
+def material_label(material: str) -> str:
+    head, _, tail = material.partition("_")
+    return f"{head.upper()} {tail.capitalize()}".strip()
+
+
+def resolve_template(cfg: Config) -> Path:
+    """Chemin du gabarit Bambu à utiliser ; ConfigError clair si absent."""
+    template = cfg.bambu.template
+    if template is None:
+        raise ConfigError(
+            f"pas de gabarit Bambu pour {cfg.material} : enregistrer un projet {material_label(cfg.material)} "
+            "dans Bambu Studio et renseigner bambu.template"
+        )
+    if not Path(template).is_file():
+        raise ConfigError(f"gabarit Bambu introuvable : {template} (bambu.template)")
+    return Path(template)

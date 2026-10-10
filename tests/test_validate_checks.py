@@ -2,7 +2,13 @@ import pytest
 from shapely.geometry import Point, Polygon, box
 
 from aerorib.slicing import Layer
-from aerorib.validate import check_connectivity, check_narrow_slits, check_skin, slicer_closing
+from aerorib.validate import (
+    check_connectivity,
+    check_material_width,
+    check_narrow_slits,
+    check_skin,
+    slicer_closing,
+)
 
 BASE = box(0, 0, 20, 10)
 
@@ -81,3 +87,31 @@ def test_skin_ignores_enlarged_inner_hole():
     orig = Layer(1.0, (BASE.difference(Point(10, 5).buffer(2.0)),))
     res = Layer(1.0, (BASE.difference(Point(10, 5).buffer(2.3)),))
     assert check_skin(res, orig, max_mouth=0.5, tol=0.05) == []
+
+
+def necked(width):
+    """Deux blocs de 10 × 10 reliés par un col de `width` mm (5 mm de long)."""
+    return box(0, 0, 10, 10).union(box(10, 5 - width / 2, 15, 5 + width / 2)).union(box(15, 0, 25, 10))
+
+
+def test_material_width_thin_neck_is_error():
+    issues = check_material_width(Layer(1.0, (necked(0.3),)), line_width=0.45)
+    assert [(i.check, i.severity) for i in issues] == [("material_width", "error")]
+    assert "plus fine qu'une largeur de ligne" in issues[0].message
+    x0, _, x1, _ = issues[0].bounds
+    assert x1 - x0 < 10.5  # la plus petite partie : un des deux blocs
+
+
+def test_material_width_wide_neck_ok():
+    assert check_material_width(Layer(1.0, (necked(1.0),)), line_width=0.45) == []
+
+
+def test_material_width_tapered_trailing_edge_ok():
+    # pointe effilée (bord de fuite) : elle disparaît à l'érosion sans créer d'îlot
+    wedge = Polygon([(0, 0), (40, 4.5), (40, 5.5), (0, 10)]).union(box(-10, 0, 0, 10))
+    assert check_material_width(Layer(1.0, (wedge,)), line_width=0.45) == []
+
+
+def test_material_width_reports_each_polygon_once():
+    # deux îlots déjà distincts : c'est l'affaire du contrôle de connexité, pas de celui-ci
+    assert check_material_width(Layer(1.0, (box(0, 0, 1, 1), box(5, 0, 6, 1))), line_width=0.45) == []

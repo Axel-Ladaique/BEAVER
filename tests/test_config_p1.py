@@ -64,3 +64,22 @@ def test_negative_spacing_rejected():
 def test_sleeve_must_be_positive(overrides):
     with pytest.raises(ConfigError):
         load_config(overrides=overrides)
+
+
+@pytest.mark.parametrize(
+    "overrides, match",
+    [
+        ({"spars": {"default": {"sleeve": 0.3}}}, "manchon"),
+        ({"spars": {"SBAR_x": {"sleeve": 0.3}}}, "manchon"),
+        ({"passages": {"sleeve": 0.3}}, "manchon"),
+        ({"split": {"gap": 0.4}}, "gap"),
+    ],
+)
+def test_widths_below_line_width_rejected(overrides, match):
+    with pytest.raises(ConfigError, match=match):
+        load_config(overrides=overrides)
+
+
+def test_p1_sleeve_defaults():
+    cfg = load_config()
+    assert cfg.spar_settings("SBAR").sleeve == 0.7 and cfg.passages.sleeve == 0.7

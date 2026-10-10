@@ -40,7 +40,7 @@ def test_find_passages_concave_parallel_to_z_only():
 def test_spar_bore_from_oriented_spar():
     (b,) = spar_bores([("SBAR_14", Cylinder(7, 100).moved(Location((-15, 0, 0))))], CFG)
     assert (b.name, b.x, b.y, b.cut_hole, b.side) == ("SBAR_14", -15.0, 0.0, True, 1)
-    assert b.radius == pytest.approx(7.15) and b.strip == 2.0 and b.sleeve == 0.5
+    assert b.radius == pytest.approx(7.15) and b.strip == 2.0 and b.sleeve == 0.7
     assert (b.z0, b.z1, b.clearance) == (pytest.approx(-50.0), pytest.approx(50.0), 0.15)
 
 

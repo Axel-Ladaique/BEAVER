@@ -68,7 +68,7 @@ class OrientationAxis(_Strict):
 
 
 class SplitSettings(_Strict):
-    gap: float = Field(default=0.6, gt=0)  # largeur de la bande de séparation (mm)
+    gap: float = Field(default=0.6, gt=0)  # largeur de la bande de séparation (mm), ≥ largeur de ligne
     min_rib_depth: float = Field(default=1.0, ge=0)  # nervure plus courte → non coupée (bords d'attaque/fuite)
     grid: tuple[int, int] = (101, 22)  # résolution (nx, nz) de la surface médiane
 
@@ -93,7 +93,8 @@ class RibLayer(_Strict):
 class BoreSettings(_Strict):
     clearance: float = Field(default=0.15, ge=0)  # jeu radial autour du longeron
     # strictement > 0 : le manchon est le seul pont entre les deux côtés du trou sur la plaque opposée à la fente
-    sleeve: float = Field(default=0.5, gt=0)  # matière gardée autour du trou, sans nervure
+    # ≥ largeur de ligne du preset (vérifié par Config)
+    sleeve: float = Field(default=0.7, gt=0)  # matière gardée autour du trou, sans nervure
     strip: float = Field(default=2.0, gt=0)  # largeur de la bande sans nervure jusqu'à la peau
     slit_side: Literal["top", "bottom"] = "top"  # top = extrados (+Y)
     slit_width: float = Field(default=0.1, gt=0)  # largeur de la fente trou → peau
@@ -101,7 +102,7 @@ class BoreSettings(_Strict):
 
 class PassageSettings(_Strict):
     mode: Literal["auto", "off"] = "auto"
-    sleeve: float = Field(default=0.5, gt=0)  # cf. BoreSettings : > 0 obligatoire
+    sleeve: float = Field(default=0.7, gt=0)  # cf. BoreSettings : ≥ largeur de ligne
     strip: float = Field(default=1.0, gt=0)
     slit_side: Literal["top", "bottom"] = "top"
     slit_width: float = Field(default=0.1, gt=0)
@@ -179,6 +180,24 @@ class Config(_Strict):
                 self.spar_settings(name)
             except ValidationError as exc:
                 raise ValueError(f"spars '{name}' invalide : {exc}") from exc
+        return self
+
+    @model_validator(mode="after")
+    def _printable_widths(self) -> "Config":
+        lw = self.preset.line_width
+        sleeves = [(f"spars '{n}'", self.spar_settings(n).sleeve) for n in self.spars or {"default": {}}]
+        sleeves.append(("passages", self.passages.sleeve))
+        for where, sleeve in sleeves:
+            if sleeve < lw:
+                raise ValueError(
+                    f"{where} : manchon (sleeve) {sleeve} mm < largeur de ligne {lw} mm — "
+                    "la matière autour du trou serait plus fine qu'une ligne"
+                )
+        if self.split.gap < lw:
+            raise ValueError(
+                f"split.gap {self.split.gap} mm < largeur de ligne {lw} mm — "
+                "la bande de séparation ne serait pas imprimable"
+            )
         return self
 
     @property

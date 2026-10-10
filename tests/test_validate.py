@@ -66,3 +66,16 @@ def test_parallel_and_serial_agree():
     ser = validate(part, CFG, heights=heights[:10])
     assert not par.ok and not ser.ok
     assert len(par.errors) == 66 and len(ser.errors) == 10
+
+
+def test_thin_neck_detected_by_validate():
+    from build123d import Align, Box, Location
+
+    # deux blocs reliés par un col de 0,3 mm : un seul contour, mais le slicer le séparerait
+    part = Box(25, 10, 4, align=(Align.MIN, Align.MIN, Align.MIN)) - Box(
+        5, 4.85, 4, align=(Align.MIN, Align.MIN, Align.MIN)
+    ).moved(Location((10, 0, 0))) - Box(5, 4.85, 4, align=(Align.MIN, Align.MIN, Align.MIN)).moved(
+        Location((10, 5.15, 0))
+    )
+    report = validate(part, CFG, heights=[2.0])
+    assert checks(report) == ["material_width"]

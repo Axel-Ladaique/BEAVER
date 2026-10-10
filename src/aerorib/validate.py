@@ -103,6 +103,30 @@ def check_narrow_slits(layer: Layer, min_width: float) -> list[Issue]:
     return issues
 
 
+def check_material_width(layer: Layer, line_width: float) -> list[Issue]:
+    """Un contour qui se sépare quand on l'érode d'une demi-largeur de ligne a un col trop fin.
+
+    À appliquer sur la couche refermée (slicer_closing). Chaque polygone est traité seul : des îlots
+    déjà distincts relèvent de check_connectivity.
+    """
+    issues = []
+    for poly in layer.polygons:
+        eroded = poly.buffer(-line_width / 2, join_style="mitre")
+        parts = [p for p in _parts(eroded) if p.area > line_width**2]
+        if len(parts) > 1:
+            smallest = min(parts, key=lambda p: p.area)
+            issues.append(
+                Issue(
+                    "material_width",
+                    "error",
+                    layer.z,
+                    "matière plus fine qu'une largeur de ligne : le contour se séparerait au slicer",
+                    smallest.bounds,
+                )
+            )
+    return issues
+
+
 def check_skin(layer: Layer, original: Layer, max_mouth: float, tol: float) -> list[Issue]:
     if not original.polygons:
         return []
@@ -123,9 +147,11 @@ def check_skin(layer: Layer, original: Layer, max_mouth: float, tol: float) -> l
 
 def _check_layer(args) -> list[Issue]:
     """Contrôles d'une couche ; fonction de module (picklable) pour le pool de processus."""
-    z, polygons, original_polygons, min_slit, max_mouth, skin_tol = args
+    z, polygons, original_polygons, min_slit, line_width, max_mouth, skin_tol = args
     layer = Layer(z, polygons)
-    found = check_connectivity(Layer(z, slicer_closing(polygons, min_slit)))
+    closed = Layer(z, slicer_closing(polygons, min_slit))
+    found = check_connectivity(closed)
+    found += check_material_width(closed, line_width)
     found += check_narrow_slits(layer, min_slit)
     if original_polygons is not None:
         found += check_skin(layer, Layer(z, original_polygons), max_mouth, skin_tol)
@@ -155,6 +181,7 @@ def validate(
             layer.polygons,
             originals[i].polygons if originals is not None else None,
             preset.min_slit_width,
+            preset.line_width,
             v.max_mouth_width,
             v.skin_tolerance,
         )

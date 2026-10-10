@@ -14,6 +14,7 @@ LABELS = {
     "connectivity": "contour non unique",
     "narrow_slit": "fente trop fine",
     "skin": "peau entamée",
+    "material_width": "matière trop fine",
 }
 
 

@@ -20,7 +20,7 @@ rib_layers:
 # Réglages des longerons (défauts : clearance 0.15, sleeve 0.8, strip 2.0, slit_side top, slit_width 0.15,
 # anchor true, anchor_gap 1.0). L'attache (anchor) est une fente borgne du trou vers la peau opposée à la
 # fente, arrêtée à anchor_gap (≥ largeur de ligne) de la peau : elle accroche le manchon des deux côtés.
-# Laissé en commentaire : une clé `spars:` active ne serait plus égale aux défauts.
+# Les valeurs par défaut viennent du profil matière (clé spars.default) ; ne décommentez que pour les changer.
 # spars:
 #   default: {clearance: 0.15, sleeve: 0.8, strip: 2.0, slit_side: top, slit_width: 0.15, anchor: true, anchor_gap: 1.0}
 #   SBAR_arriere: {slit_side: bottom}

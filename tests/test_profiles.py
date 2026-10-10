@@ -69,6 +69,64 @@ def test_cwd_profiles_dir_used(tmp_path):
     assert load_config().split.gap == 0.8
 
 
+def test_partial_user_profile_merges_over_embedded(tmp_path, monkeypatch):
+    user_profile(tmp_path, monkeypatch, "pla_aero", "split: {gap: 0.9}\n")
+    cfg = load_config()
+    assert cfg.split.gap == 0.9 and cfg.split.min_rib_depth == 1.0
+    assert resolve_template(cfg).name == "p1s_pla_aero.3mf"
+    assert cfg.spars["default"]["sleeve"] == 0.8 and cfg.preset.line_width == 0.42
+
+
+def test_env_wins_over_cwd(tmp_path, monkeypatch):
+    (tmp_path / "profiles").mkdir()
+    (tmp_path / "profiles" / "pla_aero.yaml").write_text("split: {gap: 0.8}\n", encoding="utf-8")
+    other = tmp_path / "autre"
+    other.mkdir()
+    (other / "pla_aero.yaml").write_text("split: {gap: 0.95}\n", encoding="utf-8")
+    monkeypatch.setenv("AERORIB_PROFILES", str(other))
+    assert load_config().split.gap == 0.95
+
+
+def test_env_dir_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("AERORIB_PROFILES", str(tmp_path / "nope"))
+    with pytest.raises(ConfigError, match="dossier de profils introuvable"):
+        load_config()
+    r = runner.invoke(app, ["profils"])
+    assert r.exit_code == 1 and "dossier de profils introuvable" in r.output
+
+
+def test_non_mapping_yaml_not_a_profile(tmp_path):
+    d = tmp_path / "profiles"
+    d.mkdir()
+    (d / "liste.yaml").write_text("- a\n- b\n", encoding="utf-8")
+    assert "liste" not in runner.invoke(app, ["profils"]).output
+
+
+def test_profile_valid_only_when_merged(tmp_path, monkeypatch):
+    user_profile(tmp_path, monkeypatch, "pla_aero", "material_settings: {line_width: 0.7}\n")
+    c = tmp_path / "c.yaml"
+    c.write_text("split: {gap: 0.8}\nrib_layers: [{spacing: 30}]\n", encoding="utf-8")
+    assert load_config(c).split.gap == 0.8  # gap 0,6 du profil < 0,7 corrigé par le projet
+    with pytest.raises(ConfigError, match="split.gap"):
+        load_config()
+
+
+def test_wrong_profile_fixed_by_project(tmp_path, monkeypatch):
+    user_profile(tmp_path, monkeypatch, "pla_aero", "slit_width: 0.05\n")
+    c = tmp_path / "c.yaml"
+    c.write_text("slit_width: 0.1\n", encoding="utf-8")
+    assert load_config(c).slit_width == 0.1
+
+
+def test_error_blames_project_when_project_fields_fail(tmp_path, monkeypatch):
+    f = user_profile(tmp_path, monkeypatch, "pla_aero", "split: {gap: 0.9}\n")
+    c = tmp_path / "c.yaml"
+    c.write_text("slit_width: 0\n", encoding="utf-8")
+    with pytest.raises(ConfigError) as e:
+        load_config(c)
+    assert "configuration invalide" in str(e.value) and str(f) not in str(e.value)
+
+
 def test_user_profile_new_name(tmp_path, monkeypatch):
     user_profile(tmp_path, monkeypatch, "petg", "material_settings: {max_overhang_deg: 35}\n")
     assert load_config(overrides={"material": "petg"}).preset.max_overhang_deg == 35
@@ -121,6 +179,13 @@ def test_cli_copied_pla_keeps_working_template(tmp_path):
     assert runner.invoke(app, ["profils", "--copier", "pla_aero"]).exit_code == 0
     assert load_config() == load_config(Path(__file__).parents[1] / "examples" / "config-exemple.yaml")
     assert resolve_template(load_config()).is_file()
+
+
+def test_copy_omits_template_and_inherits(tmp_path):
+    assert runner.invoke(app, ["profils", "--copier", "pla_aero"]).exit_code == 0
+    text = (tmp_path / "profiles" / "pla_aero.yaml").read_text(encoding="utf-8")
+    assert "templates/" not in text and "\nbambu:" not in text and "FUSIONNÉ" in text
+    assert resolve_template(load_config()).name == "p1s_pla_aero.3mf"
 
 
 def test_cli_copier_unknown():

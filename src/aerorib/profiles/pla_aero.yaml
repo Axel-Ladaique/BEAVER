@@ -1,7 +1,7 @@
 # Profil matière AeroRib : PLA Aero (Bambu P1S).
 # Fichier à modifier à volonté : les valeurs se règlent par essais d'impression.
 # Pour garder vos modifications hors du paquet : « aerorib profils --copier pla_aero »
-# crée ./profiles/pla_aero.yaml, qui prend le pas sur ce fichier.
+# crée ./profiles/pla_aero.yaml, fusionné sur ce fichier : il ne change que les clés qu'il contient.
 # Ordre de priorité : défauts du code < ce profil < config projet (-c) < options de ligne de commande.
 
 material_settings:

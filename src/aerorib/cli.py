@@ -155,9 +155,13 @@ def profils(
         typer.echo(f"profil copié : {target}")
         typer.echo("modifiez-le : il prend le pas sur le profil embarqué (dans ce dossier de travail).")
         return
-    for info in find_profiles().values():
+    try:
+        infos = list(find_profiles().values())
+    except ProfileError as exc:
+        _fail(str(exc))
+    for info in infos:
         try:
-            data, _ = load_profile(info.name)
+            data, _files = load_profile(info.name)
             template = (data.get("bambu") or {}).get("template")
         except ProfileError as exc:
             typer.echo(f"  {info.name:<12} {info.origin:<11} ⚠ {exc}")

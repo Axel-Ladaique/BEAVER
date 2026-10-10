@@ -1,7 +1,8 @@
 """Profils matière : fichiers YAML (embarqués ou de l'utilisateur) portant les paramètres géométriques.
 
-Recherche, fichier par fichier, dans l'ordre : dossier de la variable d'environnement AERORIB_PROFILES,
-puis ./profiles/ (répertoire courant), puis les profils embarqués. Le premier trouvé gagne.
+Un profil utilisateur est FUSIONNÉ sur le profil embarqué de même nom (il ne change que ce qu'il contient) ;
+sans équivalent embarqué, il est utilisé seul. Priorité croissante : embarqué < ./profiles/ <
+dossier de la variable d'environnement AERORIB_PROFILES.
 """
 
 from __future__ import annotations
@@ -29,8 +30,9 @@ class ProfileError(ValueError):
 @dataclass(frozen=True)
 class ProfileInfo:
     name: str
-    path: Path
+    path: Path  # fichier de plus haute priorité
     origin: str  # "embarqué" | "utilisateur"
+    layers: tuple[Path, ...] = ()  # tous les fichiers fusionnés, du moins au plus prioritaire
 
 
 def embedded_dir() -> Path:
@@ -38,35 +40,58 @@ def embedded_dir() -> Path:
 
 
 def _search_dirs() -> list[tuple[Path, str]]:
-    dirs: list[tuple[Path, str]] = []
+    """Du moins au plus prioritaire."""
+    dirs: list[tuple[Path, str]] = [(embedded_dir(), "embarqué"), (Path.cwd() / "profiles", "utilisateur")]
     env = os.environ.get(ENV_VAR)
     if env:
-        dirs.append((Path(env), "utilisateur"))
-    dirs.append((Path.cwd() / "profiles", "utilisateur"))
-    dirs.append((embedded_dir(), "embarqué"))
+        d = Path(env).expanduser()
+        if not d.is_dir():
+            raise ProfileError(f"dossier de profils introuvable : {d} (variable {ENV_VAR})")
+        dirs.append((d, "utilisateur"))
     return dirs
 
 
+def _is_profile(path: Path) -> bool:
+    """Un .yaml compte comme profil s'il est un dictionnaire (un YAML mal formé compte : il sera signalé)."""
+    try:
+        return isinstance(yaml.safe_load(path.read_text(encoding="utf-8")), dict)
+    except yaml.YAMLError:
+        return True
+    except (OSError, UnicodeDecodeError):
+        return True
+
+
 def find_profiles() -> dict[str, ProfileInfo]:
-    found: dict[str, ProfileInfo] = {}
+    layers: dict[str, list[tuple[Path, str]]] = {}
     for directory, origin in _search_dirs():
         if not directory.is_dir():
             continue
         for path in sorted(directory.glob("*.yaml")):
-            found.setdefault(path.stem, ProfileInfo(path.stem, path, origin))
-    return found
+            if _is_profile(path):
+                layers.setdefault(path.stem, []).append((path, origin))
+    return {
+        name: ProfileInfo(
+            name,
+            ls[-1][0],
+            "embarqué" if all(o == "embarqué" for _, o in ls) else "utilisateur",
+            tuple(p for p, _ in ls),
+        )
+        for name, ls in layers.items()
+    }
 
 
 def profile_names() -> list[str]:
     return sorted(find_profiles())
 
 
-def load_profile(name: str) -> tuple[dict[str, Any], Path]:
-    """Données du profil (gabarit Bambu relatif résolu en chemin absolu) et fichier d'origine."""
-    profiles = find_profiles()
-    if name not in profiles:
-        raise ProfileError(f"matière inconnue '{name}' (profils disponibles : {', '.join(sorted(profiles))})")
-    path = profiles[name].path
+def _deep_merge(base: dict, over: dict) -> dict:
+    out = dict(base)
+    for key, value in over.items():
+        out[key] = _deep_merge(out[key], value) if isinstance(value, dict) and isinstance(out.get(key), dict) else value
+    return out
+
+
+def _read_layer(path: Path) -> dict[str, Any]:
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except OSError as exc:
@@ -85,8 +110,26 @@ def load_profile(name: str) -> tuple[dict[str, Any], Path]:
         )
     bambu = data.get("bambu")
     if isinstance(bambu, dict) and isinstance(bambu.get("template"), str):
-        data["bambu"] = {**bambu, "template": str((path.parent / bambu["template"]).resolve())}
-    return data, path
+        data["bambu"] = {**bambu, "template": str((path.parent / bambu["template"]).expanduser().resolve())}
+    return data
+
+
+def load_profile(name: str) -> tuple[dict[str, Any], tuple[Path, ...]]:
+    """Données fusionnées du profil (gabarit Bambu résolu en chemin absolu) et fichiers qui le composent."""
+    profiles = find_profiles()
+    if name not in profiles:
+        raise ProfileError(f"matière inconnue '{name}' (profils disponibles : {', '.join(sorted(profiles))})")
+    data: dict[str, Any] = {}
+    for path in profiles[name].layers:
+        data = _deep_merge(data, _read_layer(path))
+    return data, profiles[name].layers
+
+
+_COPY_HEADER = """\
+# Copie éditable du profil embarqué. Ce fichier est FUSIONNÉ sur le profil embarqué de même nom :
+# seules les clés présentes ici changent (vous pouvez en supprimer). bambu.template n'est pas copié :
+# il est hérité du profil embarqué ; ajoutez `bambu: {template: chemin.3mf}` pour en imposer un autre.
+"""
 
 
 def copy_profile(name: str, dest_dir: Path) -> Path:
@@ -98,9 +141,9 @@ def copy_profile(name: str, dest_dir: Path) -> Path:
     target = Path(dest_dir) / source.name
     if target.exists():
         raise ProfileError(f"{target} existe déjà : supprimez-le ou éditez-le directement")
-    text = source.read_text(encoding="utf-8")
-    # le gabarit embarqué est relatif au dossier du paquet : le rendre absolu pour la copie
-    text = text.replace("../templates/", (source.parent.parent / "templates").as_posix() + "/")
+    lines = source.read_text(encoding="utf-8").splitlines()
+    cut = next((i for i, ln in enumerate(lines) if ln.startswith("bambu:")), len(lines))
+    text = _COPY_HEADER + "\n".join(lines[:cut]).rstrip() + "\n"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8")
     return target

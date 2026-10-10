@@ -325,19 +325,33 @@ def load_config(path: Path | None = None, overrides: dict[str, Any] | None = Non
     over = overrides or {}
     material = over.get("material", project.get("material", "pla_aero"))
     try:
-        profile, profile_path = load_profile(material) if isinstance(material, str) else ({}, None)
+        profile, profile_files = load_profile(material) if isinstance(material, str) else ({}, ())
     except ProfileError as exc:
         raise ConfigError(str(exc)) from exc
-    if profile_path is not None:
-        try:  # le profil doit être valide seul : l'erreur nomme alors son fichier
-            Config.model_validate({**profile, "material": material})
-        except ValidationError as exc:
-            raise ConfigError(f"profil matière {profile_path} invalide :\n{exc}") from exc
     data = _deep_merge(_deep_merge(profile, project), over)
     try:
         return Config.model_validate(data)
     except ValidationError as exc:
+        overriding = [d for d in (project, over) if d]
+        locs = [e["loc"] for e in exc.errors()]
+        from_profile = bool(profile_files) and all(
+            loc and not any(_set_in(d, loc) for d in overriding) for loc in locs
+        )
+        if from_profile or (profile_files and not overriding):
+            files = ", ".join(str(f) for f in profile_files)
+            raise ConfigError(f"profil matière {files} invalide :\n{exc}") from exc
         raise ConfigError(f"configuration invalide :\n{exc}") from exc
+
+
+def _set_in(data: Any, loc: tuple) -> bool:
+    """Le champ `loc` est-il posé dans `data` (une liste posée remplace celle du profil en bloc) ?"""
+    for key in loc:
+        if isinstance(data, list):
+            return True
+        if not isinstance(data, dict) or key not in data:
+            return False
+        data = data[key]
+    return True
 
 
 def material_label(material: str) -> str:

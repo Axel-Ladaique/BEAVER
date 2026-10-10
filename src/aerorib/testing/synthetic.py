@@ -105,3 +105,24 @@ def broken_wing(kind: Literal["hole", "island", "narrow", "skin", "hole_narrow"]
         hole = Cylinder(4, 200).moved(Location((45, camber(45), 50)))
         return wing - hole - _slit(45, camber(45), True, 0.05, 100)
     raise ValueError(f"variante inconnue : {kind}")
+
+
+def wing_x_bodies(
+    chord: float = 100.0,
+    span: float = 80.0,
+    spar_x: float = 30.0,
+    spar_d: float = 8.0,
+    passage_x: float = 70.0,
+    passage_d: float = 2.4,
+) -> list["NamedBody"]:
+    from aerorib.io_step import NamedBody
+
+    wing, camber = naca_wing(chord=chord, span=span)
+    wing = wing - Cylinder(spar_d / 2, span * 2).moved(Location((spar_x, camber(spar_x), span / 2)))
+    wing = wing - Cylinder(passage_d / 2, span * 2).moved(Location((passage_x, camber(passage_x), span / 2)))
+    spar = Cylinder(spar_d / 2, span).moved(Location((spar_x, camber(spar_x), span / 2)))
+    to_x = Location((0, 0, 0), (0, 90, 0))
+    return [
+        NamedBody(("Aile_test",), wing.moved(to_x).solids()[0]),
+        NamedBody(("SBAR_8",), spar.moved(to_x).solids()[0]),
+    ]

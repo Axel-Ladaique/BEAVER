@@ -101,8 +101,6 @@ class Passage:
     r_max: float = 0.0  # plus grand rayon (lamage) ; r = le plus petit
 
 
-
-
 def find_passages(skin: Solid, max_tilt_deg: float) -> list[Passage]:
     limit = math.cos(math.radians(max_tilt_deg))
     groups: list[dict] = []
@@ -151,23 +149,31 @@ def find_passages(skin: Solid, max_tilt_deg: float) -> list[Passage]:
     return out
 
 
-def free_passages(skin: Solid, cfg: Config, exclude: list[Bore]) -> list[tuple[str, Passage]]:
-    """Alésages de la peau qui ne logent pas un longeron (`exclude`), nommés « passage N »."""
+def free_passages(
+    skin: Solid, cfg: Config, exclude: list[Bore], found: list[Passage] | None = None
+) -> list[tuple[str, Passage]]:
+    """Alésages de la peau qui ne logent pas un longeron (`exclude`), nommés « passage N ».
+
+    `found` : résultat de `find_passages` déjà calculé (sinon recherché ici)."""
+    if found is None:
+        found = find_passages(skin, cfg.passages.max_tilt_deg)
     out: list[tuple[str, Passage]] = []
-    for f in find_passages(skin, cfg.passages.max_tilt_deg):
+    for f in found:
         if any(_linked(b, f) for b in exclude if b.cut_hole):
             continue  # alésage du logement d'un longeron : déjà traité avec lui
         out.append((f"passage {len(out) + 1}", f))
     return out
 
 
-def passage_bores(skin: Solid, cfg: Config, exclude: list[Bore]) -> list[Bore]:
+def passage_bores(
+    skin: Solid, cfg: Config, exclude: list[Bore], found: list[Passage] | None = None
+) -> list[Bore]:
     """Mode `link` : chaque passage est relié à la peau par une fente (sans attache)."""
     p = cfg.passages
     if p.mode != "link":
         return []
     out = []
-    for name, f in free_passages(skin, cfg, exclude):
+    for name, f in free_passages(skin, cfg, exclude, found):
         drift = (f.z1 - f.z0) * math.tan(math.radians(f.tilt_deg))
         if drift > p.sleeve / 2:
             raise BoreError(
@@ -187,17 +193,19 @@ def fill_radius(f: Passage) -> float:
     return max(f.r, f.r_max) + FILL_MARGIN
 
 
-def passages_to_fill(skin: Solid, cfg: Config, exclude: list[Bore]) -> list[tuple[str, Passage]]:
+def passages_to_fill(
+    skin: Solid, cfg: Config, exclude: list[Bore], found: list[Passage] | None = None
+) -> list[tuple[str, Passage]]:
     """Mode `fill` : passages à reboucher (cylindre vertical ; un passage incliné est refusé)."""
     if cfg.passages.mode != "fill":
         return []
     out = []
-    for name, f in free_passages(skin, cfg, exclude):
+    for name, f in free_passages(skin, cfg, exclude, found):
         drift = (f.z1 - f.z0) * math.tan(math.radians(f.tilt_deg))
         if drift / 2 > FILL_MARGIN:
             raise BoreError(
                 f"{name} (x={f.x:.1f}, y={f.y:.1f}) : passage incliné de {f.tilt_deg:.1f}° par rapport à l'axe "
-                f"d'impression (dérive {drift:.1f} mm) — rebouchage impossible en P1 "
+                f"d'impression (dérive {drift:.2f} mm) — rebouchage impossible en P1 "
                 "(corriger le modèle, ou passages: {mode: link} / {mode: off})"
             )
         out.append((name, f))
@@ -226,9 +234,12 @@ def _linked(spar: Bore, f: Passage) -> bool:
     )
 
 
-def extend_to_existing_bores(spars: list[Bore], skin: Solid, cfg: Config) -> list[Bore]:
+def extend_to_existing_bores(
+    spars: list[Bore], skin: Solid, cfg: Config, found: list[Passage] | None = None
+) -> list[Bore]:
     """Un longeron logé dans un alésage existant plus long : trou et fente sur toute l'union contiguë."""
-    found = find_passages(skin, cfg.passages.max_tilt_deg)
+    if found is None:
+        found = find_passages(skin, cfg.passages.max_tilt_deg)
     out = []
     for b in spars:
         while True:  # de proche en proche : un alésage relié peut en toucher un autre

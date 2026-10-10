@@ -33,6 +33,8 @@ def test_synthetic_wing_is_printable():
     assert bb.min.Z == pytest.approx(0.0, abs=1e-3) and bb.max.Z == pytest.approx(80.0, abs=1e-3)
     assert body.result.volume < body.original.volume
     assert any("nervures" in m for m in messages)
+    # longeron et passage relié comptés séparément
+    assert any("1 longeron(s), 1 passage(s) relié(s), 0 rebouché(s)" in m for m in messages), messages
 
 
 def test_spar_outside_skin_is_ignored():
@@ -273,7 +275,7 @@ def test_fill_refused_when_bore_breaks_the_surface(no_ribs):
 
     base = Box(60, 30, 40, align=(Align.CENTER, Align.CENTER, Align.MIN))
     skin = (base - Cylinder(1.2, 40).moved(Location((0, 15 - 1.21, 20)))).solids()[0]  # paroi de 0,01 mm
-    with pytest.raises(PipelineError, match=r"passage 1 \(x=0.0, y=13.8, Ø2.4\) : alésage à 0.01 mm de la surface — rebouchage impossible"):
+    with pytest.raises(PipelineError, match=r"passage 1 \(x=0.0, y=13.8, Ø2.4\) : paroi de -0.01 mm entre le rebouchage \(Ø2.44\) et la surface — rebouchage impossible"):
         generate_skin(skin, [], HALF)
 
 
@@ -282,5 +284,18 @@ def test_fill_refused_for_tilted_passage(no_ribs):
 
     base = Box(60, 30, 40, align=(Align.CENTER, Align.CENTER, Align.MIN))
     skin = (base - Cylinder(1.2, 80).moved(Location((10, 3, 20), (0, 2, 0)))).solids()[0]
-    with pytest.raises(PipelineError, match=r"passage 1.*incliné de 2.0°.*rebouchage impossible"):
+    with pytest.raises(PipelineError, match=r"passage 1.*incliné de 2.0°.*\(dérive 1.40 mm\) — rebouchage impossible"):
         generate_skin(skin, [], HALF)
+
+
+def test_passages_searched_once(no_ribs, monkeypatch):
+    from aerorib.features import bores as bores_mod
+
+    calls = []
+    real = bores_mod.find_passages
+    spy = lambda *a: calls.append(1) or real(*a)  # noqa: E731
+    monkeypatch.setattr(bores_mod, "find_passages", spy)
+    monkeypatch.setattr(pipeline, "find_passages", spy)
+    skin, spar, _ = _parasitic_case()
+    generate_skin(skin, [("SBAR", spar)], HALF)
+    assert len(calls) == 1

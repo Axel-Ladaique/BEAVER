@@ -20,6 +20,7 @@ from aerorib.features.bores import (
     extend_to_existing_bores,
     fill_radius,
     fill_tools,
+    find_passages,
     passage_bores,
     passages_to_fill,
     spar_bores,
@@ -95,10 +96,11 @@ def fill_skin(skin: Solid, passages: list[tuple[str, Passage]], tol: float) -> S
         p = Point(f.x, f.y)
         rings = [poly.exterior for poly in layer.polygons if Polygon(poly.exterior).contains(p)]
         dist = min(r.distance(p) for r in rings) if rings else 0.0  # centre → surface extérieure
-        if dist - fill_radius(f) < _FILL_WALL:
+        wall = dist - fill_radius(f)  # paroi restante autour du cylindre de rebouchage
+        if wall < _FILL_WALL:
             raise PipelineError(
-                f"{name} (x={f.x:.1f}, y={f.y:.1f}, Ø{2 * f.r:.1f}) : alésage à {max(dist - f.r, 0.0):.2f} mm "
-                "de la surface — rebouchage impossible sans déformer la peau "
+                f"{name} (x={f.x:.1f}, y={f.y:.1f}, Ø{2 * f.r:.1f}) : paroi de {wall:.2f} mm entre le rebouchage "
+                f"(Ø{2 * fill_radius(f):.2f}) et la surface — rebouchage impossible sans déformer la peau "
                 "(corriger le modèle, ou passages: {mode: link} / {mode: off})"
             )
     filled = skin.fuse(*fill_tools([f for _, f in passages])).clean()
@@ -122,9 +124,10 @@ def generate_skin(skin: Solid, spars: list[tuple[str, Solid]], cfg: Config) -> G
     mid = MidSurface.from_skin(skin, nx, nz, tol)
     inside = _spars_inside(skin, spars, tol)
     try:
-        bores = extend_to_existing_bores(spar_bores(inside, cfg), skin, cfg)
-        to_fill = passages_to_fill(skin, cfg, exclude=bores)
-        bores += passage_bores(skin, cfg, exclude=bores)
+        found = find_passages(skin, cfg.passages.max_tilt_deg)  # une seule recherche des alésages
+        bores = extend_to_existing_bores(spar_bores(inside, cfg), skin, cfg, found)
+        to_fill = passages_to_fill(skin, cfg, exclude=bores, found=found)
+        bores += passage_bores(skin, cfg, exclude=bores, found=found)
     except BoreError as exc:
         raise PipelineError(str(exc)) from exc
     skin = fill_skin(skin, to_fill, tol)
@@ -174,8 +177,10 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
             raise
         except _GEOMETRY_ERRORS as exc:
             raise PipelineError(f"{s.body.name} : génération impossible ({type(exc).__name__} : {exc})") from exc
+        spars_n = sum(b.cut_hole for b in bores)
         progress(
-            f"{s.body.name} : {n} nervures, {len(bores)} trou(s) relié(s), {len(filled)} rebouché(s) — validation…"
+            f"{s.body.name} : {n} nervures, {spars_n} longeron(s), {len(bores) - spars_n} passage(s) relié(s), "
+            f"{len(filled)} rebouché(s) — validation…"
         )
         # l'original reste la peau avant rebouchage : seuls ses contours extérieurs sont comparés
         report = validate(result, cfg, original=skin)

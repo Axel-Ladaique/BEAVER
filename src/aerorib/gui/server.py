@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import secrets
 import socket
+import threading
+import time
 import webbrowser
 from pathlib import Path
 
+import typer
 import uvicorn
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.requests import HTTPConnection
 
 from aerorib import __version__
 
@@ -18,18 +23,36 @@ HOST = "127.0.0.1"
 STATIC_DIR = Path(__file__).parent / "static"
 
 
+class TokenMiddleware:
+    """Middleware ASGI pur : exige le jeton sur toute route /api/*."""
+
+    def __init__(self, app, token: str) -> None:
+        self.app = app
+        self.token = token
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket") and scope["path"].startswith("/api/"):
+            conn = HTTPConnection(scope)
+            fourni = conn.headers.get("X-AeroRib-Token") or conn.query_params.get("token") or ""
+            if not secrets.compare_digest(fourni.encode(), self.token.encode()):
+                if scope["type"] == "http":
+                    corps = json.dumps({"erreur": "jeton manquant ou invalide"}).encode()
+                    await send({"type": "http.response.start", "status": 401,
+                                "headers": [(b"content-type", b"application/json"),
+                                            (b"content-length", str(len(corps)).encode())]})
+                    await send({"type": "http.response.body", "body": corps})
+                else:
+                    await send({"type": "websocket.close", "code": 1008})
+                return
+        await self.app(scope, receive, send)
+
+
 def create_app(root: Path, token: str) -> FastAPI:
     app = FastAPI(title="AeroRib", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.root = Path(root)
     app.state.token = token
-
-    @app.middleware("http")
-    async def verifier_jeton(request: Request, call_next):
-        if request.url.path.startswith("/api/"):
-            fourni = request.headers.get("X-AeroRib-Token") or request.query_params.get("token") or ""
-            if not secrets.compare_digest(fourni.encode(), token.encode()):
-                return JSONResponse({"erreur": "jeton manquant ou invalide"}, status_code=401)
-        return await call_next(request)
+    app.add_middleware(TokenMiddleware, token=token)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
 
     @app.get("/api/sante")
     def sante() -> dict:
@@ -39,26 +62,43 @@ def create_app(root: Path, token: str) -> FastAPI:
     return app
 
 
-def build_uvicorn_config(app: FastAPI, port: int) -> uvicorn.Config:
-    return uvicorn.Config(app, host=HOST, port=port, log_level="warning")
+def build_uvicorn_config(app: FastAPI) -> uvicorn.Config:
+    return uvicorn.Config(app, host=HOST, log_level="warning")
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind((HOST, 0))
-        return s.getsockname()[1]
+def bind_socket(port: int = 0) -> socket.socket:
+    """Ouvre le socket d'écoute unique sur 127.0.0.1 (port 0 = choisi par l'OS)."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind((HOST, port))
+    except OSError:
+        sock.close()
+        raise OSError(f"port {port} déjà utilisé") from None
+    sock.listen(128)
+    return sock
+
+
+def _open_when_started(server: uvicorn.Server, url: str) -> None:
+    while not server.started and not server.should_exit:
+        time.sleep(0.05)
+    if server.started:
+        webbrowser.open(url)
 
 
 def run_gui(root: Path, port: int = 0, open_browser: bool = True) -> None:
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
-    port = port or _free_port()
+    try:
+        sock = bind_socket(port)
+    except OSError as exc:
+        typer.echo(f"erreur : {exc}")
+        raise typer.Exit(1)
+    real_port = sock.getsockname()[1]
     token = secrets.token_urlsafe(24)
-    app = create_app(root, token)
-    url = f"http://{HOST}:{port}/?token={token}"
+    server = uvicorn.Server(build_uvicorn_config(create_app(root, token)))
+    url = f"http://{HOST}:{real_port}/?token={token}"
     print(f"AeroRib : interface disponible sur {url}")
     print("Ctrl+C pour arrêter.")
     if open_browser:
-        webbrowser.open(url)
-    cfg = build_uvicorn_config(app, port)
-    uvicorn.run(cfg.app, host=cfg.host, port=cfg.port, log_level=cfg.log_level)
+        threading.Thread(target=_open_when_started, args=(server, url), daemon=True).start()
+    server.run(sockets=[sock])

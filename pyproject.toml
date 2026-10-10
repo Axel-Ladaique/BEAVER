@@ -31,7 +31,7 @@ packages = ["src/aerorib"]
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28.1",
+    "httpx2>=2.13.1",
     "pytest>=8.0",
 ]
 

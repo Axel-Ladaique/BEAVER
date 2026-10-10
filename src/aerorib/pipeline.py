@@ -47,6 +47,7 @@ class BodyResult:
     bores: tuple[Bore, ...]
     plates: int
     filled: tuple[Passage, ...] = ()  # alésages rebouchés (passages: {mode: fill})
+    warnings: tuple[str, ...] = ()  # avertissements de volume d'impression / gabarit
     segments: tuple[Solid, ...] = ()  # tronçons imprimables, emplanture → saumon (un seul si pas de découpe)
 
 
@@ -180,23 +181,44 @@ def generate_skin(skin: Solid, spars: list[tuple[str, Solid]], cfg: Config) -> G
 _GEOMETRY_ERRORS = (ValueError, RuntimeError, Standard_Failure)
 
 
-def _print_volume(cfg: Config) -> tuple[float, float, float]:
-    """(largeur, profondeur, hauteur) du plateau : gabarit Bambu s'il existe, sinon imprimante."""
+def _print_volume(cfg: Config) -> tuple[tuple[float, float, float], str | None]:
+    """((largeur, profondeur, hauteur), avertissement) : gabarit Bambu s'il existe, sinon imprimante."""
     try:
         t = read_template(resolve_template(cfg))
-        return t.bed[0], t.bed[1], t.height
-    except (ConfigError, BambuError):
-        x, y, z = cfg.printer_spec.volume
-        return x, y, z
+        return (t.bed[0], t.bed[1], t.height), None
+    except BambuError as exc:
+        warn = f"gabarit Bambu illisible ({exc}) — volume de l'imprimante {cfg.printer} utilisé"
+    except ConfigError:
+        warn = None
+    return tuple(cfg.printer_spec.volume), warn
 
 
-def _segment(body_name: str, result: Solid, cfg: Config, progress: Callable[[str], None]) -> tuple[Solid, ...]:
+def _segment(
+    body_name: str, result: Solid, cfg: Config, progress: Callable[[str], None]
+) -> tuple[tuple[Solid, ...], tuple[str, ...]]:
     seg = cfg.segment
-    if seg.mode == "off":
-        return (result,)
-    W, D, H = _print_volume(cfg)
-    max_h = seg.max_height if seg.max_height is not None else H - seg.margin
+    (W, D, H), fallback = _print_volume(cfg)
+    warnings = [f"{body_name} : {fallback}"] if fallback else []
+    usable = H - seg.margin
+    if seg.max_height is not None and seg.max_height > usable + 1e-9:
+        warnings.append(
+            f"{body_name} : segment.max_height ({seg.max_height:g} mm) dépasse la hauteur utile "
+            f"({usable:g} mm = {H:g} − marge {seg.margin:g})"
+        )
+    max_h = seg.max_height if seg.max_height is not None else usable
     bb = result.bounding_box(optimal=True)
+    if seg.mode == "off":
+        w, d, h = bb.max.X - bb.min.X, bb.max.Y - bb.min.Y, bb.max.Z - bb.min.Z
+        if h > max_h + 1e-9 or w > W - 2 * seg.margin or d > D - 2 * seg.margin:
+            warnings.append(
+                f"{body_name} : la pièce ({h:.0f} mm / {w:.0f}×{d:.0f} mm) dépasse le volume d'impression "
+                "— découpe désactivée (segment.mode: off)"
+            )
+        for w_ in warnings:
+            progress(f"⚠ {w_}")
+        return (result,), tuple(warnings)
+    for w_ in warnings:
+        progress(f"⚠ {w_}")
     try:
         cuts = plan_cuts(bb.max.Z - bb.min.Z, max_h, seg.cuts_at or None)
         pieces = split_part(result, cuts) if cuts else [result]
@@ -212,7 +234,7 @@ def _segment(body_name: str, result: Solid, cfg: Config, progress: Callable[[str
                 f"{body_name} : le tronçon {i} fait {w:.0f}×{d:.0f} mm, plus grand que le plateau "
                 f"({W:.0f}×{D:.0f} mm, marge {seg.margin:g} mm)"
             )
-    return tuple(pieces)
+    return tuple(pieces), tuple(warnings)
 
 
 def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambda m: None) -> RunResult:
@@ -247,6 +269,6 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
         )
         # l'original reste la peau avant rebouchage : seuls ses contours extérieurs sont comparés
         report = validate(result, cfg, original=skin)
-        segments = _segment(s.body.name, result, cfg, progress)
-        bodies.append(BodyResult(s.body.name, skin, result, report, bores, n, filled, segments))
+        segments, warns = _segment(s.body.name, result, cfg, progress)
+        bodies.append(BodyResult(s.body.name, skin, result, report, bores, n, filled, warns, segments))
     return RunResult(o, tuple(bodies))

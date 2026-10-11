@@ -15,7 +15,7 @@ from typing import Any, BinaryIO
 import yaml
 
 from aerorib.classify import ClassifyError, classify
-from aerorib.config import Config, ConfigError, load_config
+from aerorib.config import Config, ConfigError, _check_template_path, load_config
 from aerorib.io_step import StepReadError, read_step
 from aerorib.material_profiles import ProfileError, find_profiles, load_profile
 
@@ -104,8 +104,15 @@ class ProjectStore:
             raise ProjectError(404, f"projet introuvable : {nom}")
         return d
 
+    def require(self, nom: str) -> Path:
+        """Dossier d'un projet qui contient bien `piece.step` (404 sinon)."""
+        d = self._existing(nom)
+        if not (d / STEP_NAME).is_file():
+            raise ProjectError(404, f"projet introuvable : {nom}")
+        return d
+
     def step_path(self, nom: str) -> Path:
-        return self._existing(nom) / STEP_NAME
+        return self.require(nom) / STEP_NAME
 
     def config_path(self, nom: str) -> Path:
         return self._existing(nom) / CONFIG_NAME
@@ -160,14 +167,12 @@ class ProjectStore:
         return self._summary(d)
 
     def get(self, nom: str) -> dict:
-        d = self._existing(nom)
-        if not (d / STEP_NAME).is_file():
-            raise ProjectError(404, f"projet introuvable : {nom}")
+        d = self.require(nom)
         return {**self._summary(d), "piece": STEP_NAME, "taille_step": (d / STEP_NAME).stat().st_size}
 
     # --- inspection --------------------------------------------------------------------------
     def inspect(self, nom: str) -> dict:
-        d = self._existing(nom)
+        d = self.require(nom)
         cfg = self._load(d)
         try:
             model = classify(read_step(d / STEP_NAME), cfg)
@@ -195,8 +200,20 @@ class ProjectStore:
         except ConfigError as exc:
             raise ProjectError(422, scrub_paths(str(exc))) from exc
 
+    def config_from_dict(self, nom: str, data: Any) -> Config:
+        """Valide une configuration projet proposée (non enregistrée) comme `load_config` : défauts → profil → projet."""
+        d = self.require(nom)
+        if not isinstance(data, dict):
+            raise ProjectError(422, "la configuration proposée doit être un dictionnaire")
+        data = dict(data)
+        _check_template_path(data, d)
+        try:
+            return load_config(None, overrides=data)
+        except ConfigError as exc:
+            raise ProjectError(422, scrub_paths(str(exc))) from exc
+
     def read_config(self, nom: str) -> dict:
-        d = self._existing(nom)
+        d = self.require(nom)
         path = d / CONFIG_NAME
         try:
             texte = path.read_text(encoding="utf-8") if path.exists() else "{}\n"
@@ -212,7 +229,7 @@ class ProjectStore:
 
     def write_config(self, nom: str, data: dict | str) -> dict:
         """Valide avec load_config puis remplace atomiquement ; en cas d'erreur, rien n'est écrit."""
-        d = self._existing(nom)
+        d = self.require(nom)
         if isinstance(data, str):
             texte = data
         elif isinstance(data, dict):
@@ -231,13 +248,16 @@ class ProjectStore:
                     load_config(tmp)
                 except ConfigError as exc:
                     raise ProjectError(422, scrub_paths(str(exc).replace(str(tmp), CONFIG_NAME))) from exc
+                umask = os.umask(0)
+                os.umask(umask)
+                os.chmod(tmp, 0o666 & ~umask)  # mkstemp donne 0600 ; un fichier ordinaire suit le umask
                 os.replace(tmp, d / CONFIG_NAME)
             finally:
                 tmp.unlink(missing_ok=True)
         return self.read_config(nom)
 
     def effective_config(self, nom: str) -> dict:
-        d = self._existing(nom)
+        d = self.require(nom)
         cfg = self._load(d)
         try:
             project = yaml.safe_load((d / CONFIG_NAME).read_text(encoding="utf-8")) or {}

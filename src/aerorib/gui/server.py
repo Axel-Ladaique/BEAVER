@@ -137,10 +137,11 @@ def create_app(root: Path, token: str, routers: Sequence[APIRouter] | None = Non
     app.add_exception_handler(ProjectError, project_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.add_exception_handler(StarletteHTTPException, http_error_handler)
-    app.include_router(build_router(Path(root)))
+    principal = build_router(Path(root))
+    app.include_router(principal)
     for router in routers or ():
         app.include_router(router)
-    app.include_router(build_fallback_router())
+    app.include_router(build_fallback_router([principal, *(routers or ())]))
     # le montage statique est ajouté EN DERNIER : il ne doit masquer aucune route /api
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app

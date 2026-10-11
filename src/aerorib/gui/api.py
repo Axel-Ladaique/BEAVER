@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
+from starlette.routing import Match
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from aerorib import __version__
+from aerorib.gui import apercu
 from aerorib.gui.projects import ProjectError, ProjectStore
 
 
@@ -57,6 +61,7 @@ def build_router(root: Path) -> APIRouter:
     def config_effective(nom: str) -> dict:
         return store.effective_config(nom)
 
+    apercu.register(router, store)
     return router
 
 
@@ -64,12 +69,17 @@ def project_error_handler(_request: Request, exc: ProjectError) -> JSONResponse:
     return JSONResponse({"erreur": exc.message}, status_code=exc.status)
 
 
-def build_fallback_router() -> APIRouter:
-    """Routes /api inconnues : 404 en français (à inclure APRÈS tous les autres routeurs)."""
+def build_fallback_router(known: Sequence[APIRouter] = ()) -> APIRouter:
+    """Routes /api inconnues : 404 en français (à inclure APRÈS tous les autres routeurs) ; 405 si le chemin
+    existe dans l'un des routeurs `known` mais pas pour cette méthode."""
     router = APIRouter(prefix="/api")
 
     @router.api_route("/{chemin:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], include_in_schema=False)
-    def inconnue(chemin: str) -> JSONResponse:
+    def inconnue(chemin: str, request: Request) -> JSONResponse:
+        for r in known:
+            for route in r.routes:
+                if isinstance(route, APIRoute) and route.matches(request.scope)[0] == Match.PARTIAL:
+                    return JSONResponse({"erreur": "méthode non autorisée"}, status_code=405)
         return JSONResponse({"erreur": "route inconnue"}, status_code=404)
 
     return router

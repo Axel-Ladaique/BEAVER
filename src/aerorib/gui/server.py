@@ -23,7 +23,7 @@ from starlette.requests import HTTPConnection
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from aerorib.gui import projects, travaux
+from aerorib.gui import profils, projects, travaux
 from aerorib.gui.api import (
     build_fallback_router,
     build_router,
@@ -133,7 +133,9 @@ class TokenMiddleware:
         await self.app(scope, receive, send)
 
 
-def create_app(root: Path, token: str, routers: Sequence[APIRouter] | None = None) -> FastAPI:
+def create_app(
+    root: Path, token: str, routers: Sequence[APIRouter] | None = None, profiles_dir: Path | None = None
+) -> FastAPI:
     app = FastAPI(title="AeroRib", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.root = Path(root)
     app.state.token = token
@@ -149,9 +151,12 @@ def create_app(root: Path, token: str, routers: Sequence[APIRouter] | None = Non
     generations = travaux.build_router(app.state.travaux.store, app.state.travaux)
     app.include_router(generations)
     app.router.add_event_handler("shutdown", app.state.travaux.shutdown)
+    app.state.profils = profils.ProfileStore(profiles_dir)  # dossier résolu une fois, ici
+    profils_router = profils.build_router(app.state.profils)
+    app.include_router(profils_router)
     for router in routers or ():
         app.include_router(router)
-    app.include_router(build_fallback_router([principal, generations, *(routers or ())]))
+    app.include_router(build_fallback_router([principal, generations, profils_router, *(routers or ())]))
     # le montage statique est ajouté EN DERNIER : il ne doit masquer aucune route /api
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app

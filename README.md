@@ -197,7 +197,7 @@ chargement de three.js (jsDelivr) pour la 3D, qui demande **Internet au premier 
 Limites connues :
 
 - l'aperçu est une **approximation** (calcul 2D, sans booléens 3D) ; la génération reste la référence ;
-- l'estimation de durée est pessimiste (1,5 s par plaque) ;
+- l'estimation de durée (0,3 s par plaque) est calée sur une aile simple, machine libre : elle sous-estime avec des doubles nervures ou une machine chargée ;
 - la vue 3D montre les plaques **non découpées** : elles dépassent de la peau ;
 - une seule génération à la fois ;
 - l'ASA Aero n'a pas encore de gabarit Bambu : pas de `.3mf`, un avertissement s'affiche (voir « Profils matière »).

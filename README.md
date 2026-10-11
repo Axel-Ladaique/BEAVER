@@ -157,6 +157,51 @@ L'**ASA Aero n'a pas encore de gabarit Bambu** : enregistrer un projet ASA Aero 
 (imprimante, filament ASA, vase mode), puis renseigner `bambu.template` dans `./profiles/asa_aero.yaml`
 (`aerorib profils --copier asa_aero`). Sans cela, `--3mf` s'arrête avec un message explicite.
 
+## Interface graphique
+
+Une interface web **locale** pilote le même cœur que la ligne de commande (aucune géométrie propre à la GUI).
+
+```bash
+uv run aerorib gui                                  # projets dans ./projets, port libre, ouvre le navigateur
+uv run aerorib gui --dossier projets --port 0 --sans-navigateur
+```
+
+La commande affiche `AeroRib : interface disponible sur http://127.0.0.1:<port>/?token=<jeton>`. Sans le jeton
+de l'URL, l'API répond 401. **Double-clic** : `lancer-aerorib.command` (macOS) ou `lancer-aerorib.bat` (Windows),
+à la racine du dépôt (`uv` doit être installé). `Ctrl+C` dans le terminal arrête le serveur et annule la
+génération en cours.
+
+Onglets :
+
+- **Projets** : importer un STEP, voir les corps trouvés et leurs rôles.
+- **Réglages** : formulaire des paramètres (valeurs héritées du profil et valeurs surchargées), aperçu en direct à côté.
+- **Aperçu** : section à une hauteur réglable, vue de dessus, chiffres estimés (plaques, masse, durée), 3D approchée.
+- **Générer** : progression en direct, annulation, résumé, liens vers les fichiers, « Ouvrir dans Bambu ».
+- **Historique** : liste des essais, comparaison des réglages de deux essais.
+- **Profils** : édition de PLA Aero / ASA Aero. Les fichiers utilisateur vont dans `./profiles` ou `AERORIB_PROFILES` ;
+  seules les valeurs qui diffèrent sont écrites. Le gabarit Bambu est affiché en lecture seule. Enregistrer un profil
+  depuis la GUI **perd les commentaires** de son fichier YAML.
+
+Données sur disque :
+
+```
+projets/<nom>/piece.step
+projets/<nom>/config.yaml
+projets/<nom>/essais/<AAAAMMJJ-HHMMSS>/   # config résolue, resume.json, .step, .stl, .3mf, rapport
+```
+
+Sécurité : le serveur n'écoute que sur `127.0.0.1`, exige un jeton aléatoire par lancement, confine les chemins au
+dossier des projets et limite l'import à 200 Mo. Rien n'est envoyé hors de la machine ; la seule requête externe est le
+chargement de three.js (jsDelivr) pour la 3D, qui demande **Internet au premier chargement**.
+
+Limites connues :
+
+- l'aperçu est une **approximation** (calcul 2D, sans booléens 3D) ; la génération reste la référence ;
+- l'estimation de durée est pessimiste (1,5 s par plaque) ;
+- la vue 3D montre les plaques **non découpées** : elles dépassent de la peau ;
+- une seule génération à la fois ;
+- l'ASA Aero n'a pas encore de gabarit Bambu : pas de `.3mf`, un avertissement s'affiche (voir « Profils matière »).
+
 ## Nommage dans la CAO
 
 | Préfixe | Rôle |
@@ -174,4 +219,5 @@ Insensible à la casse. Repli possible dans la config : `roles: {Body3: spar}`.
 ```bash
 uv run pytest            # tous les tests
 uv run pytest -m "not slow"
+uv run pytest tests/test_gui_e2e.py -m slow   # bout en bout GUI sur l'aile Fusion v2 (~40 s)
 ```

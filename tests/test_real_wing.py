@@ -11,6 +11,7 @@ from aerorib.slicing import slice_layers
 
 FUSION = Path(__file__).parent / "fixtures" / "fusion_aile_4412_simple_sbar.step"
 FUSION_V2 = Path(__file__).parent / "fixtures" / "fusion_aile_4412_simple_sbar_v2.step"
+RECTANGLE = Path(__file__).parent / "fixtures" / "aile_rectangle_2sbar.step"
 DOUBLES = Path(__file__).parents[1] / "examples" / "config-doubles-nervures.yaml"
 
 
@@ -123,3 +124,16 @@ def test_real_wing_v2_bambu_two_segments(tmp_path):
         bb = seg.bounding_box()
         assert bb.min.Z == pytest.approx(0.0, abs=1e-3) and bb.max.Z == pytest.approx(105.0, abs=0.5)
     assert sorted(p.name for p in paths) == ["aile-rapport.html", "aile-t1.stl", "aile-t2.stl", "aile.3mf"]
+
+
+@pytest.mark.slow
+def test_blunt_edged_wing_is_printable():
+    # profil « boîte arrondie » (~20 mm d'épaisseur au nez, bords quasi verticaux), deux longerons : les plaques
+    # s'arrêtent avant les parois raides au lieu de les raser (peau entamée, îlots, matière trop fine)
+    cfg = load_config()
+    run = run_model(classify(read_step(RECTANGLE), cfg), cfg)
+    (body,) = run.bodies
+    assert body.report.ok, [(i.z, i.message) for i in body.report.errors][:10]
+    assert not body.report.errors
+    assert len(body.bores) == 2
+    assert body.plates > 40

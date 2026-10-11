@@ -48,7 +48,7 @@ from aerorib.pipeline import (
     GEOMETRY_ERRORS,
     PipelineError,
     check_fill,
-    deeper_lines,
+    rib_options,
     spars_inside,
     usable_height,
 )
@@ -321,10 +321,7 @@ def plates_2d(prep: Prepared, cfg: Config) -> list[Plate2D]:
     bb = prep.bb
     out = []
     for i, layer in enumerate(cfg.rib_layers):
-        for p in diamond_profiles(
-            bb, prep.mid, list(prep.bores), layer, angle_deg=cfg.rib_angle(layer), gap=cfg.split.gap,
-            slit=cfg.slit_width, min_depth=cfg.split.min_rib_depth, exclude=deeper_lines(cfg, bb, i),
-        ):
+        for p in diamond_profiles(bb, prep.mid, list(prep.bores), layer, **rib_options(cfg, bb, i)):
             out.append(
                 Plate2D(i, layer.name, p.family, p.c, p.d0, p.d1, bb.min.Z, p.top, layer.depth, cfg.slit_width, p.polygon)
             )

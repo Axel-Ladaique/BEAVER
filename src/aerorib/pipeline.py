@@ -139,6 +139,16 @@ def fill_skin(skin: Solid, passages: list[tuple[str, Passage]], tol: float) -> S
     return solids[0]
 
 
+def rib_options(cfg: Config, bb, i: int) -> dict:
+    """Paramètres de `diamond_plates` / `diamond_profiles` pour le niveau i : un seul jeu pour la génération et
+    l'aperçu, qui doivent produire exactement les mêmes plaques."""
+    layer = cfg.rib_layers[i]
+    return dict(
+        angle_deg=cfg.rib_angle(layer), gap=cfg.split.gap, slit=cfg.slit_width, min_depth=cfg.split.min_rib_depth,
+        line_width=cfg.preset.line_width, max_mouth=cfg.validation.max_mouth_width, exclude=deeper_lines(cfg, bb, i),
+    )
+
+
 def deeper_lines(cfg: Config, bb, i: int) -> list[tuple[int, float]]:
     """Plans (famille, c) des niveaux au moins aussi profonds que le niveau i peu profond, de même angle :
     une plaque peu profonde sur l'un d'eux y est contenue (booléen inutile, faces coplanaires)."""
@@ -184,10 +194,7 @@ def generate_skin(skin: Solid, spars: list[tuple[str, Solid]], cfg: Config) -> G
     skin = fill_skin(skin, to_fill, tol)
     plates = []
     for i, layer in enumerate(cfg.rib_layers):
-        plates += diamond_plates(
-            bb, mid, bores, layer, angle_deg=cfg.rib_angle(layer), gap=cfg.split.gap,
-            slit=cfg.slit_width, min_depth=cfg.split.min_rib_depth, exclude=deeper_lines(cfg, bb, i),
-        )
+        plates += diamond_plates(bb, mid, bores, layer, **rib_options(cfg, bb, i))
     result = skin.cut(*plates, *bore_cut_tools(bores, bb, mid))
     part, slivers = main_solid(result)
     for name, spar in inside:

@@ -2,18 +2,26 @@ import math
 
 import numpy as np
 import pytest
-from build123d import Box
+from build123d import Box, Location
 from shapely.geometry import LineString, Point
 
 from aerorib.config import RibLayer
 from aerorib.features.bores import Bore
-from aerorib.features.ribs import bore_zones_2d, diamond_plates, plate_profiles_2d
+from aerorib.features.ribs import (
+    bore_zones_2d,
+    diamond_plates,
+    diamond_profiles,
+    plate_profiles_2d,
+    steep_samples,
+    wall_limits,
+)
 from aerorib.midsurface import MidSurface
 
 SS = np.linspace(-5, 100, 40)
 YM = np.zeros_like(SS)
 TH = np.full_like(SS, 20.0)
 KW = dict(gap=0.6, min_depth=1.0, ytop=15.0, ybot=-15.0)
+WALL = dict(line_width=0.42, max_mouth=0.5)  # largeur de ligne PLA Aero, bouche max par défaut
 
 
 def column(poly, s):
@@ -58,7 +66,7 @@ def test_diamond_plates_on_box():
         xs=np.linspace(bb.min.X, bb.max.X, 11), zs=np.linspace(bb.min.Z, bb.max.Z, 5),
         ymid=np.zeros((11, 5)), thick=np.full((11, 5), 20.0),
     )
-    plates = diamond_plates(bb, mid, [], RibLayer(spacing=25.0), angle_deg=45.0, gap=0.6, slit=0.1, min_depth=1.0)
+    plates = diamond_plates(bb, mid, [], RibLayer(spacing=25.0), angle_deg=45.0, gap=0.6, slit=0.1, min_depth=1.0, **WALL)
     assert plates and all(p.is_valid for p in plates)
     cut = part.cut(*plates)
     assert cut.is_valid and len(cut.solids()) == 1  # la bande de séparation garde la pièce d'un seul tenant
@@ -162,7 +170,7 @@ def test_diamond_plates_partial_depth_on_box():
         ymid=np.zeros((11, 5)), thick=np.full((11, 5), 20.0),
     )
     layer = RibLayer(name="peau", spacing=10.0, depth=3.0, phase=5.0)
-    plates = diamond_plates(bb, mid, [], layer, angle_deg=45.0, gap=0.6, slit=0.1, min_depth=1.0)
+    plates = diamond_plates(bb, mid, [], layer, angle_deg=45.0, gap=0.6, slit=0.1, min_depth=1.0, **WALL)
     assert plates and all(p.is_valid for p in plates)
     for p in plates:  # chaque plaque reste dans les 3 mm sous la peau (y = ±10)
         pb = p.bounding_box()
@@ -216,3 +224,130 @@ def test_partial_depth_clamped_band_keeps_the_gap():
         assert a.bounds[1] - b.bounds[3] >= KW["gap"] - 1e-6, s  # plus large à une transition, jamais plus fine
         checked += 1
     assert checked > 10
+
+
+# --- parois raides : bords d'attaque / de fuite épais (aile à profil « boîte arrondie ») -------------
+
+
+def test_wall_limits_follow_the_mouth_criterion():
+    # fente vue en tranche : w = slit / cos(angle) ; bouche ≈ w·√(1 + y'²) ≤ marge · max_mouth
+    max_slope, margin = wall_limits(slit=0.1, angle_deg=45.0, **WALL)
+    w = 0.1 / math.cos(math.radians(45))
+    assert w * math.sqrt(1 + max_slope**2) < 0.5  # avec marge de sécurité
+    assert w * math.sqrt(1 + max_slope**2) > 0.25  # pas absurdement sévère (bord d'attaque NACA conservé)
+    assert margin == pytest.approx(2 * 0.42 + 0.1)
+    # bouche plus large tolérée → pente plus forte permise ; fente plus large → moins
+    assert wall_limits(slit=0.1, angle_deg=45.0, line_width=0.42, max_mouth=1.0)[0] > max_slope
+    assert wall_limits(slit=0.2, angle_deg=45.0, **WALL)[0] < max_slope
+
+
+def _blunt_mid(sweep=0.0, nz=5, span=100.0):
+    """Profil « boîte » : paroi quasi verticale de 20 mm entre x = x_BA et x_BA + 0,5 (x_BA = sweep·z), puis
+    épaisseur constante ; grille fine en x (0,1 mm) comme une coupe exacte, `nz` rangées en z."""
+    xs = np.linspace(-30.0, 110.0, 1401)
+    zs = np.linspace(0.0, span, nz)
+    le = sweep * zs
+    th = 20.0 * np.clip((xs[:, None] - le) / 0.5, 0.0, 1.0)
+    return MidSurface(xs, zs, np.zeros_like(th), th)
+
+
+def test_plates_stop_before_a_steep_wall():
+    d0 = d1 = math.sin(math.radians(45))
+    ss = np.linspace(-5, 100, 211)
+    x, z = ss * d0, ss * d1
+    mid = _blunt_mid()
+    ym, th = mid.at(x, z)
+    max_slope, margin = wall_limits(slit=0.1, angle_deg=45.0, **WALL)
+    steep = steep_samples(mid, x, z, max_slope=max_slope, margin=margin)
+    # sans le critère, la plaque descend dans la paroi (x < 0,5) : en tranche, la fente rase la paroi
+    (naive,) = [p for t, p in plate_profiles_2d(ss, ym, th, [], **KW) if t]
+    assert naive.bounds[0] * d0 < 0.5
+    for top in (True, False):
+        (poly,) = [p for t, p in plate_profiles_2d(ss, ym, th, [], **KW, steep=steep) if t is top]
+        # le bout de la plaque reste à au moins `margin` de la paroi (au pas d'échantillonnage près)
+        assert poly.bounds[0] * d0 >= 0.5 + margin - 0.5 * d0
+        assert poly.bounds[2] == pytest.approx(100.0)
+        # marche, pas rampe : la première colonne va de la bande de séparation à la peau lointaine
+        (seg,) = column(poly, poly.bounds[0] + 0.01)
+        assert seg.bounds[1 if top else 3] == pytest.approx(0.3 if top else -0.3)
+
+
+@pytest.mark.parametrize("sweep", [0.2, -0.2])
+def test_steep_mask_follows_a_swept_wall_between_grid_rows(sweep):
+    # bord en flèche, rangées tous les 25 mm : entre deux rangées, l'interpolation bilinéaire moyenne deux sections
+    # décalées de 5 mm (deux demi-parois aux abscisses des rangées, rien à l'abscisse réelle) ; le masque doit
+    # suivre la paroi réelle, en x = sweep·z
+    mid = _blunt_mid(sweep=sweep, nz=5)
+    max_slope, margin = wall_limits(slit=0.1, angle_deg=45.0, **WALL)
+    for z in (5.0, 12.5, 20.0, 60.0, 87.5):
+        wall = sweep * z
+        x = np.arange(wall - 3.0, wall + 10.0, 0.05)
+        steep = steep_samples(mid, x, np.full_like(x, z), max_slope=max_slope, margin=margin)
+        assert steep[(x >= wall) & (x <= wall + 0.5 + margin - 0.1)].all(), z  # paroi et marge couvertes
+        assert not steep[x > wall + 0.5 + margin + 0.2].any(), z  # pas d'excès loin de la paroi
+
+
+def _naca_mid(chord=200.0, nx=101):
+    """Surface médiane d'une aile NACA 4412 de 200 mm, échantillonnée comme `MidSurface.from_skin`."""
+    xs = np.linspace(0.0, chord, nx)
+    xi = xs / chord
+    camber = np.where(xi < 0.4, 0.04 / 0.16 * (0.8 * xi - xi**2), 0.04 / 0.36 * (0.2 + 0.8 * xi - xi**2)) * chord
+    th = 2 * _naca_half_thickness(xs, chord)
+    th[[0, -1]] = 0.0  # coupe exactement au bord d'attaque / de fuite : épaisseur nulle
+    zs = np.linspace(0.0, 200.0, 5)
+    return MidSurface(xs, zs, np.repeat(camber[:, None], 5, axis=1), np.repeat(th[:, None], 5, axis=1))
+
+
+@pytest.mark.parametrize("sign", [1, -1])
+def test_naca_leading_edge_is_unchanged(sign):
+    # bord d'attaque arrondi mais mince : l'élagage par épaisseur suffit, le critère de pente ne retire rien
+    mid = _naca_mid()
+    d0, d1 = sign * math.sin(math.radians(45)), math.cos(math.radians(45))
+    max_slope, margin = wall_limits(slit=0.1, angle_deg=45.0, **WALL)
+    for c in (-150.0, -100.0, -30.0, 0.0, 30.0, 100.0, 150.0, 250.0, 330.0):
+        ss = np.linspace(-5, 290, 591)
+        x, z = c + ss * d0, ss * d1
+        ym, th = mid.at(x, z)
+        steep = steep_samples(mid, x, z, max_slope=max_slope, margin=margin)
+        kw = dict(KW, ytop=30.0, ybot=-30.0, edge_vertices=16)
+        before = plate_profiles_2d(ss, ym, th, [], **kw)
+        after = plate_profiles_2d(ss, ym, th, [], **kw, steep=steep)
+        assert [(t, p.bounds) for t, p in after] == [(t, p.bounds) for t, p in before], c
+
+
+def test_diamond_profiles_keep_away_from_blunt_edges():
+    # aile « boîte » : parois verticales aux deux bouts de la corde (th passe de 0 à 20 en un pas de grille)
+    xs = np.linspace(-50.0, 50.0, 101)
+    th = np.full(101, 20.0)
+    th[[0, -1]] = 0.0
+    mid = MidSurface(xs, np.linspace(0.0, 60.0, 5), np.zeros((101, 5)), np.repeat(th[:, None], 5, axis=1))
+    bb = Box(100, 20, 60).moved(Location((0, 0, 30))).bounding_box()
+    profs = diamond_profiles(bb, mid, [], RibLayer(spacing=10.0), angle_deg=45.0, gap=0.6, slit=0.1, min_depth=1.0,
+                             **WALL)
+    assert profs
+    _, margin = wall_limits(slit=0.1, angle_deg=45.0, **WALL)
+    for p in profs:
+        xa, xb = sorted(p.c + s * p.d0 for s in (p.polygon.bounds[0], p.polygon.bounds[2]))
+        # paroi entre x = ±49 et ±50 (premier pas de grille) : bout de plaque à `margin` au moins, au pas près
+        assert xa >= -49.0 + margin - 0.5 and xb <= 49.0 - margin + 0.5, (p.family, p.c, xa, xb)
+
+
+def test_full_edge_follows_a_kinked_mid_surface():
+    # Surface médiane coudée près d'un bord épais (profil « boîte » dissymétrique) : à 16 sommets réguliers, la corde
+    # s'écarte de ym de plusieurs dixièmes ; deux plaques qui se croisent (familles ±, sommets différents) décalent
+    # alors leurs bandes de séparation et le col entre elles devient plus fin qu'une ligne. Avec `band_tol`, le bord
+    # reste à band_tol de ym ± gap/2 : deux bandes qui se croisent se recouvrent d'au moins gap − 2·band_tol.
+    ss = np.linspace(-5, 300, 611)
+    ym = np.where(ss < 20, -4.0 - 5.0 * np.clip(ss, 0, 20) / 20, -9.0) + 0.002 * (ss - 150) ** 2 / 10
+    th = np.full_like(ss, 30.0)
+    tol = (0.6 - 0.42) / 4
+    for top in (True, False):
+        (poly,) = [p for t, p in plate_profiles_2d(ss, ym, th, [], **dict(KW, ytop=40.0, ybot=-40.0), edge_vertices=16,
+                                                  band_tol=tol) if t is top]
+        worst = 0.0
+        for s in np.linspace(-4.9, 299.9, 1500):
+            (seg,) = column(poly, s)
+            edge = seg.bounds[1] if top else seg.bounds[3]
+            worst = max(worst, abs(edge - (np.interp(s, ss, ym) + (0.3 if top else -0.3))))
+        assert worst <= tol + 0.011  # + simplification finale du polygone (0,01)
+        assert len(poly.exterior.coords) < 80  # toujours peu de sommets (coût booléen)

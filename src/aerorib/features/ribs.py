@@ -23,7 +23,19 @@ _DEPTH_STEP = 0.5  # mm, pas d'échantillonnage de l'épaisseur le long d'une pl
 # beaucoup au bord d'attaque. À 16 sommets réguliers, la corde creusait jusqu'à ~0,9 mm de trop au bord
 # d'attaque ; à un sommet tous les 5 mm, la coupe coûtait ×2,7.
 _PARTIAL_EDGE_TOL = 0.05
+_MIN_BAND_TOL = 0.005  # mm : plancher de band_tol (gap = largeur de ligne) — sinon un sommet par échantillon
 _SAME_LINE = 1e-6  # mm : deux plaques de même famille et même c sont confondues
+
+
+# Parois raides (bords d'attaque / de fuite épais, profil « boîte arrondie »). En tranche, une fente est une bande
+# de largeur w = slit / cos(angle) en x qui traverse la peau ; là où la peau a une pente y'(x), la bouche ouverte
+# mesure ≈ w·√(1 + y'²). On n'admet qu'une fraction _MOUTH_SAFETY de `max_mouth` (validation) : la pente est lue
+# sur la surface médiane interpolée (grille `split.grid`), qui adoucit les parois réelles.
+_MOUTH_SAFETY = 0.75
+_SLOPE_STEP = 0.1  # mm, pas en x de lecture de la pente de peau dans la fenêtre autour de la fente
+# Marge en x entre une fente et la paroi raide la plus proche, en largeurs de ligne (+ la fente elle-même) :
+# la matière entre la fente et la paroi doit rester plus large qu'une ligne (contrôle « matière trop fine »).
+_WALL_MARGIN_LINES = 2
 
 
 _ZONE_SEGMENTS = 64
@@ -52,6 +64,66 @@ def bore_zones_2d(
     lo, hi = bore_extent(b, zmin, zmax)
     extent = box((lo - zmin) / d1 - pad_s, -_FAR, (hi - zmin) / d1 + pad_s, _FAR)
     return [z for z in (ellipse.intersection(extent), band.intersection(extent)) if not z.is_empty]
+
+
+def wall_limits(*, slit: float, angle_deg: float, line_width: float, max_mouth: float) -> tuple[float, float]:
+    """(pente max |dy/dx| de peau qu'une fente peut traverser, marge en x entre une fente et une paroi plus raide).
+
+    Critère de bouche : w·√(1 + y'²) ≤ _MOUTH_SAFETY·max_mouth, w = slit / cos(angle) étant la largeur de la
+    fente vue dans une couche. Si même une peau plate dépasse ce budget, la pente max vaut 0 (aucune paroi admise).
+    """
+    w = slit / math.cos(math.radians(angle_deg))
+    ratio = _MOUTH_SAFETY * max_mouth / w
+    return math.sqrt(max(ratio * ratio - 1.0, 0.0)), _WALL_MARGIN_LINES * line_width + slit
+
+
+def _row_edges(mid: MidSurface) -> tuple[np.ndarray, np.ndarray]:
+    """Abscisses du bord d'attaque et du bord de fuite de chaque rangée z de la grille (dernier nœud sans
+    matière avant / après la section ; bornes de la grille pour une rangée vide)."""
+    le, te = np.full(len(mid.zs), mid.xs[0]), np.full(len(mid.zs), mid.xs[-1])
+    for j in range(len(mid.zs)):
+        full = np.flatnonzero(mid.thick[:, j] > 0)
+        if len(full):
+            le[j], te[j] = mid.xs[max(full[0] - 1, 0)], mid.xs[min(full[-1] + 1, len(mid.xs) - 1)]
+    return le, te
+
+
+def _steep_on_row(mid: MidSurface, x: np.ndarray, j: np.ndarray, max_slope: float, margin: float) -> np.ndarray:
+    """Pente de peau (haute ou basse) > max_slope dans [x − margin, x + margin], lue sur la rangée j de la grille."""
+    half = max(margin, _SLOPE_STEP / 2)
+    n = math.ceil(2 * half / _SLOPE_STEP) + 1
+    offs = np.linspace(-half, half, n)
+    step = offs[1] - offs[0]
+    ym, th = mid.at((x[:, None] + offs).ravel(), np.repeat(mid.zs[j], n))
+    ym, th = np.reshape(ym, (len(x), n)), np.reshape(th, (len(x), n))
+    slope = np.maximum(np.abs(np.diff(ym + th / 2, axis=1)), np.abs(np.diff(ym - th / 2, axis=1))) / step
+    return (slope > max_slope).any(axis=1)
+
+
+def steep_samples(mid: MidSurface, x, z, *, max_slope: float, margin: float) -> np.ndarray:
+    """Échantillons (x, z) d'une plaque trop près d'une paroi raide : dans la couche z, la peau haute ou basse
+    (ym ± th/2) dépasse la pente `max_slope` quelque part dans [x − margin, x + margin].
+
+    Pente lue dans la couche (à z fixé), là où la fente coupe la peau — pas le long de la plaque, qui mélangerait
+    la variation en envergure (flèche, effilement), sans effet sur la bouche. Elle n'est pas lue sur
+    l'interpolation bilinéaire en z, qui, sur un bord en flèche, moyenne deux sections décalées et adoucit la paroi
+    (une paroi verticale y devient une rampe) : elle est lue sur les deux rangées de la grille qui encadrent z,
+    à la même position relative le long de la corde ξ = (x − x_BA(z)) / (x_BF(z) − x_BA(z)), bords d'attaque et
+    de fuite interpolés linéairement en z. Une paroi raide sur l'une ou l'autre rangée exclut l'échantillon.
+    """
+    x, z = np.asarray(x, dtype=float), np.asarray(z, dtype=float)
+    if len(mid.zs) < 2:
+        return _steep_on_row(mid, x, np.zeros(len(x), dtype=int), max_slope, margin)
+    le, te = _row_edges(mid)
+    j1 = np.clip(np.searchsorted(mid.zs, z), 1, len(mid.zs) - 1)
+    j0 = j1 - 1
+    t = np.clip((z - mid.zs[j0]) / (mid.zs[j1] - mid.zs[j0]), 0.0, 1.0)
+    le_z, te_z = le[j0] + (le[j1] - le[j0]) * t, te[j0] + (te[j1] - te[j0]) * t
+    xi = (x - le_z) / np.maximum(te_z - le_z, 1e-9)
+    out = np.zeros(len(x), dtype=bool)
+    for j in (j0, j1):
+        out |= _steep_on_row(mid, le[j] + xi * (te[j] - le[j]), j, max_slope, margin)
+    return out
 
 
 def _deep_runs(ss: np.ndarray, deep: np.ndarray) -> list[tuple[float, float]]:
@@ -84,9 +156,18 @@ def _partial_edge_vertices(s_run, y_run, free, grid_edge) -> np.ndarray:
     return np.unique(np.asarray(keep, dtype=float))
 
 
+def _band_vertices(ss, ym, lo: float, hi: float, s_edge: np.ndarray, tol: float) -> np.ndarray:
+    """`s_edge` complété des sommets de ym simplifiée à `tol` près sur [lo, hi] (bornes interpolées)."""
+    inner = (ss > lo) & (ss < hi)
+    s_run = np.concatenate([[lo], ss[inner], [hi]])
+    y_run = np.interp(s_run, ss, ym)
+    kept = [p[0] for p in LineString(list(zip(s_run, y_run))).simplify(tol).coords]
+    return np.unique(np.concatenate([s_edge, kept]))
+
+
 def plate_profiles_2d(
     ss, ym, th, zones, *, gap, min_depth, ytop, ybot, edge_vertices: int | None = None,
-    depth: float | None = None,
+    depth: float | None = None, steep: np.ndarray | None = None, band_tol: float | None = None,
 ) -> list[tuple[bool, Polygon]]:
     """Profils 2D des plaques haute et basse.
 
@@ -99,9 +180,19 @@ def plate_profiles_2d(
     `depth` (mm, None = full) : la plaque ne descend qu'à `depth` sous la peau (y_peau = ym ± th/2),
     sans jamais dépasser la bande de séparation. Profondeur mesurée selon Y (épaisseur), pas selon la
     normale à la peau : écart de l'ordre de depth·(1 − cos(pente de la peau)), négligeable sur un profil d'aile.
+
+    `steep` (booléens par échantillon, voir `steep_samples`) : échantillons trop près d'une paroi raide, exclus
+    comme les trop minces (même marche verticale) — la fente y raserait la paroi au lieu de la traverser.
+
+    `band_tol` (mm) : la bande de séparation (ym ± gap/2) est suivie à `band_tol` près — sommets réguliers
+    complétés de ceux de ym simplifiée (Douglas-Peucker), mêmes sommets en haut et en bas. Sans cela, là où ym est
+    coudée (bord épais dissymétrique), les cordes des deux familles s'écartent différemment de ym et, au croisement
+    de deux plaques, leurs bandes se décalent jusqu'à pincer la matière qui les relie.
     """
     ss, ym, th = (np.asarray(a, dtype=float) for a in (ss, ym, th))
     deep = th > gap + 2 * min_depth
+    if steep is not None:
+        deep &= ~np.asarray(steep, dtype=bool)
     runs = _deep_runs(ss, deep)
     if not runs:
         return []
@@ -117,6 +208,8 @@ def plate_profiles_2d(
         pieces = []
         for lo, hi in runs:
             s_edge = np.concatenate([[lo], coarse[(coarse > lo) & (coarse < hi)], [hi]])
+            if band_tol is not None and edge_vertices is not None:
+                s_edge = _band_vertices(ss, ym, lo, hi, s_edge, band_tol)
             if depth is None:
                 y_edge = np.interp(s_edge, ss, inner)
             else:
@@ -183,12 +276,17 @@ class PlateProfile:
 
 def diamond_profiles(
     bb, mid: MidSurface, bores: list[Bore], layer: RibLayer, *, angle_deg: float, gap: float, slit: float,
-    min_depth: float, exclude: Sequence[tuple[int, float]] = (),
+    min_depth: float, line_width: float, max_mouth: float, exclude: Sequence[tuple[int, float]] = (),
 ) -> list[PlateProfile]:
     """Profils 2D des plaques d'un niveau, sans construire les solides (aperçu rapide).
 
-    `exclude` : plans (famille, c) déjà coupés par un niveau plus profond.
+    `exclude` : plans (famille, c) déjà coupés par un niveau plus profond. `line_width`, `max_mouth` : largeur
+    de ligne et bouche max de la validation, d'où l'arrêt des plaques avant les parois raides (`wall_limits`).
     """
+    max_slope, margin = wall_limits(slit=slit, angle_deg=angle_deg, line_width=line_width, max_mouth=max_mouth)
+    # deux bandes qui se croisent, chacune à band_tol de ym ± gap/2, se recouvrent d'au moins gap − 2·band_tol :
+    # la moitié de l'excès de gap sur une ligne, l'autre moitié en réserve
+    band_tol = max((gap - line_width) / 4, _MIN_BAND_TOL)
     ang = math.radians(angle_deg)
     zmin, zmax = bb.min.Z, bb.max.Z
     ytop, ybot = bb.max.Y + 5, bb.min.Y - 5
@@ -200,11 +298,16 @@ def diamond_profiles(
         if any(es == sign and abs(ec - c) < _SAME_LINE for es, ec in exclude):
             continue
         d0, d1 = sign * math.sin(ang), math.cos(ang)
-        ym, th = mid.at(c + ss * d0, zmin + ss * d1)
+        x, z = c + ss * d0, zmin + ss * d1
+        ym, th = mid.at(x, z)
+        steep = np.zeros(len(ss), dtype=bool)
+        cand = th > gap + 2 * min_depth  # seuls les échantillons assez épais peuvent recevoir une fente
+        if cand.any():
+            steep[cand] = steep_samples(mid, x[cand], z[cand], max_slope=max_slope, margin=margin)
         zones = [z for b in bores for z in bore_zones_2d(b, c, d0, d1, zmin, zmax, slit=slit)]
         for top, poly in plate_profiles_2d(
             ss, ym, th, zones, gap=gap, min_depth=min_depth, ytop=ytop, ybot=ybot, edge_vertices=layer.samples,
-            depth=None if layer.depth == "full" else layer.depth,
+            depth=None if layer.depth == "full" else layer.depth, steep=steep, band_tol=band_tol,
         ):
             out.append(PlateProfile(sign, c, d0, d1, top, poly))
     return out
@@ -212,10 +315,11 @@ def diamond_profiles(
 
 def diamond_plates(
     bb, mid: MidSurface, bores: list[Bore], layer: RibLayer, *, angle_deg: float, gap: float, slit: float,
-    min_depth: float, exclude: Sequence[tuple[int, float]] = (),
+    min_depth: float, line_width: float, max_mouth: float, exclude: Sequence[tuple[int, float]] = (),
 ) -> list[Solid]:
     """Plaques d'un niveau ; `exclude` : plans (famille, c) déjà coupés par un niveau plus profond."""
     profiles = diamond_profiles(
-        bb, mid, bores, layer, angle_deg=angle_deg, gap=gap, slit=slit, min_depth=min_depth, exclude=exclude
+        bb, mid, bores, layer, angle_deg=angle_deg, gap=gap, slit=slit, min_depth=min_depth,
+        line_width=line_width, max_mouth=max_mouth, exclude=exclude,
     )
     return [plate_solid(p.polygon, p.c, p.d0, p.d1, bb.min.Z, slit) for p in profiles]

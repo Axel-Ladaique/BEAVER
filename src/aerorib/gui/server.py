@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import json
+import mimetypes
 import os
 import secrets
 import socket
@@ -39,6 +40,26 @@ STATIC_DIR = Path(__file__).parent / "static"
 MAX_UPLOAD_BODY = projects.MAX_STEP_BYTES + 1024 * 1024
 MAX_CONFIG_BODY = 1024 * 1024
 MAX_SMALL_BODY = 64 * 1024
+
+
+def _types_mime() -> None:
+    """Types MIME des fichiers statiques forcés : sous Windows, le registre peut associer .js à text/plain,
+    ce que les navigateurs refusent pour un module ES."""
+    mimetypes.add_type("text/javascript", ".js")
+    mimetypes.add_type("text/css", ".css")
+    mimetypes.add_type("text/html", ".html")
+
+
+_types_mime()
+
+
+class StatiqueRevalide(StaticFiles):
+    """Fichiers de l'interface toujours revalidés (ETag) : pas de module JS périmé après une mise à jour."""
+
+    def file_response(self, *args, **kwargs):
+        reponse = super().file_response(*args, **kwargs)
+        reponse.headers["Cache-Control"] = "no-cache"
+        return reponse
 
 
 class BodyTooLarge(BaseException):  # pas Exception : FastAPI le convertirait en 400
@@ -136,6 +157,7 @@ class TokenMiddleware:
 def create_app(
     root: Path, token: str, routers: Sequence[APIRouter] | None = None, profiles_dir: Path | None = None
 ) -> FastAPI:
+    _types_mime()
     app = FastAPI(title="AeroRib", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.root = Path(root)
     app.state.token = token
@@ -158,7 +180,7 @@ def create_app(
         app.include_router(router)
     app.include_router(build_fallback_router([principal, generations, profils_router, *(routers or ())]))
     # le montage statique est ajouté EN DERNIER : il ne doit masquer aucune route /api
-    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+    app.mount("/", StatiqueRevalide(directory=STATIC_DIR, html=True), name="static")
     return app
 
 

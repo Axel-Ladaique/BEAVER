@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import threading
 from collections import OrderedDict
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse, Response
@@ -27,40 +27,61 @@ class Apercu:
     def __init__(self, store: ProjectStore) -> None:
         self.store = store
         self._lock = threading.Lock()
-        self._jobs: dict[tuple[str, str], Future] = {}
+        self._jobs: dict[tuple[str, str], Future] = {}  # en cours ou en échec non signalé
+        self._latest: dict[str, tuple[str, str]] = {}  # dernier travail soumis, par projet
         self._last: dict[str, Config] = {}  # dernière configuration d'aperçu reçue, par projet
         self._results: OrderedDict[tuple, dict] = OrderedDict()
 
     # --- préparation non bloquante ---------------------------------------------------------------
-    def _ready(self, step, cfg: Config, *, wait: bool):
-        """(prep, cache_hit) si prête, None si en cours ; lève ProjectError si la préparation a échoué."""
-        key = (preview._file_sha1(step), preview.prepare_key(cfg))
-        with self._lock:
-            fut = self._jobs.get(key)
-            if fut is not None and fut.done():
-                if fut.exception() is not None:
-                    del self._jobs[key]  # l'échec n'est pas gardé : le prochain appel réessaie
-                    raise _impossible(fut.exception())
-                with preview._lock:
-                    in_cache = key in preview._cache
-                if not in_cache:  # évincée du cache : on recalcule
-                    fut = None
-            if fut is None:
-                fut = self._jobs[key] = _EXECUTOR.submit(preview.prepare_status, step, cfg)
-        if not fut.done():
-            if not wait:
+    def _ready(self, nom: str, step, cfg: Config, *, wait: bool):
+        """(prep, cache_hit) si prête, None si en cours ; lève ProjectError si la préparation a échoué.
+
+        `_jobs` ne garde que les travaux en cours ou en échec non encore signalé : le cache de `preview`
+        est l'unique dépôt des préparations réussies (un travail réussi est retiré dès qu'il est servi).
+        """
+        key = (str(step), preview.prepare_key(cfg))
+        while True:
+            with self._lock:
+                fut = self._jobs.get(key)
+                if fut is None:
+                    prep = preview.cached(step, cfg)
+                    if prep is not None:
+                        return prep, True
+                    self._cancel_previous(nom, key)
+                    fut = self._jobs[key] = _EXECUTOR.submit(preview.prepare_status, step, cfg)
+                    self._latest[nom] = key
+            if not fut.done() and not wait:
                 return None
             try:
-                fut.result()
-            except Exception as exc:
+                prep, hit = fut.result()
+            except CancelledError:
                 with self._lock:
-                    self._jobs.pop(key, None)
+                    if self._jobs.get(key) is fut:
+                        del self._jobs[key]
+                continue  # remplacé par une demande plus récente : on soumet à nouveau
+            except Exception as exc:
+                self._forget(key, fut)
                 raise _impossible(exc) from exc
-        prep, hit = fut.result()
+            self._forget(key, fut)
+            return prep, hit
+
+    def _forget(self, key, fut: Future) -> None:
         with self._lock:
-            first = getattr(fut, "_servi", False) is False
-            fut._servi = True  # type: ignore[attr-defined]
-        return prep, (hit if first else True)
+            if self._jobs.get(key) is fut:
+                del self._jobs[key]
+            for nom, k in list(self._latest.items()):
+                if k == key:
+                    del self._latest[nom]
+
+    def _cancel_previous(self, nom: str, key) -> None:
+        """Annule le travail précédent du projet s'il est encore en file (verrou `_lock` tenu)."""
+        for k in [k for k, f in self._jobs.items() if f.done() and k != key]:  # abandonnés : jamais relevés
+            del self._jobs[k]
+        old = self._latest.get(nom)
+        if old is not None and old != key:
+            fut = self._jobs.get(old)
+            if fut is not None and (fut.done() or fut.cancel()):  # terminé non relevé, ou jamais démarré
+                del self._jobs[old]
 
     def _cfg(self, nom: str, proposed) -> Config:
         return self.store.config_from_dict(nom, proposed)
@@ -100,7 +121,7 @@ class Apercu:
         with self._lock:
             self._last[nom] = cfg
         try:
-            state = self._ready(step, cfg, wait=wait)
+            state = self._ready(nom, step, cfg, wait=wait)
         except ProjectError:
             raise
         except Exception as exc:
@@ -128,9 +149,9 @@ class Apercu:
         with self._lock:
             cfg = self._last.get(nom)
         if cfg is None:
-            cfg = self.store._load(self.store.require(nom))
+            cfg = self.store.load_config(nom)
         try:
-            state = self._ready(step, cfg, wait=False)
+            state = self._ready(nom, step, cfg, wait=False)
         except ProjectError:
             raise
         except Exception as exc:

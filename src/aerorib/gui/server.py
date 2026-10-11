@@ -55,6 +55,8 @@ class BodyLimitMiddleware:
         path, method = scope["path"].rstrip("/"), scope["method"]
         if method == "POST" and path == "/api/projets":
             return MAX_UPLOAD_BODY, "fichier trop volumineux (max 200 Mo)"
+        if method == "POST" and path.startswith("/api/projets/") and path.endswith("/apercu"):
+            return MAX_CONFIG_BODY, "configuration trop volumineuse (max 1 Mo)"
         if method == "PUT" and path.startswith("/api/projets/") and path.endswith("/config"):
             return MAX_CONFIG_BODY, "configuration trop volumineuse (max 1 Mo)"
         return None

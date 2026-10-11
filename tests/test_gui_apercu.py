@@ -54,7 +54,7 @@ def test_reponse_complete(client):
     d = r.json()
     assert d["preparation"] is False
     assert d["section"]["z"] == pytest.approx(40.5) and d["section"]["polygones"]
-    assert d["planform"]["segments"] is not None or d["planform"]
+    assert d["planform"]["segments"] and len(d["planform"]["aile"]) == 4
     assert d["estimates"]["plaques"] > 0
     assert sum(c["plaques"] for c in d["estimates"]["plaques_par_couche"]) == d["estimates"]["plaques"]
     assert isinstance(d["avertissements"], list) and all(isinstance(w, str) for w in d["avertissements"])
@@ -111,12 +111,14 @@ def test_202_garanti_par_clef_inedite(client, monkeypatch):
         return real(step, cfg)
 
     monkeypatch.setattr(preview, "prepare_status", slow)
-    r = _post(client)
-    assert r.status_code == 202 and r.json()["preparation"] is True
-    assert _post(client).status_code == 202
-    s = client.get("/api/projets/aile1/apercu/peau.stl", headers=H)
-    assert s.status_code == 409 and s.json() == {"erreur": "aperçu en préparation"}
-    gate.set()
+    try:
+        r = _post(client)
+        assert r.status_code == 202 and r.json()["preparation"] is True
+        assert _post(client).status_code == 202
+        s = client.get("/api/projets/aile1/apercu/peau.stl", headers=H)
+        assert s.status_code == 409 and s.json() == {"erreur": "aperçu en préparation"}
+    finally:
+        gate.set()
     r = _attendre(client)
     assert r.json()["preparation"] is False
 
@@ -210,3 +212,77 @@ def test_config_ecrite_selon_umask(client, tmp_path):
     assert r.status_code == 200
     mode = stat.S_IMODE((tmp_path / "projets" / "aile1" / "config.yaml").stat().st_mode)
     assert mode == 0o644
+
+
+def _variante(i):
+    return {**CFG, "validation": {"tessellation_tol": 0.02 + 0.001 * i}}
+
+
+def test_jobs_bornes_et_annulation(client, tmp_path, monkeypatch):
+    import threading
+    from aerorib.gui.apercu import Apercu
+    from aerorib.gui.projects import ProjectStore
+
+    api = Apercu(ProjectStore(tmp_path / "projets"))
+    gate = threading.Event()
+    real = preview.prepare_status
+
+    def slow(step, cfg):
+        gate.wait(30)
+        return real(step, cfg)
+
+    monkeypatch.setattr(preview, "prepare_status", slow)
+    try:
+        for i in range(4):  # 1 en cours + 3 demandes successives : les mises en file sont annulées
+            assert api.post("aile1", {"config": _variante(i)}, False).status_code == 202
+        assert len(api._jobs) == 2
+        assert sum(1 for f in api._jobs.values() if f.running()) == 1
+    finally:
+        gate.set()
+    # la dernière demande aboutit ; une fois servie, plus rien n'est retenu
+    assert api.post("aile1", {"config": _variante(3), "attendre": True}, False)["preparation"] is False
+    assert len(api._jobs) <= 1  # au plus la préparation 0, terminée mais jamais relevée
+    for i in range(10, 16):  # préparations réussies successives : la carte reste vide
+        api.post("aile1", {"config": _variante(i), "attendre": True}, False)
+        assert len(api._jobs) <= 1
+    assert api._jobs == {} or all(f.done() for f in api._jobs.values())
+
+
+def test_corps_trop_gros_413(client):
+    gros = {"config": {"bambu": {"template": "x" * (1024 * 1024 + 10)}}}
+    r = client.post("/api/projets/aile1/apercu", headers=H, json=gros)
+    assert r.status_code == 413 and r.json() == {"erreur": "configuration trop volumineuse (max 1 Mo)"}
+
+
+def test_octet_nul_dans_gabarit_422(client):
+    r = _post(client, config={"bambu": {"template": "a\x00b"}})
+    assert r.status_code == 422 and "gabarit" in r.json()["erreur"]
+
+
+def test_config_postee_pilote_le_resultat(client, tmp_path):
+    cfg_path = tmp_path / "projets" / "aile1" / "config.yaml"
+    avant = cfg_path.read_bytes()
+    deux = _attendre(client, config={**CFG, "rib_layers": [{"spacing": 20}]}).json()["estimates"]["plaques"]
+    dix = _attendre(client, config={**CFG, "rib_layers": [{"spacing": 10}]}).json()["estimates"]["plaques"]
+    assert dix > deux
+    assert cfg_path.read_bytes() == avant
+    # le STL utilise la dernière config postée (spacing 10), pas celle de config.yaml
+    import trimesh
+    r = client.get("/api/projets/aile1/apercu/plaques.stl", headers=H)
+    assert r.status_code == 200
+    n_dix = len(trimesh.load(io.BytesIO(r.content), file_type="stl").faces)
+    _attendre(client, config={**CFG, "rib_layers": [{"spacing": 20}]})
+    r = client.get("/api/projets/aile1/apercu/plaques.stl", headers=H)
+    n_vingt = len(trimesh.load(io.BytesIO(r.content), file_type="stl").faces)
+    assert n_dix > n_vingt
+
+
+def test_sans_jeton_401(client):
+    for method, url in [("post", "/api/projets/aile1/apercu"), ("get", "/api/projets/aile1/apercu/peau.stl"),
+                        ("get", "/api/projets/aile1/apercu/plaques.stl")]:
+        assert getattr(client, method)(url).status_code == 401
+
+
+def test_head_sur_route_get_405(client):
+    r = client.head("/api/projets/aile1/apercu", headers=H)
+    assert r.status_code == 405

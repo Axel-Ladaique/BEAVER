@@ -124,3 +124,10 @@ def test_blank_naming_prefix_rejected():
         load_config(overrides={"naming": {"skin": [""]}})
     with pytest.raises(ConfigError, match="vide"):
         load_config(overrides={"naming": {"spar": ["  "]}})
+
+
+def test_gabarit_avec_octet_nul_donne_config_error(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text('bambu:\n  template: "a\\0b"\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="gabarit"):
+        load_config(p)

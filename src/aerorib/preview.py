@@ -191,6 +191,16 @@ def _file_sha1(path: Path) -> str:
     return digest
 
 
+def cached(step_path: str | Path, cfg: Config) -> Prepared | None:
+    """Préparation déjà en cache pour (fichier, réglages), sans rien calculer ni bloquer sur un calcul en cours."""
+    key = (_file_sha1(Path(step_path)), prepare_key(cfg))
+    with _lock:
+        prep = _cache.get(key)
+        if prep is not None:
+            _cache.move_to_end(key)
+        return prep
+
+
 def prepare_status(step_path: str | Path, cfg: Config) -> tuple[Prepared, bool]:
     """(préparation, servie_par_le_cache). Servie par le cache aussi quand l'appel a attendu une préparation
     identique déjà en cours (un seul calcul par clé) ; un échec n'est pas mis en cache (l'appel suivant réessaie)."""

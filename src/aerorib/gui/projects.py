@@ -15,7 +15,7 @@ from typing import Any, BinaryIO
 import yaml
 
 from aerorib.classify import ClassifyError, classify
-from aerorib.config import Config, ConfigError, _check_template_path, load_config
+from aerorib.config import Config, ConfigError, check_template_path, load_config
 from aerorib.io_step import StepReadError, read_step
 from aerorib.material_profiles import ProfileError, find_profiles, load_profile
 
@@ -206,11 +206,15 @@ class ProjectStore:
         if not isinstance(data, dict):
             raise ProjectError(422, "la configuration proposée doit être un dictionnaire")
         data = dict(data)
-        _check_template_path(data, d)
         try:
+            check_template_path(data, d)
             return load_config(None, overrides=data)
         except ConfigError as exc:
             raise ProjectError(422, scrub_paths(str(exc))) from exc
+
+    def load_config(self, nom: str) -> Config:
+        """Configuration enregistrée du projet (défauts → profil → config.yaml)."""
+        return self._load(self.require(nom))
 
     def read_config(self, nom: str) -> dict:
         d = self.require(nom)

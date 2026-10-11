@@ -299,11 +299,15 @@ def _deep_merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _check_template_path(data: dict[str, Any], base: Path) -> None:
+def check_template_path(data: dict[str, Any], base: Path) -> None:
     """Un gabarit relatif d'un YAML projet s'entend relativement au dossier de ce YAML."""
     bambu = data.get("bambu")
     if isinstance(bambu, dict) and isinstance(bambu.get("template"), str):
-        data["bambu"] = {**bambu, "template": str((base / Path(bambu["template"]).expanduser()).resolve())}
+        try:
+            resolved = str((base / Path(bambu["template"]).expanduser()).resolve())
+        except (ValueError, OSError, RuntimeError) as exc:
+            raise ConfigError("configuration invalide : chemin de gabarit invalide (bambu.template)") from exc
+        data["bambu"] = {**bambu, "template": resolved}
 
 
 def load_config(path: Path | None = None, overrides: dict[str, Any] | None = None) -> Config:
@@ -321,7 +325,7 @@ def load_config(path: Path | None = None, overrides: dict[str, Any] | None = Non
         if not isinstance(loaded, dict):
             raise ConfigError(f"{path} : la config doit être un dictionnaire YAML")
         project = loaded
-        _check_template_path(project, Path(path).resolve().parent)
+        check_template_path(project, Path(path).resolve().parent)
     over = overrides or {}
     material = over.get("material", project.get("material", "pla_aero"))
     try:

@@ -74,7 +74,7 @@ def build_fallback_router(known: Sequence[APIRouter] = ()) -> APIRouter:
     existe dans l'un des routeurs `known` mais pas pour cette méthode."""
     router = APIRouter(prefix="/api")
 
-    @router.api_route("/{chemin:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], include_in_schema=False)
+    @router.api_route("/{chemin:path}", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], include_in_schema=False)
     def inconnue(chemin: str, request: Request) -> JSONResponse:
         for r in known:
             for route in r.routes:

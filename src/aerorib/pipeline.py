@@ -28,7 +28,7 @@ from aerorib.features.bores import (
     spar_bores,
 )
 from aerorib.features.ribs import diamond_plates, emptied_by_walls, plate_lines
-from aerorib.features.servo import ServoBay, ServoError, pocket_solid, servo_bays
+from aerorib.features.servo import ServoBay, ServoError, hole_meets_pocket, pocket_solid, servo_bays
 from aerorib.midsurface import MidSurface
 from aerorib.orient import Orientation, orient
 from aerorib.segment import SegmentError, plan_cuts, split_part
@@ -189,24 +189,21 @@ def deeper_lines(cfg: Config, bb, i: int) -> list[tuple[int, float]]:
     ]
 
 
-def enters_bay(b: Bore, bay: ServoBay) -> bool:
-    """Le trou du longeron / de la gaine touche la poche de la baie (il y débouche : la poche fait partie de
-    l'extérieur, le bord du trou dans la poche aussi)."""
-    if not b.cut_hole:
-        return False
-    lo, hi = bay.opening
-    ylo, yhi = sorted((bay.y_floor, bay.y_out))
-    zlo, zhi = b.z0 - b.clearance, b.z1 + b.clearance
-    return (
-        b.x + b.radius > bay.x0 and b.x - b.radius < bay.x1 and b.y + b.radius > ylo and b.y - b.radius < yhi
-        and zhi > lo and zlo < hi
-    )
-
-
-def bore_hole(b: Bore, bb) -> Solid:
-    """Cylindre du trou seul (sans fente ni attache), comme dans `bore_cut_tools`."""
-    lo, hi = bore_extent(b, bb.min.Z, bb.max.Z)
-    return Cylinder(b.radius, hi - lo).moved(Location((b.x, b.y, (hi + lo) / 2)))
+def hole_openings(bores: Sequence[Bore], bays: Sequence[ServoBay], bb) -> list[Solid]:
+    """Parties des trous qui débouchent dans une poche : en ces couches, le bord du trou fait partie du contour
+    extérieur voulu. Limitées en envergure à la rencontre trou–poche (± `HOLE_TOL`) : ailleurs, une percée
+    du trou dans la peau reste signalée (« peau entamée »)."""
+    out = []
+    for b in bores:
+        if not b.cut_hole:
+            continue
+        lo, hi = bore_extent(b, bb.min.Z, bb.max.Z)
+        for bay in bays:
+            meet = hole_meets_pocket(bay, b.x, b.y, b.radius, lo, hi)
+            if meet is not None and meet[1] > meet[0]:
+                za, zb = meet
+                out.append(Cylinder(b.radius, zb - za).moved(Location((b.x, b.y, (za + zb) / 2))))
+    return out
 
 
 class Generated(NamedTuple):
@@ -254,7 +251,7 @@ def generate_skin(
         blocked = spar_obstruction(spar, part)
         if blocked > MAX_SPAR_OBSTRUCTION:
             raise PipelineError(f"{name} : le longeron traverse la matière ({blocked:.0f} mm³) — vérifier son axe")
-    openings = (*pockets, *(bore_hole(b, bb) for b in bores if any(enters_bay(b, bay) for bay in bays)))
+    openings = (*pockets, *hole_openings(bores, bays, bb))
     return Generated(
         part, tuple(bores), len(plates), tuple(f for _, f in to_fill), slivers, tuple(warns), tuple(bays), openings,
     )

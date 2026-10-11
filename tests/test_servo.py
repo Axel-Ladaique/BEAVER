@@ -9,7 +9,14 @@ import pytest
 from aerorib import preview
 from aerorib.classify import classify
 from aerorib.config import load_config
-from aerorib.features.servo import ServoError, pocket_profile, pocket_zones_2d, servo_bays
+from aerorib.features.servo import (
+    SKIN_MARGIN,
+    ServoError,
+    hole_meets_pocket,
+    pocket_profile,
+    pocket_zones_2d,
+    servo_bays,
+)
 from aerorib.io_step import read_step, write_step
 from aerorib.midsurface import MidSurface
 from aerorib.orient import orient
@@ -87,6 +94,43 @@ def test_pocket_zones_cover_the_pocket_with_strip():
     assert pocket_zones_2d(bay, c + 200, d0, d1, zmin, zmin + 120, strip=2.0, slit=0.1) == []
 
 
+def test_pocket_zones_stop_just_beyond_the_skin():
+    cfg = load_config(overrides=OVER)
+    (bay,), skin, mid = _bays(servo_wing_bodies("extrados"), cfg)
+    zmin = skin.bounding_box().min.Z
+    d0, d1 = math.sin(math.radians(45)), math.cos(math.radians(45))
+    s_mid = ((bay.z0 + bay.z1) / 2 - zmin) / d1
+    c = (bay.x0 + bay.x1) / 2 - s_mid * d0
+    (zone,) = pocket_zones_2d(bay, c, d0, d1, zmin, zmin + 120, strip=2.0, slit=0.1)
+    # peau d'ouverture la plus haute autour de la poche (corde ± bande, rampes ± bande)
+    xs, zs = np.meshgrid(np.linspace(bay.x0 - 2.05, bay.x1 + 2.05, 30), np.linspace(bay.z0 - bay.ramp - 2, bay.z1 + bay.ramp + 2, 30))
+    ym, th = mid.at(xs.ravel(), zs.ravel())
+    top = float(np.max((ym + th / 2)[th > 0]))
+    assert bay.y_skin == pytest.approx(top, abs=0.05)
+    assert top < zone.bounds[3] <= top + SKIN_MARGIN + 2.05 + 1e-6  # pas jusqu'à y_out
+    assert zone.bounds[3] < bay.y_out
+    # en envergure, la zone ne déborde de l'ouverture que de la bande (+ la marge de peau)
+    zlo, zhi = zmin + zone.bounds[0] * d1, zmin + zone.bounds[2] * d1
+    lo, hi = bay.opening
+    assert zlo > lo - (SKIN_MARGIN + 2.05) * (1 + bay.run) - 1 and zhi < hi + (SKIN_MARGIN + 2.05) * (1 + bay.run) + 1
+
+
+def test_hole_meets_pocket_follows_floor_and_ramps():
+    (bay,), _, _ = _bays(servo_wing_bodies("extrados"))
+    xm = (bay.x0 + bay.x1) / 2
+    # trou dont le haut dépasse le fond de 1 mm : rencontre sur la boîte et le début des rampes, ± 1 mm
+    za, zb = hole_meets_pocket(bay, xm, bay.y_floor - 2, 3.0, 0.0, 120.0)
+    assert za == pytest.approx(bay.z0 - 1 * bay.run - 1.0) and zb == pytest.approx(bay.z1 + 1 * bay.run + 1.0)
+    # trou arrêté avant la boîte : limité à son étendue
+    assert hole_meets_pocket(bay, xm, bay.y_floor - 2, 3.0, 0.0, bay.z0 + 5)[1] == pytest.approx(bay.z0 + 5)
+    # sous le fond sans l'atteindre, ou à côté de la boîte : aucune rencontre
+    assert hole_meets_pocket(bay, xm, bay.y_floor - 3.5, 3.0, 0.0, 120.0) is None
+    assert hole_meets_pocket(bay, bay.x1 + 3.5, bay.y_floor, 3.0, 0.0, 120.0) is None
+    # sous une rampe seulement, plus loin que la boîte : rencontre limitée à la rampe
+    lo, hi = bay.opening
+    assert hole_meets_pocket(bay, xm, bay.y_floor + 2, 1.0, 0.0, bay.z0 - 4 * bay.run) is None
+
+
 def test_bay_errors_are_french():
     with pytest.raises(ServoError, match="SERVO_1 : la boîte ne traverse aucune peau"):
         _bays(servo_wing_bodies(box=(22.0, 42.0, 2.0, 6.0, 40.0, 75.0)))
@@ -148,6 +192,23 @@ def test_cable_entering_bay_is_printable(run_of):
     (body,) = run.bodies
     assert [b.cable for b in body.bores] == [True] and len(body.bays) == 1
     assert body.report.ok, [(i.z, i.message, i.bounds) for i in body.report.errors][:5]
+
+
+def test_cable_breaching_skin_elsewhere_is_still_reported():
+    """La partie du trou exclue de la référence (rencontre avec la poche) ne masque pas une percée de la peau
+    ailleurs le long de la gaine : ici une encoche de l'intrados près de l'emplanture, que le trou traverse."""
+    from build123d import Box, Location
+
+    from aerorib.io_step import NamedBody
+
+    wing, servo, tube = servo_wing_bodies("extrados", cable=True)
+    notch = Box(12, 9.5, 12).moved(Location((32, -5.25, 14)))  # intrados ramené à y = -0,5 (bas du trou : -1,15)
+    bodies = [NamedBody(wing.path, (wing.solid - notch).solids()[0]), servo, tube]
+    cfg = load_config(overrides=OVER)
+    (body,) = run_model(classify(bodies, cfg), cfg).bodies
+    skin = [i for i in body.report.errors if i.check == "skin"]
+    assert skin, "percée de la gaine dans l'intrados non signalée"
+    assert all(i.z < 30 for i in skin)  # seulement à l'encoche, rien autour de la baie
 
 
 def test_servo_wing_is_printable(servo_run):

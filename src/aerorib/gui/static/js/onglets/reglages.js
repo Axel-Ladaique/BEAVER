@@ -15,7 +15,6 @@ let ctx = null;
 let panneau = null;
 const ui = {};
 let formulaire = null;
-let schemaCache = null;
 const profils = new Map(); // nom de matière → réponse GET /api/profils/{nom} (ou null si illisible)
 const corpsParProjet = new Map();
 const etat = {
@@ -36,9 +35,9 @@ export function emplacementApercu() {
   return ui.colonneApercu;
 }
 
+// relu à chaque chargement : la liste des matières suit les profils créés ou copiés (onglet Profils)
 async function schema() {
-  if (!schemaCache) schemaCache = await api.get("/api/schema");
-  return schemaCache;
+  return api.get("/api/schema");
 }
 
 async function profil(nom) {
@@ -279,7 +278,24 @@ export function init(p, contexte) {
     }
     profils.delete(nomProfil); // valeurs héritées changées : on les relit sans perdre les modifications
     await profil(nomProfil);
-    formulaire?.rendre();
+    if (!formulaire) return;
+    formulaire.rendre();
+    if (!formulaire.aDesErreursLocales()) ctx.emettre("config-proposee", formulaire.donnees()); // aperçu à jour
+  });
+  ctx.sur("profils-changes", async () => {
+    // profil créé ou copié : la liste des matières change (le formulaire garde ses modifications)
+    if (!etat.projet || !formulaire) return;
+    if (!etat.modifie) {
+      charger();
+      return;
+    }
+    try {
+      const sch = await schema();
+      formulaire.choix = { ...formulaire.choix, material: sch.matieres };
+      formulaire.rendre();
+    } catch {
+      /* liste rafraîchie au prochain chargement */
+    }
   });
   if (!etat.projet) {
     ui.disposition.hidden = true;

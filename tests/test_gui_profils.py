@@ -203,6 +203,7 @@ def test_copier_vers_nouveau_nom(client, udir):
     assert r.status_code == 201, r.text
     assert yaml.safe_load((udir / "mon_pla.yaml").read_text())["bambu"] == {"template": None}
     assert r.json()["nom"] == "mon_pla" and r.json()["valeurs"]["material_settings"]["density"] == 0.8
+    assert "mon_pla" in client.get("/api/schema", headers=H).json()["matieres"]  # proposé aussitôt dans Réglages
     assert client.post("/api/profils/pla_aero/copier", headers=H, json={"vers": "mon_pla"}).status_code == 409
     assert client.post("/api/profils/pla_aero/copier", headers=H, json={"vers": "asa_aero"}).status_code == 409
     assert client.post("/api/profils/pla_aero/copier", headers=H, json={"vers": "Mauvais"}).status_code == 422

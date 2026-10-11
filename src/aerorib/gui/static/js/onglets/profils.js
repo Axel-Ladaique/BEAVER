@@ -128,6 +128,7 @@ async function copier(vers) {
       ? `Copie utilisateur créée : ./profiles/${p.nom}.yaml`
       : `Nouveau profil « ${p.nom} » créé.`;
     ui.nouveauNom.value = "";
+    ctx.emettre("profils-changes", p.nom);
     lister();
   } catch (e) {
     ui.erreur.append(message(e.message));

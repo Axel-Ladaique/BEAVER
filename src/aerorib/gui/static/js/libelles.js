@@ -24,6 +24,7 @@ const LIBELLES = {
   skin_tolerance: "Tolérance de peau (mm)",
   max_mouth_width: "Ouverture max de fente (mm)",
   orientation: "Orientation",
+  root: "Emplanture",
   gap: "Bande de séparation (mm)",
   min_rib_depth: "Profondeur min. de nervure (mm)",
   grid: "Grille surface médiane (nx, nz)",

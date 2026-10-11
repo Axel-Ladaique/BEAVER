@@ -59,12 +59,19 @@ class Naming(_Strict):
 
 
 class OrientationAxis(_Strict):
-    axis: tuple[float, float, float]
+    """Orientation explicite : axe d'envergure imposé (facultatif) et/ou choix de l'emplanture.
+
+    `root` : `auto` (bout des gaines de câble, sinon plus grande section), `debut` (coordonnée minimale
+    le long de l'axe d'envergure, repère d'origine) ou `fin` (coordonnée maximale).
+    """
+
+    axis: tuple[float, float, float] | None = None
+    root: Literal["auto", "debut", "fin"] = "auto"
 
     @field_validator("axis")
     @classmethod
-    def _non_zero(cls, v: tuple[float, float, float]) -> tuple[float, float, float]:
-        if sum(c * c for c in v) < 1e-12:
+    def _non_zero(cls, v: tuple[float, float, float] | None) -> tuple[float, float, float] | None:
+        if v is not None and sum(c * c for c in v) < 1e-12:
             raise ValueError("axe d'orientation nul")
         return v
 

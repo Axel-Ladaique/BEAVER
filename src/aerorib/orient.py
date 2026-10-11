@@ -21,7 +21,7 @@ class Orientation:
 
 
 def choose_axis(model: Model, cfg: Config) -> tuple[np.ndarray, str]:
-    if isinstance(cfg.orientation, OrientationAxis):
+    if isinstance(cfg.orientation, OrientationAxis) and cfg.orientation.axis is not None:
         v = np.asarray(cfg.orientation.axis, dtype=float)
         return v / np.linalg.norm(v), "axe forcé"
     spars = model.of("spar")
@@ -48,7 +48,42 @@ def _needs_flip(skin_moved: Solid, inset: float, tol: float) -> bool:
     return bool(root.polygons) and camber_offset(max(root.polygons, key=lambda p: p.area)) < 0
 
 
-def orientation_location(skin: Solid, axis: np.ndarray, tol: float = 0.02) -> Location:
+CABLE_TOUCH_TOL = 0.5  # mm : une gaine à moins de cette distance d'un bout de l'envergure « touche » ce bout
+
+
+def _span_range(solid: Solid, axis: np.ndarray) -> tuple[float, float]:
+    proj = np.array([[v.X, v.Y, v.Z] for v in solid.vertices()], dtype=float) @ axis
+    return float(proj.min()), float(proj.max())
+
+
+def choose_root(model: Model, cfg: Config, axis: np.ndarray) -> tuple[bool | None, str]:
+    """(`root_is_lo` imposé ou None = règle des sections, complément de `source`)."""
+    mode = cfg.orientation.root if isinstance(cfg.orientation, OrientationAxis) else "auto"
+    if mode == "debut":
+        return True, "emplanture imposée (debut)"
+    if mode == "fin":
+        return False, "emplanture imposée (fin)"
+    cables = model.cables
+    if not cables:
+        return None, ""
+    axis = np.asarray(axis, dtype=float) / np.linalg.norm(axis)
+    lo, hi = _span_range(model.of("skin")[0].body.solid, axis)
+    at_lo: list[str] = []
+    at_hi: list[str] = []
+    for c in cables:
+        c_lo, c_hi = _span_range(c.body.solid, axis)
+        if c_lo <= lo + CABLE_TOUCH_TOL:
+            at_lo.append(c.body.name)
+        if c_hi >= hi - CABLE_TOUCH_TOL:
+            at_hi.append(c.body.name)
+    if bool(at_lo) == bool(at_hi):  # aucune gaine à un bout, ou aux deux : règle actuelle
+        return None, ""
+    return bool(at_lo), f"emplanture côté gaine {(at_lo or at_hi)[0]}"
+
+
+def orientation_location(
+    skin: Solid, axis: np.ndarray, tol: float = 0.02, root_is_lo: bool | None = None
+) -> Location:
     axis = np.asarray(axis, dtype=float)
     axis = axis / np.linalg.norm(axis)
     mesh = to_mesh(skin, tol)
@@ -57,7 +92,8 @@ def orientation_location(skin: Solid, axis: np.ndarray, tol: float = 0.02) -> Lo
     inset = min(0.5, (hi - lo) / 4)
     a_lo, v_lo = _section_area(mesh, axis, lo + inset)
     a_hi, v_hi = _section_area(mesh, axis, hi - inset)
-    root_is_lo = a_lo >= a_hi * 0.99
+    if root_is_lo is None:
+        root_is_lo = a_lo >= a_hi * 0.99
     z_dir = axis if root_is_lo else -axis
     root_t = lo if root_is_lo else hi
     verts = v_lo if root_is_lo else v_hi
@@ -88,5 +124,8 @@ def orient(model: Model, cfg: Config) -> Orientation:
         raise ValueError("aucune peau à orienter")
     axis, source = choose_axis(model, cfg)
     skin = skins[0].body.solid
-    loc = orientation_location(skin, axis, cfg.validation.tessellation_tol)
+    root_is_lo, why = choose_root(model, cfg, axis)
+    loc = orientation_location(skin, axis, cfg.validation.tessellation_tol, root_is_lo)
+    if why:
+        source = f"{source} ; {why}"
     return Orientation(loc, tuple(float(c) for c in axis), source)

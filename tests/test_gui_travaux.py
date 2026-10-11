@@ -8,6 +8,8 @@ et AERORIB_TEST_PLANTAGE (le fils meurt sans message final).
 import json
 import multiprocessing
 import os
+import signal
+import sys
 import threading
 import time
 from pathlib import Path
@@ -270,6 +272,43 @@ def test_essais_meme_seconde_sans_collision(client, monkeypatch):
     assert essais == ["20261011-120000", "20261011-120000-2"]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGINT POSIX (Ctrl+C du terminal)")
+def test_ctrl_c_annule_proprement(client, monkeypatch, tmp_path):
+    """Ctrl+C atteint aussi le fils : il doit l'ignorer ; l'extinction du serveur annule l'essai."""
+    monkeypatch.setenv("AERORIB_TEST_DELAI", "60")
+    r = client.post("/api/projets/aile1/generations", headers=H)
+    job = r.json()
+    manager = client.app.state.travaux
+    t0 = time.monotonic()
+    while not client.get(f"/api/generations/{job['id']}", headers=H).json()["messages"]:  # SIGINT ignoré
+        assert time.monotonic() - t0 < 60
+        time.sleep(0.1)
+    proc = manager.get(job["id"]).process
+    os.kill(proc.pid, signal.SIGINT)
+    time.sleep(1.0)
+    assert proc.is_alive()
+    assert client.get(f"/api/generations/{job['id']}", headers=H).json()["statut"] == "en cours"
+    manager.shutdown()
+    st = client.get(f"/api/generations/{job['id']}", headers=H).json()
+    assert st["statut"] == "annulé"
+    texte = (tmp_path / "projets" / "aile1" / "essais" / job["essai"] / "resume.json").read_text(encoding="utf-8")
+    resume = json.loads(texte)
+    assert resume["statut"] == "annulé" and resume["message"] == "génération annulée"
+    assert "Traceback" not in texte and "KeyboardInterrupt" not in texte
+    final = [e for e in _sse(client, job["id"]) if isinstance(e, dict)][-1]
+    assert final == {"type": "annule", "message": "génération annulée"}
+
+
+def test_fils_tue_pendant_extinction_annule(client, monkeypatch):
+    """Un fils qui meurt sans message final pendant l'extinction (ou d'un signal d'arrêt) : « annulé »."""
+    monkeypatch.setenv("AERORIB_TEST_DELAI", "60")
+    job = client.post("/api/projets/aile1/generations", headers=H).json()
+    proc = client.app.state.travaux.get(job["id"]).process
+    proc.terminate()  # SIGTERM extérieur, ni annulation ni extinction demandée
+    st = _attendre_fin(client, job["id"], timeout=30)
+    assert st["statut"] == "annulé" and "signal" in st["resume"]["message"]
+
+
 def test_processus_mort_sans_message_final(client, monkeypatch):
     monkeypatch.setenv("AERORIB_TEST_PLANTAGE", "1")
     r = client.post("/api/projets/aile1/generations", headers=H)
@@ -309,10 +348,11 @@ def test_essai_en_cours_orphelin_interrompu(client, tmp_path):
     _faux_essai(root, "20261001-100000", {"statut": "en cours"})
     _faux_essai(root, "20261001-110000", None)
     _faux_essai(root, "20261001-120000", {"statut": "ok", "nervures": 3})
+    _faux_essai(root, "20261399-999999", {"statut": "ok"})  # nom plausible, date impossible
     (root / "aile1" / "essais" / "pas-un-essai").mkdir()
     liste = client.get("/api/projets/aile1/essais", headers=H).json()
     assert [(e["essai"], e["statut"]) for e in liste] == [
-        ("20261001-120000", "ok"), ("20261001-110000", "interrompu"), ("20261001-100000", "interrompu")]
+        ("20261399-999999", "ok"), ("20261001-120000", "ok"), ("20261001-110000", "interrompu"), ("20261001-100000", "interrompu")]
     assert client.get("/api/projets/aile1/essais/20261001-100000", headers=H).json()["resume"]["statut"] == "interrompu"
 
 
@@ -334,7 +374,8 @@ def test_chemins_hors_essai_refuses(client, tmp_path):
         assert r.status_code in (403, 404, 422), (chemin, r.status_code)
         assert "secret" not in r.text and "erreur" in r.json()
     # (httpx normalise « .. » brut côté client : on envoie les variantes encodées)
-    for essai in ("%2e%2e", "x", "20261001-100000%2F%2e%2e", "20261001", "20261001-100000-", "..%2F..%2Faile1"):
+    for essai in ("%2e%2e", "x", "20261001-100000%2F%2e%2e", "20261001", "20261001-100000-", "..%2F..%2Faile1",
+                  "20261001-100000%0A", "%D9%A2%D9%A0%D9%A2%D9%A6%D9%A1%D9%A0%D9%A0%D9%A1-100000"):
         r = client.get(f"/api/projets/aile1/essais/{essai}", headers=H)
         assert r.status_code in (404, 422), (essai, r.status_code)
         r = client.get(f"/api/projets/aile1/essais/{essai}/fichiers/resume.json", headers=H)

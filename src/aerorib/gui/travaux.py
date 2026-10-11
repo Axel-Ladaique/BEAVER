@@ -20,6 +20,7 @@ import multiprocessing
 import os
 import queue as queue_mod
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -42,7 +43,7 @@ TERMINATE_TIMEOUT = 5.0  # s avant de passer de terminate() à kill()
 ESSAIS = "essais"
 RESUME = "resume.json"
 EN_COURS = "en cours"
-_ESSAI_RE = re.compile(r"^\d{8}-\d{6}(?:-\d{1,3})?$")
+_ESSAI_RE = re.compile(r"[0-9]{8}-[0-9]{6}(?:-[0-9]{1,3})?")  # toujours avec fullmatch
 _TYPES = {
     ".html": "text/html; charset=utf-8",
     ".stl": "model/stl",
@@ -66,7 +67,14 @@ def _write_json(path: Path, data: dict) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
+        for essai in range(10):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:  # Windows : fichier ouvert en lecture par le serveur au même instant
+                if essai == 9:
+                    raise
+                time.sleep(0.05)
     finally:
         Path(tmp).unlink(missing_ok=True)
 
@@ -99,6 +107,9 @@ def _issues(report) -> tuple[list[str], list[str]]:
 
 def _run_job(step: str, config_path: str, out_dir: str, queue) -> None:
     """Génération complète (comme `aerorib run --3mf`) dans le processus fils ; écrit `resume.json`."""
+    # Ctrl+C dans le terminal atteint tout le groupe de processus : seul le serveur décide de l'arrêt
+    # (son extinction annule le travail proprement), le fils ne doit pas mourir d'un KeyboardInterrupt.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     t0 = time.monotonic()
     out = Path(out_dir)
     stem = out.parents[1].name  # projets/<nom>/essais/<essai>
@@ -201,6 +212,7 @@ class Job:
         self.process = None
         self.queue = None
         self.pompe: threading.Thread | None = None
+        self.cloture = threading.Lock()  # une seule clôture sans message final (pompe ou annulation)
 
     @property
     def termine(self) -> bool:
@@ -223,6 +235,7 @@ class JobManager:
         self._lock = threading.Lock()
         self._jobs: dict[str, Job] = {}
         self._courant: Job | None = None
+        self._arret = False  # extinction du serveur en cours : un fils qui meurt est « annulé »
 
     # --- démarrage ---------------------------------------------------------------------------
     def _nouvel_essai(self, projet: Path) -> tuple[str, Path]:
@@ -271,7 +284,7 @@ class JobManager:
         """Enregistre un message du fils ; True si c'est le message final."""
         if not isinstance(msg, dict) or msg.get("type") not in ("progression", "fin", "erreur"):
             return False
-        with job.lock:
+        with job.cloture, job.lock:
             if job.termine:
                 return True
             job.messages.append(msg)
@@ -294,8 +307,8 @@ class JobManager:
                 continue
             except queue_mod.Empty:
                 pass
-            except Exception:  # queue corrompue par un arrêt brutal
-                pass
+            except Exception:  # queue corrompue par un arrêt brutal : pas de boucle active
+                time.sleep(POLL)
             if not proc.is_alive():
                 while not final:  # derniers messages encore en transit
                     try:
@@ -311,10 +324,16 @@ class JobManager:
         q.close()
 
     def _clore_sans_final(self, job: Job, exitcode) -> None:
+        with job.cloture:
+            if not job.termine:
+                self._clore(job, exitcode)
+
+    def _clore(self, job: Job, exitcode) -> None:
         duree = round(time.monotonic() - job.debut, 2)
         resume = _read_json(job.dossier / RESUME) or {}
-        if job.annule:
-            message = "génération annulée"
+        signaux = {-signal.SIGINT, -signal.SIGTERM}
+        if job.annule or self._arret or exitcode in signaux:
+            message = "génération annulée" if job.annule or self._arret else "génération interrompue par un signal d'arrêt"
             resume.update(statut="annulé", duree=duree, erreurs=[], message=message)
             final = {"type": "annule", "message": message}
         else:
@@ -358,7 +377,8 @@ class JobManager:
             proc.kill()
             proc.join()
         if job.pompe is not None:
-            job.pompe.join()
+            job.pompe.join(TERMINATE_TIMEOUT)
+        self._clore_sans_final(job, proc.exitcode)  # sans effet si la pompe a déjà clos (message final ou mort)
         return job.public()
 
     def live(self, nom: str, essai: str) -> Job | None:
@@ -392,6 +412,7 @@ class JobManager:
 
     def shutdown(self) -> None:
         """Annule le travail en cours (arrêt du serveur, fin des tests)."""
+        self._arret = True
         job = self._courant
         if job is not None and not job.termine:
             self.cancel(job.id)
@@ -408,7 +429,7 @@ class JobManager:
 
 # --- historique ----------------------------------------------------------------------------------
 def check_essai(essai: str) -> str:
-    if not isinstance(essai, str) or not _ESSAI_RE.match(essai):
+    if not isinstance(essai, str) or not _ESSAI_RE.fullmatch(essai):
         raise ProjectError(422, "identifiant d'essai invalide (attendu : AAAAMMJJ-HHMMSS)")
     return essai
 
@@ -453,13 +474,13 @@ class History:
             return []
         out = []
         for d in racine.iterdir():
-            if not d.is_dir() or d.is_symlink() or not _ESSAI_RE.match(d.name):
+            if not d.is_dir() or d.is_symlink() or not _ESSAI_RE.fullmatch(d.name):
                 continue
             r = self._resume(projet.name, d)
             job = self.manager.live(projet.name, d.name)
             out.append({
                 "essai": d.name,
-                "date": r.get("debut") or datetime.strptime(d.name[:15], "%Y%m%d-%H%M%S").isoformat(),
+                "date": r.get("debut") or _date_essai(d.name),
                 "statut": r["statut"],
                 "id": job.id if job else None,
                 "duree": r.get("duree"),
@@ -529,6 +550,13 @@ class History:
         if not projets:
             raise ProjectError(404, "aucun projet Bambu (.3mf) dans cet essai")
         return projets[0]
+
+
+def _date_essai(essai: str) -> str | None:
+    try:
+        return datetime.strptime(essai[:15], "%Y%m%d-%H%M%S").isoformat()
+    except ValueError:  # dossier au nom plausible mais date impossible (créé à la main)
+        return None
 
 
 def _cle_essai(essai: str) -> tuple[str, int]:

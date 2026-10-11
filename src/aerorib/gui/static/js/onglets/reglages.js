@@ -1,8 +1,11 @@
 // Réglages du projet : formulaire (schéma + configuration effective), validation par l'aperçu, enregistrement.
 
 import { api, ErreurApi, seg } from "../api.js";
-import { debounce, el, message, vider } from "../dom.js";
-import { cleChemin, erreursParChamp, estPose, Formulaire, lire, Schema } from "../formulaire.js";
+import { debounce, el, gabaritLectureSeule, message, vider } from "../dom.js";
+import { cleChemin, estPose, lire } from "../chemins.js";
+import { erreursParChamp } from "../erreurs.js";
+import { Formulaire } from "../formulaire.js";
+import { Schema } from "../schema.js";
 
 const DEBOUNCE_MS = 400;
 // sorties forcées par la génération (dossier de l'essai, STEP + STL + 3MF, pas d'ouverture automatique)
@@ -80,15 +83,11 @@ function marquer(modifie) {
 
 function gabarit(valeur) {
   const p = profils.get(matiereCourante());
-  const g = p && p.gabarit;
-  if (g && g.chemin_nom) {
-    return el("span", { classe: "lecture-seule" }, [
-      el("code", { texte: g.chemin_nom }),
-      g.existe ? " (présent, fourni par le profil)" : " — fichier absent : le 3MF ne sera pas produit",
-    ]);
-  }
-  if (valeur) return el("span", { classe: "lecture-seule", texte: "gabarit défini dans config.yaml (voir le texte)" });
-  return el("span", { classe: "lecture-seule", texte: "aucun : le 3MF ne sera pas produit" });
+  return gabaritLectureSeule(p && p.gabarit, {
+    present: " (présent, fourni par le profil)",
+    absent: " — fichier absent : le 3MF ne sera pas produit",
+    aucun: valeur ? "gabarit défini dans config.yaml (voir le texte)" : "aucun : le 3MF ne sera pas produit",
+  });
 }
 
 const proposer = debounce(() => {

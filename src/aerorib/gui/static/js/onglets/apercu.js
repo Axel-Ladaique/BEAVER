@@ -26,12 +26,16 @@ const etat = {
   zmin: 0,
   zmax: 1,
   configVue3d: null,
+  visible: false, // panneau affiché (onglet Réglages ou Aperçu)
+  aJour: true, // la dernière demande a reçu sa réponse définitive
 };
 let vue3d = null;
 
 // --- requêtes -------------------------------------------------------------------------------------------
 async function demander() {
   if (!etat.projet || etat.config === null) return;
+  etat.aJour = false;
+  if (!etat.visible) return; // onglet quitté : demandé de nouveau à l'affichage (placer)
   const s = ++etat.seq;
   clearTimeout(etat.relance);
   const nom = etat.projet;
@@ -43,10 +47,16 @@ async function demander() {
     r = await appel("POST", `/api/projets/${seg(nom)}/apercu`, corps);
   } catch (e) {
     if (s !== etat.seq) return;
-    if (e instanceof ErreurApi && e.statut === 422) {
-      ctx.emettre("validation", { erreur: e.message });
-      ui.etat.textContent = "";
+    ui.etat.textContent = "";
+    if (e instanceof ErreurApi && e.statut === 422 && /^aperçu impossible/i.test(e.message)) {
+      // réglages valides, mais la géométrie de l'aperçu a échoué : aucun champ en cause
+      etat.aJour = true;
+      ctx.emettre("validation", { ok: true });
       vider(ui.erreur).append(message(e.message));
+    } else if (e instanceof ErreurApi && e.statut === 422) {
+      etat.aJour = true;
+      ctx.emettre("validation", { erreur: e.message });
+      vider(ui.erreur).append(message("Réglages invalides : voir les champs signalés dans le formulaire.", "attention"));
     } else {
       ui.etat.textContent = "";
       vider(ui.erreur).append(message(`Aperçu impossible : ${e.message}`));
@@ -59,11 +69,13 @@ async function demander() {
   if (r.statut === 202) {
     ui.etat.textContent = (r.donnees && r.donnees.message) || "Préparation de la pièce…";
     etat.relance = setTimeout(() => {
+      etat.relance = null;
       if (s === etat.seq) demander();
     }, RELANCE_MS);
     return;
   }
   etat.resultat = r.donnees;
+  etat.aJour = true;
   ui.etat.textContent = "";
   rendre();
   if (vue3d) ui.note3d.hidden = JSON.stringify(etat.config) === etat.configVue3d;
@@ -456,7 +468,9 @@ export function init(panneau, contexte) {
     etat.config = config;
     demander();
   });
-  ctx.sur("reconnexion", () => demander());
+  ctx.sur("reconnexion", () => {
+    if (!etat.aJour) demander();
+  });
 }
 
 export function afficher() {
@@ -471,4 +485,17 @@ export function placer(conteneur, { compact }) {
   if (racine.parentNode !== conteneur) conteneur.append(racine);
   racine.classList.toggle("apercu-plein", !compact);
   if (vue3d) vue3d.taille();
+  etat.visible = true;
+  if (!etat.aJour) demander();
+}
+
+/** Panneau caché (autre onglet) : plus de requêtes ni de relance de préparation. */
+export function masquer() {
+  etat.visible = false;
+  if (!etat.aJour || etat.relance) {
+    etat.seq += 1; // une réponse en vol sera ignorée ; la demande repartira à l'affichage
+    clearTimeout(etat.relance);
+    etat.relance = null;
+    etat.aJour = false;
+  }
 }

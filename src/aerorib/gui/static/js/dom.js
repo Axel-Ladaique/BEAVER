@@ -79,6 +79,20 @@ export function badgeStatut(statut) {
   return el("span", { classe: `statut ${classeStatut(statut)}`, texte: statut || "—" });
 }
 
+/**
+ * Gabarit Bambu en lecture seule ({chemin_nom, existe} renvoyé par l'API des profils) :
+ * nom du fichier et présence, jamais de chemin complet ni de champ éditable.
+ */
+export function gabaritLectureSeule(g, { present = " — présent", absent = " — fichier introuvable",
+  aucun = "aucun gabarit : le 3MF ne sera pas produit", note = null } = {}) {
+  if (!g || !g.chemin_nom) return el("span", { classe: "lecture-seule", texte: aucun });
+  return el("span", { classe: "lecture-seule" }, [
+    el("code", { texte: g.chemin_nom }),
+    g.existe ? present : absent,
+    note ? el("span", { classe: "aide", texte: note }) : null,
+  ]);
+}
+
 /** Rappel retardé : chaque appel repousse l'exécution de `ms`. */
 export function debounce(fn, ms) {
   let t = null;

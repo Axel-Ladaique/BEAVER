@@ -132,6 +132,8 @@ def test_aucune_ressource_externe_hors_three(client):
             if url == "http://www.w3.org/2000/svg":  # espace de noms SVG, pas une ressource chargée
                 continue
             assert url.startswith(THREE), f"{nom} référence {url}"
+        # URL relatives au protocole (« //hôte/… ») dans un attribut ou une chaîne : interdites
+        assert not re.search(r"""(?:src|href)\s*=\s*['"]//|['"`]//[A-Za-z0-9-]+\.""", texte), f"{nom} : URL //hôte"
 
 
 def test_pas_de_innerhtml(client):

@@ -5,274 +5,9 @@
 // la retire. Mode « profil » : le modèle est le dictionnaire complet du profil, tout est éditable.
 
 import { el, vider } from "./dom.js";
-
-// --- chemins dans un dictionnaire imbriqué -------------------------------------------------------------
-export function lire(obj, chemin) {
-  let o = obj;
-  for (const k of chemin) {
-    if (o === null || typeof o !== "object") return undefined;
-    o = o[k];
-  }
-  return o;
-}
-
-/** Comme `_is_set` du serveur : une liste rencontrée en chemin est posée en bloc. */
-export function estPose(obj, chemin) {
-  let o = obj;
-  for (const k of chemin) {
-    if (Array.isArray(o)) return true;
-    if (o === null || typeof o !== "object" || !(k in o)) return false;
-    o = o[k];
-  }
-  return true;
-}
-
-export function poser(obj, chemin, valeur) {
-  let o = obj;
-  chemin.slice(0, -1).forEach((k, i) => {
-    if (o[k] === null || typeof o[k] !== "object") o[k] = typeof chemin[i + 1] === "number" ? [] : {};
-    o = o[k];
-  });
-  o[chemin[chemin.length - 1]] = valeur;
-}
-
-/** Retire la clé et les dictionnaires parents devenus vides. */
-export function retirer(obj, chemin) {
-  const pile = [obj];
-  let o = obj;
-  for (const k of chemin.slice(0, -1)) {
-    if (o === null || typeof o !== "object" || !(k in o)) return;
-    o = o[k];
-    pile.push(o);
-  }
-  delete o[chemin[chemin.length - 1]];
-  for (let i = chemin.length - 2; i >= 0; i--) {
-    const parent = pile[i];
-    const enfant = parent[chemin[i]];
-    if (enfant && typeof enfant === "object" && !Array.isArray(enfant) && Object.keys(enfant).length === 0) {
-      delete parent[chemin[i]];
-    } else break;
-  }
-}
-
-export const copie = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
-export const cleChemin = (chemin) => chemin.join(".");
-
-// --- libellés français -----------------------------------------------------------------------------------
-const LIBELLES = {
-  material: "Matière (profil)",
-  material_settings: "Réglages matière",
-  line_width: "Largeur de ligne (mm)",
-  layer_height: "Hauteur de couche (mm)",
-  density: "Densité effective (g/cm³)",
-  min_slit_width: "Fente min. du slicer (mm)",
-  max_overhang_deg: "Surplomb max (°)",
-  printer: "Imprimante",
-  slit_width: "Épaisseur des nervures (mm)",
-  naming: "Nommage des corps (préfixes)",
-  skin: "Peau",
-  spar: "Longeron",
-  split: "Séparation haut / bas",
-  norib: "Sans nervure",
-  cut: "Découpe",
-  roles: "Rôles imposés",
-  validation: "Validation",
-  tessellation_tol: "Tolérance de maillage (mm)",
-  skin_tolerance: "Tolérance de peau (mm)",
-  max_mouth_width: "Ouverture max de fente (mm)",
-  orientation: "Orientation",
-  gap: "Bande de séparation (mm)",
-  min_rib_depth: "Profondeur min. de nervure (mm)",
-  grid: "Grille surface médiane (nx, nz)",
-  rib_layers: "Couches de nervures",
-  name: "Nom",
-  pattern: "Motif",
-  angle: "Angle (°)",
-  spacing: "Espacement (mm)",
-  depth: "Profondeur",
-  phase: "Décalage du motif (mm)",
-  samples: "Échantillons",
-  spars: "Longerons",
-  clearance: "Jeu radial (mm)",
-  sleeve: "Manchon (mm)",
-  strip: "Bande sans nervure (mm)",
-  slit_side: "Côté de la fente",
-  anchor: "Attache côté opposé",
-  anchor_gap: "Écart de l'attache (mm)",
-  passages: "Passages (alésages)",
-  mode: "Mode",
-  max_tilt_deg: "Inclinaison max (°)",
-  output: "Sortie",
-  dir: "Dossier",
-  formats: "Formats",
-  segment: "Tronçons",
-  margin: "Marge (mm)",
-  cuts_at: "Coupes forcées (mm)",
-  max_height: "Hauteur utile max (mm)",
-  bambu: "Bambu Studio",
-  template: "Gabarit (.3mf)",
-  open: "Ouvrir après génération",
-};
-const LIBELLES_CHEMIN = {
-  "split": "Séparation haut / bas",
-  "naming.split": "Séparation",
-  "spars.*.slit_width": "Largeur de la fente (mm)",
-  "passages.slit_width": "Largeur de la fente (mm)",
-  "passages.sleeve": "Manchon (mm)",
-  "segment.mode": "Découpe en tronçons",
-  "passages.mode": "Traitement des passages",
-};
-const AIDES = {
-  "slit_width": "épaisseur des plaques coupées dans la pièce",
-  "rib_layers.*.angle": "vide = auto (min(45°, surplomb max))",
-  "segment.max_height": "vide = hauteur du gabarit Bambu − marge",
-  "segment.cuts_at": "altitudes séparées par « ; »",
-  "naming.*": "préfixes séparés par des virgules",
-  "split.gap": "≥ largeur de ligne",
-};
-const CHOIX = {
-  fill: "reboucher", link: "relier à la peau", off: "aucun", auto: "automatique",
-  top: "dessus (extrados)", bottom: "dessous (intrados)",
-  skin: "peau", spar: "longeron", split: "séparation", norib: "sans nervure", cut: "découpe", ignore: "ignorer",
-  diamond: "losange", full: "jusqu'à la bande",
-};
-
-function generique(chemin) {
-  return chemin.map((k) => (typeof k === "number" ? "*" : k));
-}
-
-function libelle(chemin) {
-  const g = generique(chemin);
-  const cle = cleChemin(chemin);
-  const avecEtoile = g.map((k, i) => (i === 1 && g[0] === "spars" ? "*" : k)).join(".");
-  return LIBELLES_CHEMIN[cle] || LIBELLES_CHEMIN[avecEtoile] || LIBELLES[chemin[chemin.length - 1]] ||
-    String(chemin[chemin.length - 1]);
-}
-
-function aide(chemin) {
-  const g = generique(chemin).join(".");
-  return AIDES[g] || AIDES[`${chemin[0]}.*`] || null;
-}
-
-// --- schéma -----------------------------------------------------------------------------------------------
-// Sous-schémas absents du schéma JSON (dictionnaires libres côté pydantic).
-const SCHEMA_MATIERE = {
-  type: "object",
-  properties: {
-    line_width: { type: "number", exclusiveMinimum: 0 },
-    layer_height: { type: "number", exclusiveMinimum: 0 },
-    density: { type: "number", exclusiveMinimum: 0 },
-    min_slit_width: { type: "number", exclusiveMinimum: 0 },
-    max_overhang_deg: { type: "number", exclusiveMinimum: 0, maximum: 90 },
-  },
-};
-const SCHEMA_LONGERON = {
-  type: "object",
-  properties: {
-    clearance: { type: "number", minimum: 0 },
-    sleeve: { type: "number", exclusiveMinimum: 0 },
-    strip: { type: "number", exclusiveMinimum: 0 },
-    slit_side: { type: "string", enum: ["top", "bottom"] },
-    slit_width: { type: "number", exclusiveMinimum: 0 },
-    anchor: { type: "boolean" },
-    anchor_gap: { type: "number", exclusiveMinimum: 0 },
-  },
-};
-
-const PLAN = [
-  { titre: "Général", cles: ["material", "slit_width", "printer"] },
-  { cle: "rib_layers" },
-  { cle: "material_settings" },
-  { cle: "split" },
-  { cle: "spars" },
-  { cle: "passages" },
-  { cle: "segment" },
-  { titre: "Orientation et rôles des corps", cles: ["orientation", "roles"] },
-  { cle: "naming" },
-  { cle: "validation" },
-  { cle: "bambu" },
-  { cle: "output" },
-];
-
-export class Schema {
-  constructor(racine) {
-    this.racine = racine;
-  }
-
-  resoudre(n) {
-    let x = n;
-    while (x && x.$ref) x = this.racine.$defs[x.$ref.split("/").pop()];
-    return x || {};
-  }
-
-  noeud(chemin) {
-    let n = this.racine;
-    for (const k of chemin) {
-      n = this.resoudre(n);
-      if (typeof k === "number") n = n.items || {};
-      else if (n === this.resoudre(this.racine.properties.material_settings)) n = SCHEMA_MATIERE.properties[k] || {};
-      else if (n.properties && k in n.properties) n = n.properties[k];
-      else if (chemin[0] === "spars" && n.additionalProperties && n.additionalProperties.type === "object") n = SCHEMA_LONGERON;
-      else if (n.additionalProperties && typeof n.additionalProperties === "object") n = n.additionalProperties;
-      else return {};
-    }
-    if (chemin.length === 1 && chemin[0] === "material_settings") return SCHEMA_MATIERE;
-    if (chemin.length === 2 && chemin[0] === "spars") return SCHEMA_LONGERON;
-    return this.resoudre(n);
-  }
-
-  /** Valeur par défaut déclarée (en suivant les sous-modèles), ou undefined. */
-  defaut(chemin) {
-    for (let i = chemin.length; i >= 1; i--) {
-      const n = this.noeud(chemin.slice(0, i));
-      if (n.default !== undefined) {
-        const reste = chemin.slice(i);
-        return copie(reste.length ? lire(n.default, reste) : n.default);
-      }
-    }
-    return undefined;
-  }
-
-  /** Nature du champ pour choisir le widget. */
-  nature(chemin) {
-    const n = this.noeud(chemin);
-    if (chemin.length === 1 && chemin[0] === "orientation") return { genre: "orientation" };
-    if (chemin.length === 1 && chemin[0] === "material_settings") return { genre: "groupe", noeud: SCHEMA_MATIERE };
-    if (chemin.length === 1 && chemin[0] === "spars") return { genre: "dict-groupes" };
-    if (n.anyOf) {
-      const nonNul = n.anyOf.filter((a) => a.type !== "null").map((a) => this.resoudre(a));
-      const nullable = nonNul.length < n.anyOf.length;
-      const constante = nonNul.find((a) => a.const !== undefined);
-      const num = nonNul.find((a) => a.type === "number" || a.type === "integer");
-      if (constante && num) return { genre: "nombre-ou-const", constante: constante.const, noeud: num };
-      if (nonNul.length === 1) return { ...this.natureNoeud(nonNul[0]), nullable };
-      return { genre: "json" };
-    }
-    return this.natureNoeud(n);
-  }
-
-  natureNoeud(n) {
-    if (n.const !== undefined) return { genre: "constante", noeud: n };
-    if (n.enum) return { genre: "choix", noeud: n };
-    if (n.type === "number" || n.type === "integer") return { genre: "nombre", noeud: n };
-    if (n.type === "boolean") return { genre: "booleen" };
-    if (n.type === "string") return { genre: "texte" };
-    if (n.type === "array") {
-      if (n.prefixItems) return { genre: "tuple", noeud: n };
-      const it = this.resoudre(n.items || {});
-      if (it.enum) return { genre: "multi-choix", noeud: it };
-      if (it.type === "string") return { genre: "liste-texte" };
-      if (it.type === "number" || it.type === "integer") return { genre: "liste-nombres" };
-      if (it.type === "object" && it.properties) return { genre: "liste-objets", noeud: it };
-      return { genre: "json" };
-    }
-    if (n.type === "object" && n.properties) return { genre: "groupe", noeud: n };
-    if (n.type === "object" && n.additionalProperties && n.additionalProperties.enum) {
-      return { genre: "dict-choix", noeud: n.additionalProperties };
-    }
-    return { genre: "json" };
-  }
-}
+import { cleChemin, copie, estPose, lire, poser, retirer } from "./chemins.js";
+import { aide, CHOIX, libelle } from "./libelles.js";
+import { PLAN } from "./schema.js";
 
 // --- lecture / contrôle des saisies -------------------------------------------------------------------------
 class Saisie extends Error {}
@@ -300,6 +35,27 @@ function lireNombre(texte, n, nullable) {
 
 function texteNombre(v) {
   return v === null || v === undefined ? "" : String(v);
+}
+
+/**
+ * Clés d'erreur après suppression de l'élément `i` de la liste `prefixe` :
+ * « prefixe.i.* » disparaissent, « prefixe.j.* » (j > i) deviennent « prefixe.(j-1).* ».
+ */
+export function reindexer(erreurs, prefixe, i) {
+  const out = new Map();
+  const debut = `${prefixe}.`;
+  for (const [k, msg] of erreurs) {
+    if (!k.startsWith(debut)) {
+      out.set(k, msg);
+      continue;
+    }
+    const [tete, ...reste] = k.slice(debut.length).split(".");
+    const j = Number(tete);
+    if (!Number.isInteger(j) || tete === "") out.set(k, msg);
+    else if (j > i) out.set([prefixe, j - 1, ...reste].join("."), msg);
+    else if (j < i) out.set(k, msg);
+  }
+  return out;
 }
 
 // --- formulaire ----------------------------------------------------------------------------------------------
@@ -544,6 +300,15 @@ export class Formulaire {
     this.surChangement();
   }
 
+  /** Retire l'élément `i` d'une liste ; ses erreurs disparaissent, celles des suivants remontent d'un rang. */
+  supprimerElement(chemin, i) {
+    lire(this.modele, chemin).splice(i, 1);
+    this.erreursLocales = reindexer(this.erreursLocales, cleChemin(chemin), i);
+    this.erreursServeur = new Map(); // relues à la prochaine validation
+    this.rendre();
+    this.surChangement();
+  }
+
   /** Nouvelle valeur saisie (ou erreur de saisie) pour `chemin`. */
   saisir(chemin, lecture) {
     const cle = cleChemin(chemin);
@@ -715,11 +480,7 @@ export class Formulaire {
           inactif ? null : el("button", {
             type: "button", classe: "petit danger", texte: "supprimer la couche",
             disabled: liste.length <= 1, title: liste.length <= 1 ? "Il faut au moins une couche" : null,
-            onclick: () => {
-              lire(this.modele, chemin).splice(i, 1);
-              this.rendre();
-              this.surChangement();
-            },
+            onclick: () => this.supprimerElement(chemin, i),
           }),
         ]),
       ]);
@@ -814,63 +575,3 @@ export class Formulaire {
 }
 
 // messages pydantic courants (anglais côté serveur) traduits pour l'affichage
-const TRADUCTIONS = [
-  [/^Input should be greater than or equal to (.+)$/, "doit être ≥ $1"],
-  [/^Input should be greater than (.+)$/, "doit être > $1"],
-  [/^Input should be less than or equal to (.+)$/, "doit être ≤ $1"],
-  [/^Input should be less than (.+)$/, "doit être < $1"],
-  [/^Input should be a valid number.*$/, "nombre attendu"],
-  [/^Input should be a valid integer.*$/, "nombre entier attendu"],
-  [/^Input should be a valid boolean.*$/, "oui/non attendu"],
-  [/^Input should be a valid string.*$/, "texte attendu"],
-  [/^Input should be a valid (list|array).*$/, "liste attendue"],
-  [/^Input should be a valid dictionary.*$/, "dictionnaire attendu"],
-  [/^Input should be (.+)$/, "valeur attendue : $1"],
-  [/^Extra inputs are not permitted$/, "champ inconnu"],
-  [/^Field required$/, "champ manquant"],
-];
-
-function traduit(m) {
-  for (const [re, fr] of TRADUCTIONS) if (re.test(m)) return m.replace(re, fr).replace(/' or '/g, "' ou '");
-  return m;
-}
-
-/**
- * Découpe un message d'erreur de validation du serveur en erreurs par champ.
- * Formats reconnus : pydantic (« chemin.0.champ\n  message [type=…] ») et
- * « champ « chemin » : message » (profils).
- */
-export function erreursParChamp(texte) {
-  const parChamp = new Map();
-  const lignes = String(texte || "").split("\n");
-  const loc = /^[A-Za-z_]\S*$/;
-  const nettoie = (l) => traduit(l.trim().replace(/\s*\[type=.*$/, "").replace(/^Value error, /, ""));
-  const restes = [];
-  for (let i = 0; i < lignes.length; i++) {
-    const l = lignes[i];
-    if (/validation errors? for/.test(l) || /For further information/.test(l)) continue;
-    if (loc.test(l) && i + 1 < lignes.length && /^\s{2}\S/.test(lignes[i + 1])) {
-      const msg = nettoie(lignes[i + 1]);
-      parChamp.set(l, parChamp.has(l) ? `${parChamp.get(l)}\n${msg}` : msg);
-      i += 1;
-      continue;
-    }
-    const t = nettoie(l);
-    if (t) restes.push(t);
-  }
-  // format des profils : « champ « chemin » : message ; champ « … » : … »
-  const general = [];
-  for (const r of restes) {
-    const re = /champ « ([^»]+) » : ([^;]+)/g;
-    let m;
-    let trouve = false;
-    while ((m = re.exec(r))) {
-      trouve = true;
-      parChamp.set(m[1].trim(), m[2].trim());
-    }
-    if (!trouve) general.push(r);
-  }
-  // « configuration invalide : » seul n'apporte rien quand le détail est sous les champs
-  const utiles = general.filter((g) => !/^configuration invalide :?$/.test(g) || !parChamp.size);
-  return { parChamp, general: utiles.length ? [utiles.join("\n")] : [] };
-}

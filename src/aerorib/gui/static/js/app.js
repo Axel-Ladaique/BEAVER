@@ -85,6 +85,7 @@ export function allerA(nom, { focus = false } = {}) {
   // l'aperçu est un seul panneau, posé à côté des réglages ou seul dans son onglet
   if (nom === "reglages") apercu.placer(reglages.emplacementApercu(), { compact: true });
   if (nom === "apercu") apercu.placer(document.getElementById("panneau-apercu"), { compact: false });
+  if (nom !== "reglages" && nom !== "apercu") apercu.masquer();
   MODULES[nom].afficher?.();
 }
 
@@ -113,7 +114,7 @@ async function demarrer() {
   nav.addEventListener("keydown", clavierOnglets);
   window.addEventListener("hashchange", () => allerA(window.location.hash.slice(1)));
   window.addEventListener("beforeunload", (ev) => {
-    if (reglages.estModifie()) {
+    if (reglages.estModifie() || profils.estModifie()) {
       ev.preventDefault();
       ev.returnValue = "";
     }

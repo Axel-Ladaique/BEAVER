@@ -1,8 +1,10 @@
 // Profils matière (PLA Aero, ASA Aero, copies) : liste, édition (même formulaire que les réglages), copie.
 
 import { api, ErreurApi, seg } from "../api.js";
-import { el, message, vider } from "../dom.js";
-import { erreursParChamp, Formulaire, Schema } from "../formulaire.js";
+import { el, gabaritLectureSeule, message, vider } from "../dom.js";
+import { erreursParChamp } from "../erreurs.js";
+import { Formulaire } from "../formulaire.js";
+import { Schema } from "../schema.js";
 
 const NOM_RE = /^[a-z0-9_]{1,40}$/;
 
@@ -13,18 +15,18 @@ let courant = null; // réponse GET /api/profils/{nom}
 let modifie = false;
 
 function gabarit() {
-  const g = courant && courant.gabarit;
-  if (!g || !g.chemin_nom) return el("span", { classe: "lecture-seule", texte: "aucun gabarit : le 3MF ne sera pas produit" });
-  return el("span", { classe: "lecture-seule" }, [
-    el("code", { texte: g.chemin_nom }),
-    g.existe ? " — présent" : " — fichier introuvable",
-    el("span", { classe: "aide", texte: " (lecture seule : à changer dans le fichier YAML du profil)" }),
-  ]);
+  return gabaritLectureSeule(courant && courant.gabarit, { note: " (lecture seule : à changer dans le fichier YAML du profil)" });
+}
+
+/** Modifications du profil non enregistrées (garde de fermeture de la page). */
+export function estModifie() {
+  return modifie;
 }
 
 function marquer(m) {
   modifie = m;
   ui.enregistrer.disabled = !m;
+  ui.annuler.disabled = !m;
   ui.sale.hidden = !m;
 }
 
@@ -143,7 +145,7 @@ export function init(panneau, contexte) {
   ui.zoneFormulaire = el("div");
   ui.sale = el("span", { classe: "indicateur-sale", texte: "● modifications non enregistrées", hidden: true });
   ui.enregistrer = el("button", { type: "button", classe: "principal", texte: "Enregistrer le profil", disabled: true, onclick: enregistrer });
-  ui.annuler = el("button", { type: "button", texte: "Annuler les modifications", onclick: () => courant && ouvrir(courant.nom) });
+  ui.annuler = el("button", { type: "button", texte: "Annuler les modifications", disabled: true, onclick: () => courant && ouvrir(courant.nom) });
   ui.copier = el("button", { type: "button", texte: "Créer la copie utilisateur (./profiles)", onclick: () => copier(undefined) });
   ui.nouveauNom = el("input", { id: "profil-nouveau-nom", type: "text", placeholder: "ex. pla_aero_leger", maxlength: 40 });
   ui.editeur = el("div", { classe: "carte", hidden: true }, [

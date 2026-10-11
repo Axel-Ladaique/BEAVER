@@ -2,13 +2,19 @@
 
 import { api, seg, urlAvecJeton } from "../api.js";
 import { badgeStatut, dateFr, duree, el, message, nombre, vider } from "../dom.js";
-import { actionsEssai } from "./generer.js";
+import { carteEssai } from "../essai.js";
 
 let ctx = null;
 const ui = {};
 const choisis = []; // au plus deux essais, dans l'ordre de sélection
 let ouvert = null; // essai dont le détail est affiché
 let chargement = 0;
+
+/** Ordre chronologique des essais, comme `_cle_essai` du serveur : « …-2 » avant « …-10 ». */
+function cleEssai(essai) {
+  const n = essai.slice(16);
+  return `${essai.slice(0, 15)}-${String(/^\d+$/.test(n) ? Number(n) : 1).padStart(4, "0")}`;
+}
 
 function valeurTexte(v) {
   if (v === undefined || v === null) return "—";
@@ -102,20 +108,7 @@ async function detail() {
     return;
   }
   if (essai !== ouvert) return;
-  const r = d.resume || {};
-  const erreurs = el("div");
-  const carte = el("div", { classe: "carte" }, [el("h3", {}, [`Essai ${essai} `, badgeStatut(r.statut)])]);
-  if (r.message) carte.append(el("p", { texte: r.message }));
-  for (const [titre, liste, genre] of [["Erreurs", r.erreurs, "erreur"], ["Avertissements", r.avertissements, "attention"]]) {
-    if (liste && liste.length) {
-      carte.append(el("div", { classe: `message ${genre}` }, [
-        el("strong", { texte: titre }), el("ul", { classe: "liste-messages" }, liste.map((x) => el("li", { texte: x }))),
-      ]));
-    }
-  }
-  if (r.statut !== "en cours") {
-    carte.append(el("div", { classe: "actions liens" }, actionsEssai(nom, essai, r, (m) => vider(erreurs).append(message(m)))), erreurs);
-  }
+  const carte = carteEssai(nom, essai, d.resume || {});
   if (d.config) {
     const pre = el("pre", { classe: "journal", texte: JSON.stringify(d.config, null, 2) });
     carte.append(el("details", {}, [el("summary", { texte: "Configuration résolue utilisée" }), pre]));
@@ -132,7 +125,7 @@ async function comparer() {
   vider(ui.diff);
   const nom = ctx.etat.projet;
   if (choisis.length !== 2) return;
-  const [a, b] = [...choisis].sort();
+  const [a, b] = [...choisis].sort((x, y) => (cleEssai(x) < cleEssai(y) ? -1 : 1));
   let lignes;
   try {
     lignes = await api.get(`/api/projets/${seg(nom)}/essais/diff?a=${seg(a)}&b=${seg(b)}`);

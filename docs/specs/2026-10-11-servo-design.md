@@ -5,7 +5,7 @@
 
 ## Choix de l'utilisateur
 - Une baie de servo est décrite dans la CAO par un **corps nommé `SERVO…`** (boîte = espace utile du servo + jeu). Elle peut s'ouvrir sur **l'extrados ou l'intrados**.
-- Le **passage de câble** est un corps `SBAR…` dont le nom contient **`CABLE`** ; traité en **gaine allégée** (trou + fente vers la peau, **sans manchon ni attache**). Si le résultat déçoit, on reviendra au traitement longeron.
+- Le **passage de câble** est un corps `SBAR…` dont le nom contient **`CABLE`** ; traité en **gaine allégée** (trou + fente vers la peau, **sans attache**, manchon réduit). Si le résultat déçoit, on reviendra au traitement longeron.
 - **Rampes à 45°** (surplomb max de la matière) aux deux bouts de la poche dans le sens de l'envergure ; **l'ouverture dans la peau est allongée** de la longueur des rampes (la boîte reste l'espace utile).
 - **Emplanture** : automatique (bout où sortent les gaines de câble ; sinon règle actuelle) + réglage `orientation.root: auto | debut | fin`.
 - **Renfort** autour de la poche (paroi doublée par une fente parallèle) **activé par défaut**, désactivable.
@@ -29,7 +29,7 @@
 - `auto` : s'il existe une gaine qui touche une extrémité de l'envergure (à la tolérance près), cette extrémité est l'emplanture ; sinon règle actuelle (plus grande section). La source est rapportée (`orientation : … emplanture côté gaine SBAR_CABLES_SERVO`).
 
 ### 3. Gaine allégée
-- Trou de rayon r + jeu, **fente** vers la peau (côté `slit_side` par défaut), **sans manchon** (sleeve 0) **ni attache**, bande sans nervure réduite (`spars.cable.strip`, défaut = largeur de ligne). Étendue en envergure limitée au corps (comme les longerons). Elle peut déboucher dans une baie de servo.
+- Trou de rayon r + jeu, **fente** vers la peau (côté `slit_side` par défaut), **sans attache**, manchon réduit à 1,2 × largeur de ligne (≈ 0,5 mm ; la validation refuse 0 : paroi trou / vide de nervure < largeur de ligne), bande sans nervure réduite (`spars.cable.strip`, défaut = largeur de ligne). Étendue en envergure limitée au corps (comme les longerons). Elle peut déboucher dans une baie de servo.
 
 ### 4. Baie de servo
 - **Côté d'ouverture** : la face de peau que la boîte traverse (extrados si la boîte dépasse en +Y, intrados en −Y). Erreur française si la boîte ne traverse aucune peau, traverse les deux, ou si son fond laisse moins de `servo.min_floor_gap` (défaut 1,0 mm) avant la peau opposée.

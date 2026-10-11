@@ -167,7 +167,26 @@ def test_planform(prep, plates):
     assert angles == {round(ang, 6), round(-ang, 6)}
     assert view.wing[1] == pytest.approx(0.0, abs=1e-3) and view.wing[3] == pytest.approx(80.0, abs=1e-3)
     assert view.cuts == pytest.approx([80 / 3, 160 / 3], abs=1e-3)
+    # trous vus de dessus (spec « Écrans » §3 : le longeron) : étendue z × diamètre, repère orienté
+    trous = view.to_dict()["trous"]
+    assert sorted(t["type"] for t in trous) == ["longeron", "passage relié"]
+    for t in trous:
+        b = next(b for b in prep.bores if b.name == t["nom"])
+        assert t["x"] == pytest.approx(b.x, abs=1e-3) and t["r"] == pytest.approx(b.radius, abs=1e-3)
+        assert view.wing[0] < t["x"] < view.wing[2] and t["r"] > 0
+        assert -1e-6 <= t["z0"] < t["z1"] <= 80 + 1e-6
+    longeron = next(t for t in trous if t["type"] == "longeron")
+    assert longeron["gaine"] > longeron["r"]  # enveloppe gaine (trou + manchon)
     json.dumps(view.to_dict())
+
+
+def test_planform_passage_rebouche(step):
+    cfg = _cfg(passages={"mode": "fill"})
+    prep = preview.prepare(step, cfg)
+    trous = preview.planform(prep, [], cfg).to_dict()["trous"]
+    assert sorted(t["type"] for t in trous) == ["longeron", "passage rebouché"]
+    f = next(t for t in trous if t["type"] == "passage rebouché")
+    assert f["z0"] < f["z1"] and f["r"] > 0
 
 
 def test_estimates(prep, plates, real):

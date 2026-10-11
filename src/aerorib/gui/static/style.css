@@ -215,6 +215,10 @@ svg .defaut-zone { fill: transparent; cursor: help; }
 svg .reseau-a { stroke: var(--reseau-a); }
 svg .reseau-b { stroke: var(--reseau-b); }
 svg .contour-aile { fill: none; stroke: var(--peau-trait); }
+svg .trou-dessus .trou { fill: var(--trou); fill-opacity: .25; stroke: var(--trou); }
+svg .trou-dessus .trou.rebouche { fill: none; stroke-dasharray: 2 2; }
+svg .trou-dessus .gaine { fill: none; stroke: var(--trou); stroke-dasharray: 4 3; stroke-opacity: .8; }
+.legende .pastille-trou { background: color-mix(in srgb, var(--trou) 25%, transparent); border: 2px solid var(--trou); }
 svg .coupe-troncon { stroke: var(--texte); stroke-dasharray: 8 5; }
 svg .niveau-z { stroke: var(--attention); stroke-dasharray: 3 3; }
 svg text { fill: var(--texte-doux); font: 11px var(--police); }

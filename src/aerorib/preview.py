@@ -468,6 +468,8 @@ class PlanformView:
     wing: tuple[float, float, float, float]  # xmin, zmin, xmax, zmax
     cuts: list[float]  # altitudes absolues des coupes de tronçons
     warnings: list[str] = field(default_factory=list)
+    # trous vus de dessus, repère orienté : {nom, type, x, r, gaine, z0, z1} (étendue z × diamètre)
+    bores: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -477,7 +479,27 @@ class PlanformView:
             "aile": [_round(v) for v in self.wing],
             "coupes": [_round(c) for c in self.cuts],
             "avertissements": self.warnings,
+            "trous": self.bores,
         }
+
+
+def _plan_bores(prep: Prepared) -> list[dict]:
+    """Longerons, passages reliés (étendue réelle `bore_extent`) et passages rebouchés, vus de dessus."""
+    zmin, zmax = prep.bb.min.Z, prep.bb.max.Z
+    out = []
+    for b in prep.bores:
+        lo, hi = bore_extent(b, zmin, zmax)
+        lo, hi = max(lo, zmin), min(hi, zmax)  # débouchant : l'outil dépasse la pièce
+        out.append({
+            "nom": b.name, "type": "longeron" if b.cut_hole else "passage relié", "x": _round(b.x),
+            "r": _round(b.radius), "gaine": _round(b.radius + b.sleeve), "z0": _round(lo), "z1": _round(hi),
+        })
+    for name, f in prep.filled:
+        out.append({
+            "nom": name, "type": "passage rebouché", "x": _round(f.x), "r": _round(f.r), "gaine": _round(f.r),
+            "z0": _round(max(f.z0, zmin)), "z1": _round(min(f.z1, zmax)),
+        })
+    return out
 
 
 def _cuts(prep: Prepared, cfg: Config) -> tuple[list[float], list[str]]:
@@ -493,7 +515,7 @@ def _cuts(prep: Prepared, cfg: Config) -> tuple[list[float], list[str]]:
 
 
 def planform(prep: Prepared, plates: list[Plate2D], cfg: Config | None = None) -> PlanformView:
-    """Vue de dessus (x, z) : parties coupées de chaque plaque, contour de l'aile, coupes de tronçons."""
+    """Vue de dessus (x, z) : parties coupées de chaque plaque, contour de l'aile, trous, coupes de tronçons."""
     bb = prep.bb
     zmin, zmax = bb.min.Z, bb.max.Z
     segs = []
@@ -504,7 +526,8 @@ def planform(prep: Prepared, plates: list[Plate2D], cfg: Config | None = None) -
             continue
         segs.append(PlanSegment(p.c + lo * p.d0, zmin + lo * p.d1, p.c + hi * p.d0, zmin + hi * p.d1, p.layer, p.family))
     cuts, warns = _cuts(prep, cfg) if cfg is not None else ([], [])
-    return PlanformView(segs, (bb.min.X, zmin, bb.max.X, zmax), [prep.zrange[0] + c for c in cuts], warns)
+    return PlanformView(segs, (bb.min.X, zmin, bb.max.X, zmax), [prep.zrange[0] + c for c in cuts], warns,
+                        _plan_bores(prep))
 
 
 # --- chiffres estimés ---------------------------------------------------------------------------------------

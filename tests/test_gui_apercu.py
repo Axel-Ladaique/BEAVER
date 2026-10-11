@@ -55,6 +55,7 @@ def test_reponse_complete(client):
     assert d["preparation"] is False
     assert d["section"]["z"] == pytest.approx(40.5) and d["section"]["polygones"]
     assert d["planform"]["segments"] and len(d["planform"]["aile"]) == 4
+    assert {t["type"] for t in d["planform"]["trous"]} == {"longeron", "passage relié"}
     assert d["estimates"]["plaques"] > 0
     assert sum(c["plaques"] for c in d["estimates"]["plaques_par_couche"]) == d["estimates"]["plaques"]
     assert isinstance(d["avertissements"], list) and all(isinstance(w, str) for w in d["avertissements"])

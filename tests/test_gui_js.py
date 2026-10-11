@@ -65,3 +65,37 @@ return [
     assert g1 == ["(profil matière utilisé : pla_aero.yaml)"]
     assert c2 == {"split.gap": "valeur invalide (x)", "foo": "champ inconnu"} and g2 == []
     assert c3 == {} and "fente trop fine" in g3[0]
+
+
+def test_vue_de_dessus_dessine_les_trous():
+    """Vue de dessus : un rectangle (étendue z × diamètre) par trou, gaine du longeron, titre en textContent."""
+    out = _node(r"""
+class N {
+  constructor(tag) { this.tag = tag; this.attrs = {}; this.enfants = []; this.textContent = ""; }
+  setAttribute(k, v) { this.attrs[k] = v; }
+  append(...e) { this.enfants.push(...e); }
+  addEventListener() {}
+}
+globalThis.Node = N;
+globalThis.window = { location: { search: "?token=t" } };
+globalThis.sessionStorage = { setItem() {}, getItem() { return ""; } };
+globalThis.document = { createElementNS: (ns, t) => new N(t), createElement: (t) => new N(t),
+                        createTextNode: (t) => Object.assign(new N("#text"), { textContent: t }) };
+const { dessinDessus } = await js("onglets/apercu.js");
+const plan = { aile: [0, 0, 100, 80], segments: [], coupes: [], trous: [
+  { nom: "Longeron", type: "longeron", x: 30, r: 3.1, gaine: 4.0, z0: 0, z1: 80 },
+  { nom: "P<1>", type: "passage relié", x: 70, r: 1.2, gaine: 1.6, z0: 10, z1: 60 },
+] };
+const s = dessinDessus(plan, 40);
+const groupes = s.enfants.filter((n) => n.tag === "g");
+return groupes.map((g) => ({
+  classe: g.attrs.class,
+  titre: g.enfants.find((n) => n.tag === "title").textContent,
+  rects: g.enfants.filter((n) => n.tag === "rect").map((r) => [r.attrs.class, +r.attrs.x, +r.attrs.y, +r.attrs.width, +r.attrs.height]),
+}));
+""")
+    lon, pas = out
+    assert lon["classe"] == "trou-dessus longeron" and "Longeron" in lon["titre"] and "z = 0" in lon["titre"]
+    assert lon["rects"] == [["gaine", 0, -34, 80, 8], ["trou", 0, -33.1, 80, 6.2]]
+    assert pas["classe"] == "trou-dessus passage" and "P<1>" in pas["titre"]
+    assert pas["rects"][-1][0] == "trou" and pas["rects"][-1][1:] == [10, -71.2, 50, 2.4]

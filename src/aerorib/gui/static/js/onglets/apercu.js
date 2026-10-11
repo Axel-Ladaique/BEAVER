@@ -193,7 +193,7 @@ function dessinCoupe(sec) {
   return racineSvg;
 }
 
-function dessinDessus(plan, zCourant) {
+export function dessinDessus(plan, zCourant) {
   // envergure (z) horizontale, corde (x) verticale
   const [xmin, zmin, xmax, zmax] = plan.aile;
   const b = boite([[zmin, -xmax], [zmax, -xmin]], 0.03, 0.18);
@@ -208,6 +208,22 @@ function dessinDessus(plan, zCourant) {
       x1: z0, y1: -x0, x2: z1, y2: -x1, classe: famille > 0 ? "reseau-a" : "reseau-b",
       "stroke-width": couche === 0 ? 1.5 : 1, "stroke-opacity": couche === 0 ? 1 : 0.6, ...TRAIT,
     }));
+  }
+  for (const t of plan.trous || []) {
+    // trou vu de dessus : étendue z × diamètre (x ± r) ; gaine (trou + manchon) en pointillés
+    const titre = `${t.type} « ${t.nom} » : x = ${nombre(t.x, 1)} mm, Ø ${nombre(2 * t.r, 1)} mm, `
+      + `z = ${nombre(t.z0, 1)} – ${nombre(t.z1, 1)} mm`;
+    const g = svg("g", { classe: t.type === "longeron" ? "trou-dessus longeron" : "trou-dessus passage" }, [svg("title", { texte: titre })]);
+    if (t.gaine > t.r) {
+      g.append(svg("rect", {
+        x: t.z0, y: -(t.x + t.gaine), width: t.z1 - t.z0, height: 2 * t.gaine, classe: "gaine", "stroke-width": 1, ...TRAIT,
+      }));
+    }
+    g.append(svg("rect", {
+      x: t.z0, y: -(t.x + t.r), width: t.z1 - t.z0, height: 2 * t.r,
+      classe: t.type === "passage rebouché" ? "trou rebouche" : "trou", "stroke-width": 1.5, ...TRAIT,
+    }));
+    s.append(g);
   }
   for (const c of plan.coupes || []) {
     s.append(svg("line", { x1: c, y1: -xmax - b.h, x2: c, y2: -xmin + b.h, classe: "coupe-troncon", "stroke-width": 1.5, ...TRAIT }, [
@@ -428,6 +444,7 @@ function construire() {
           el("div", { classe: "legende" }, [
             el("span", {}, [el("span", { classe: "pastille", style: "background: var(--reseau-a)" }), "réseau +angle"]),
             el("span", {}, [el("span", { classe: "pastille", style: "background: var(--reseau-b)" }), "réseau −angle"]),
+            el("span", {}, [el("span", { classe: "pastille pastille-trou" }), "longeron / passage (gaine en pointillés)"]),
             el("span", {}, [el("span", { classe: "pastille", style: "border-top: 2px dashed var(--texte)" }), "coupe de tronçon"]),
             el("span", {}, [el("span", { classe: "pastille", style: "border-top: 2px dashed var(--attention)" }), "coupe affichée"]),
           ]),

@@ -8,6 +8,7 @@ from shapely.geometry import LineString, Point
 from aerorib.config import RibLayer
 from aerorib.features.bores import Bore
 from aerorib.features.ribs import (
+    _MAX_BAND_VERTICES,
     bore_zones_2d,
     diamond_plates,
     diamond_profiles,
@@ -351,3 +352,83 @@ def test_full_edge_follows_a_kinked_mid_surface():
             worst = max(worst, abs(edge - (np.interp(s, ss, ym) + (0.3 if top else -0.3))))
         assert worst <= tol + 0.011  # + simplification finale du polygone (0,01)
         assert len(poly.exterior.coords) < 80  # toujours peu de sommets (coût booléen)
+
+
+# --- reprise 1 : marge sur la pente seulement, fente impossible, cas limites de grille -----------------
+
+
+def test_safety_margin_never_shrinks_the_flat_mouth_budget():
+    # la marge porte sur la pente : tant que w < max_mouth, une peau peu pentue reste coupable
+    for slit in (0.2, 0.25, 0.3, 0.35):
+        w = slit / math.cos(math.radians(45))
+        max_slope, _ = wall_limits(slit=slit, angle_deg=45.0, **WALL)
+        assert max_slope > 0
+        assert max_slope < math.sqrt((0.5 / w) ** 2 - 1)  # avec marge
+    with pytest.raises(ValueError, match="fente"):
+        wall_limits(slit=0.36, angle_deg=45.0, **WALL)  # w = 0,509 ≥ 0,5 : aucun budget, même à plat
+
+
+@pytest.mark.parametrize("slit", [0.2, 0.25, 0.3])
+def test_wide_slit_keeps_the_ribs_of_a_naca_wing(slit):
+    mid = _naca_mid()
+    bb = Box(200, 40, 200).moved(Location((100, 0, 100))).bounding_box()
+    kw = dict(angle_deg=45.0, gap=0.6, min_depth=1.0, **WALL)
+    ref = diamond_profiles(bb, mid, [], RibLayer(), slit=0.1, **kw)
+    wide = diamond_profiles(bb, mid, [], RibLayer(), slit=slit, **kw)
+    area = lambda profs: sum(p.polygon.area for p in profs)  # noqa: E731
+    assert len(wide) > 0.9 * len(ref)
+    assert area(wide) > 0.9 * area(ref), (slit, area(wide) / area(ref))
+
+
+def test_steep_mask_with_a_single_grid_row():
+    mid = _blunt_mid(nz=1)
+    max_slope, margin = wall_limits(slit=0.1, angle_deg=45.0, **WALL)
+    x = np.arange(-2.0, 6.0, 0.05)
+    steep = steep_samples(mid, x, np.full_like(x, 37.0), max_slope=max_slope, margin=margin)
+    assert steep[(x >= 0) & (x <= 0.5 + margin - 0.1)].all()
+    assert not steep[x > 0.5 + margin + 0.2].any()
+
+
+@pytest.mark.parametrize("z", [-0.3, -5.0, 100.3, 140.0])
+def test_steep_mask_outside_the_grid_rows_uses_the_nearest_ones(z):
+    # racine/saumon : z hors de [zs[0], zs[-1]] (from_skin coupe à ±0,3 mm) → rangées extrêmes, paroi au bord réel
+    sweep = 0.2
+    mid = _blunt_mid(sweep=sweep, nz=5)
+    max_slope, margin = wall_limits(slit=0.1, angle_deg=45.0, **WALL)
+    wall = sweep * min(max(z, 0.0), 100.0)
+    x = np.arange(wall - 3.0, wall + 8.0, 0.05)
+    steep = steep_samples(mid, x, np.full_like(x, z), max_slope=max_slope, margin=margin)
+    assert steep[(x >= wall) & (x <= wall + 0.5 + margin - 0.1)].all()
+    assert not steep[x > wall + 0.5 + margin + 0.2].any()
+
+
+def test_steep_mask_ignores_an_empty_grid_row():
+    # dernière rangée sans matière : ξ n'a pas de sens sur elle ; l'autre rangée, lue en x direct, fait foi
+    mid = _blunt_mid(nz=5)
+    thick = mid.thick.copy()
+    thick[:, -1] = 0.0
+    mid = MidSurface(mid.xs, mid.zs, mid.ymid, thick)
+    max_slope, margin = wall_limits(slit=0.1, angle_deg=45.0, **WALL)
+    x = np.arange(-2.0, 6.0, 0.05)
+    steep = steep_samples(mid, x, np.full_like(x, 80.0), max_slope=max_slope, margin=margin)
+    assert steep[(x >= 0) & (x <= 0.5 + margin - 0.1)].all()
+
+
+def test_steep_mask_treats_nan_as_steep():
+    mid = _blunt_mid(nz=2)
+    ymid = mid.ymid.copy()
+    ymid[np.searchsorted(mid.xs, 50.0), :] = np.nan
+    mid = MidSurface(mid.xs, mid.zs, ymid, mid.thick)
+    x = np.array([50.0, 80.0])
+    steep = steep_samples(mid, x, np.full_like(x, 10.0), max_slope=2.0, margin=0.94)
+    assert steep.tolist() == [True, False]
+
+
+def test_band_vertices_are_capped():
+    # ym en dents de scie : sans plafond, Douglas-Peucker garderait un sommet par dent
+    ss = np.linspace(-5, 300, 1221)
+    ym = 0.5 * np.sin(ss * 2.0)
+    th = np.full_like(ss, 30.0)
+    (poly,) = [p for t, p in plate_profiles_2d(ss, ym, th, [], **dict(KW, ytop=40.0, ybot=-40.0), edge_vertices=16,
+                                              band_tol=0.045) if t]
+    assert len(poly.exterior.coords) <= 16 + _MAX_BAND_VERTICES + 4

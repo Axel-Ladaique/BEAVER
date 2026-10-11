@@ -24,14 +24,18 @@ _DEPTH_STEP = 0.5  # mm, pas d'échantillonnage de l'épaisseur le long d'une pl
 # d'attaque ; à un sommet tous les 5 mm, la coupe coûtait ×2,7.
 _PARTIAL_EDGE_TOL = 0.05
 _MIN_BAND_TOL = 0.005  # mm : plancher de band_tol (gap = largeur de ligne) — sinon un sommet par échantillon
+# sommets ajoutés au bord intérieur d'un tronçon pour suivre la bande (coût des booléens) ; au-delà, la tolérance
+# est relâchée (doublée) jusqu'à tenir sous ce plafond
+_MAX_BAND_VERTICES = 64
 _SAME_LINE = 1e-6  # mm : deux plaques de même famille et même c sont confondues
 
 
 # Parois raides (bords d'attaque / de fuite épais, profil « boîte arrondie »). En tranche, une fente est une bande
 # de largeur w = slit / cos(angle) en x qui traverse la peau ; là où la peau a une pente y'(x), la bouche ouverte
-# mesure ≈ w·√(1 + y'²). On n'admet qu'une fraction _MOUTH_SAFETY de `max_mouth` (validation) : la pente est lue
-# sur la surface médiane interpolée (grille `split.grid`), qui adoucit les parois réelles.
-_MOUTH_SAFETY = 0.75
+# mesure ≈ w·√(1 + y'²) ≤ max_mouth (validation), soit |y'| ≤ √((max_mouth/w)² − 1). La marge _SLOPE_SAFETY porte
+# sur cette pente seulement (lue sur la surface médiane interpolée, grille `split.grid`, plus douce que les parois
+# réelles), jamais sur le budget de bouche à plat : une fente admise par la config coupe toujours une peau plate.
+_SLOPE_SAFETY = 0.75
 _SLOPE_STEP = 0.1  # mm, pas en x de lecture de la pente de peau dans la fenêtre autour de la fente
 # Marge en x entre une fente et la paroi raide la plus proche, en largeurs de ligne (+ la fente elle-même) :
 # la matière entre la fente et la paroi doit rester plus large qu'une ligne (contrôle « matière trop fine »).
@@ -69,12 +73,14 @@ def bore_zones_2d(
 def wall_limits(*, slit: float, angle_deg: float, line_width: float, max_mouth: float) -> tuple[float, float]:
     """(pente max |dy/dx| de peau qu'une fente peut traverser, marge en x entre une fente et une paroi plus raide).
 
-    Critère de bouche : w·√(1 + y'²) ≤ _MOUTH_SAFETY·max_mouth, w = slit / cos(angle) étant la largeur de la
-    fente vue dans une couche. Si même une peau plate dépasse ce budget, la pente max vaut 0 (aucune paroi admise).
+    Critère de bouche : w·√(1 + y'²) ≤ max_mouth, w = slit / cos(angle) étant la largeur de la fente vue dans une
+    couche ; pente max = _SLOPE_SAFETY·√((max_mouth/w)² − 1). ValueError si w ≥ max_mouth : même une peau plate
+    serait entamée (refusé plus tôt par la validation de la config).
     """
     w = slit / math.cos(math.radians(angle_deg))
-    ratio = _MOUTH_SAFETY * max_mouth / w
-    return math.sqrt(max(ratio * ratio - 1.0, 0.0)), _WALL_MARGIN_LINES * line_width + slit
+    if w >= max_mouth:
+        raise ValueError(f"fente vue {w:.3f} mm en tranche ≥ ouverture max {max_mouth} mm : aucune nervure possible")
+    return _SLOPE_SAFETY * math.sqrt((max_mouth / w) ** 2 - 1.0), _WALL_MARGIN_LINES * line_width + slit
 
 
 def _row_edges(mid: MidSurface) -> tuple[np.ndarray, np.ndarray]:
@@ -97,7 +103,7 @@ def _steep_on_row(mid: MidSurface, x: np.ndarray, j: np.ndarray, max_slope: floa
     ym, th = mid.at((x[:, None] + offs).ravel(), np.repeat(mid.zs[j], n))
     ym, th = np.reshape(ym, (len(x), n)), np.reshape(th, (len(x), n))
     slope = np.maximum(np.abs(np.diff(ym + th / 2, axis=1)), np.abs(np.diff(ym - th / 2, axis=1))) / step
-    return (slope > max_slope).any(axis=1)
+    return (~(slope <= max_slope)).any(axis=1)  # NaN (surface incomplète) : raide, par prudence
 
 
 def steep_samples(mid: MidSurface, x, z, *, max_slope: float, margin: float) -> np.ndarray:
@@ -109,20 +115,25 @@ def steep_samples(mid: MidSurface, x, z, *, max_slope: float, margin: float) -> 
     l'interpolation bilinéaire en z, qui, sur un bord en flèche, moyenne deux sections décalées et adoucit la paroi
     (une paroi verticale y devient une rampe) : elle est lue sur les deux rangées de la grille qui encadrent z,
     à la même position relative le long de la corde ξ = (x − x_BA(z)) / (x_BF(z) − x_BA(z)), bords d'attaque et
-    de fuite interpolés linéairement en z. Une paroi raide sur l'une ou l'autre rangée exclut l'échantillon.
+    de fuite interpolés linéairement en z. Une paroi raide sur l'une ou l'autre rangée exclut l'échantillon :
+    c'est conservateur si l'émoussé varie en envergure (la rangée la plus raide masque tout l'intervalle).
+    Une rangée sans matière n'a ni bords ni pente : l'autre rangée est alors lue en x direct. Hors de la grille
+    (z < zs[0] ou > zs[-1]), les deux rangées extrêmes.
     """
     x, z = np.asarray(x, dtype=float), np.asarray(z, dtype=float)
     if len(mid.zs) < 2:
         return _steep_on_row(mid, x, np.zeros(len(x), dtype=int), max_slope, margin)
     le, te = _row_edges(mid)
+    empty = ~(mid.thick > 0).any(axis=0)
     j1 = np.clip(np.searchsorted(mid.zs, z), 1, len(mid.zs) - 1)
     j0 = j1 - 1
     t = np.clip((z - mid.zs[j0]) / (mid.zs[j1] - mid.zs[j0]), 0.0, 1.0)
     le_z, te_z = le[j0] + (le[j1] - le[j0]) * t, te[j0] + (te[j1] - te[j0]) * t
     xi = (x - le_z) / np.maximum(te_z - le_z, 1e-9)
+    direct = empty[j0] | empty[j1]
     out = np.zeros(len(x), dtype=bool)
     for j in (j0, j1):
-        out |= _steep_on_row(mid, le[j] + xi * (te[j] - le[j]), j, max_slope, margin)
+        out |= _steep_on_row(mid, np.where(direct, x, le[j] + xi * (te[j] - le[j])), j, max_slope, margin)
     return out
 
 
@@ -161,7 +172,11 @@ def _band_vertices(ss, ym, lo: float, hi: float, s_edge: np.ndarray, tol: float)
     inner = (ss > lo) & (ss < hi)
     s_run = np.concatenate([[lo], ss[inner], [hi]])
     y_run = np.interp(s_run, ss, ym)
-    kept = [p[0] for p in LineString(list(zip(s_run, y_run))).simplify(tol).coords]
+    line = LineString(list(zip(s_run, y_run)))
+    kept = [p[0] for p in line.simplify(tol).coords]
+    while len(kept) > _MAX_BAND_VERTICES:  # plafond : tolérance relâchée plutôt qu'un bord trop coûteux
+        tol *= 2
+        kept = [p[0] for p in line.simplify(tol).coords]
     return np.unique(np.concatenate([s_edge, kept]))
 
 
@@ -277,11 +292,13 @@ class PlateProfile:
 def diamond_profiles(
     bb, mid: MidSurface, bores: list[Bore], layer: RibLayer, *, angle_deg: float, gap: float, slit: float,
     min_depth: float, line_width: float, max_mouth: float, exclude: Sequence[tuple[int, float]] = (),
+    walls: bool = True,
 ) -> list[PlateProfile]:
     """Profils 2D des plaques d'un niveau, sans construire les solides (aperçu rapide).
 
     `exclude` : plans (famille, c) déjà coupés par un niveau plus profond. `line_width`, `max_mouth` : largeur
-    de ligne et bouche max de la validation, d'où l'arrêt des plaques avant les parois raides (`wall_limits`).
+    de ligne et bouche max de la validation, d'où l'arrêt des plaques avant les parois raides (`wall_limits`) ;
+    `walls=False` : sans cet arrêt (pour vérifier qu'il ne vide pas un niveau, voir `emptied_by_walls`).
     """
     max_slope, margin = wall_limits(slit=slit, angle_deg=angle_deg, line_width=line_width, max_mouth=max_mouth)
     # deux bandes qui se croisent, chacune à band_tol de ym ± gap/2, se recouvrent d'au moins gap − 2·band_tol :
@@ -302,7 +319,7 @@ def diamond_profiles(
         ym, th = mid.at(x, z)
         steep = np.zeros(len(ss), dtype=bool)
         cand = th > gap + 2 * min_depth  # seuls les échantillons assez épais peuvent recevoir une fente
-        if cand.any():
+        if walls and cand.any():
             steep[cand] = steep_samples(mid, x[cand], z[cand], max_slope=max_slope, margin=margin)
         zones = [z for b in bores for z in bore_zones_2d(b, c, d0, d1, zmin, zmax, slit=slit)]
         for top, poly in plate_profiles_2d(
@@ -311,6 +328,14 @@ def diamond_profiles(
         ):
             out.append(PlateProfile(sign, c, d0, d1, top, poly))
     return out
+
+
+def emptied_by_walls(bb, mid: MidSurface, bores: list[Bore], layer: RibLayer, **opts) -> bool:
+    """Le niveau aurait des plaques sans l'arrêt avant les parois raides, mais n'en a aucune avec (garde-fou :
+    une aile sans nervure passerait la validation sans un mot)."""
+    return not diamond_profiles(bb, mid, bores, layer, **opts) and bool(
+        diamond_profiles(bb, mid, bores, layer, **opts, walls=False)
+    )
 
 
 def diamond_plates(

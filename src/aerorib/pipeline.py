@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -26,7 +26,7 @@ from aerorib.features.bores import (
     passages_to_fill,
     spar_bores,
 )
-from aerorib.features.ribs import diamond_plates, plate_lines
+from aerorib.features.ribs import diamond_plates, emptied_by_walls, plate_lines
 from aerorib.midsurface import MidSurface
 from aerorib.orient import Orientation, orient
 from aerorib.segment import SegmentError, plan_cuts, split_part
@@ -149,6 +149,21 @@ def rib_options(cfg: Config, bb, i: int) -> dict:
     )
 
 
+def wall_warnings(bb, mid, bores, cfg: Config, counts: Sequence[int]) -> list[str]:
+    """Avertissements des niveaux de nervures vidés par l'arrêt avant les parois raides (`counts` : plaques par
+    niveau). Calcul refait seulement pour un niveau sans plaque : rare, donc sans coût en temps normal."""
+    out = []
+    for i, (layer, n) in enumerate(zip(cfg.rib_layers, counts)):
+        if n == 0 and emptied_by_walls(bb, mid, list(bores), layer, **rib_options(cfg, bb, i)):
+            out.append(
+                f"niveau de nervures « {layer.name} » : aucune plaque — toutes écartées des parois trop raides pour "
+                f"la fente (slit_width {cfg.slit_width} mm, angle {cfg.rib_angle(layer)}°, "
+                f"validation.max_mouth_width {cfg.validation.max_mouth_width} mm) ; réduire slit_width ou augmenter "
+                "validation.max_mouth_width"
+            )
+    return out
+
+
 def deeper_lines(cfg: Config, bb, i: int) -> list[tuple[int, float]]:
     """Plans (famille, c) des niveaux au moins aussi profonds que le niveau i peu profond, de même angle :
     une plaque peu profonde sur l'un d'eux y est contenue (booléen inutile, faces coplanaires)."""
@@ -176,6 +191,7 @@ class Generated(NamedTuple):
     plates: int
     filled: tuple[Passage, ...]
     slivers: int = 0  # éclats négligeables retirés après la découpe
+    warnings: tuple[str, ...] = ()  # niveaux de nervures vidés par l'arrêt avant les parois raides
 
 
 def generate_skin(skin: Solid, spars: list[tuple[str, Solid]], cfg: Config) -> Generated:
@@ -192,16 +208,19 @@ def generate_skin(skin: Solid, spars: list[tuple[str, Solid]], cfg: Config) -> G
     except BoreError as exc:
         raise PipelineError(str(exc)) from exc
     skin = fill_skin(skin, to_fill, tol)
-    plates = []
+    plates, counts = [], []
     for i, layer in enumerate(cfg.rib_layers):
-        plates += diamond_plates(bb, mid, bores, layer, **rib_options(cfg, bb, i))
+        layer_plates = diamond_plates(bb, mid, bores, layer, **rib_options(cfg, bb, i))
+        plates += layer_plates
+        counts.append(len(layer_plates))
+    warns = wall_warnings(bb, mid, bores, cfg, counts)
     result = skin.cut(*plates, *bore_cut_tools(bores, bb, mid))
     part, slivers = main_solid(result)
     for name, spar in inside:
         blocked = spar_obstruction(spar, part)
         if blocked > MAX_SPAR_OBSTRUCTION:
             raise PipelineError(f"{name} : le longeron traverse la matière ({blocked:.0f} mm³) — vérifier son axe")
-    return Generated(part, tuple(bores), len(plates), tuple(f for _, f in to_fill), slivers)
+    return Generated(part, tuple(bores), len(plates), tuple(f for _, f in to_fill), slivers, tuple(warns))
 
 
 
@@ -313,5 +332,8 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
         # l'original reste la peau avant rebouchage : seuls ses contours extérieurs sont comparés
         report = validate(result, cfg, original=skin)
         segments, warns = _segment(s.body.name, result, cfg, progress)
+        if gen.slivers:
+            warns = (*warns, f"{gen.slivers} éclat(s) négligeable(s) (< {MAX_SLIVER_VOLUME} mm³) retiré(s) à la découpe")
+        warns = (*gen.warnings, *warns)
         bodies.append(BodyResult(s.body.name, skin, result, report, bores, n, filled, warns, segments))
     return RunResult(o, tuple(bodies))

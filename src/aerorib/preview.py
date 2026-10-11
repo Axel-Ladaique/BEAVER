@@ -51,6 +51,7 @@ from aerorib.pipeline import (
     rib_options,
     spars_inside,
     usable_height,
+    wall_warnings,
 )
 from aerorib.segment import SegmentError, plan_cuts
 from aerorib.slicing import Layer, layer_heights, to_mesh
@@ -546,6 +547,7 @@ def estimates(prep: Prepared, plates: list[Plate2D], cfg: Config, *, cached: boo
     cuts, warns = _cuts(prep, cfg)
     bounds = [0.0, *cuts, zhi - zlo]
     troncons = [b - a for a, b in pairwise(bounds)] if not warns else None
+    warns = [*wall_warnings(prep.bb, prep.mid, prep.bores, cfg, per_layer), *warns]
     bb = prep.bb
     zs = layer_heights(bb.min.Z, bb.max.Z, preset.layer_height)
     n = len(zs)

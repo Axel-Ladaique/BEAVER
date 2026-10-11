@@ -245,6 +245,15 @@ class Config(_Strict):
                     f"rib_layers '{layer.name}' : fente de {self.slit_width} mm vue {seen:.3f} mm en tranche "
                     f"< {need:.3f} mm (1,1 × min_slit_width) — le slicer la refermerait"
                 )
+        mouth = self.validation.max_mouth_width
+        for layer in self.rib_layers:
+            seen = self.slit_width / math.cos(math.radians(self.rib_angle(layer)))
+            if seen >= mouth:
+                raise ValueError(
+                    f"rib_layers '{layer.name}' : fente (slit_width) {self.slit_width} mm vue {seen:.3f} mm en tranche "
+                    f"à {self.rib_angle(layer)}° ≥ ouverture max validation.max_mouth_width {mouth} mm — chaque fente "
+                    "entamerait la peau, même plate ; réduire slit_width (ou augmenter validation.max_mouth_width)"
+                )
         slits = [(f"spars '{n}'", self.spar_settings(n).slit_width) for n in self.spars or {"default": {}}]
         slits.append(("passages", self.passages.slit_width))
         for where, width in slits:

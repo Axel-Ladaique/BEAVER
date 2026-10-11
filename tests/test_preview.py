@@ -279,3 +279,20 @@ def test_skin_mesh(prep):
     mesh = trimesh.load(io.BytesIO(preview.skin_mesh(prep)), file_type="stl", force="mesh")
     assert len(mesh.faces) > 0
     assert mesh.bounds[1][2] == pytest.approx(80.0, abs=1e-2)
+
+
+def test_walls_removing_every_plate_warn_in_the_preview(step, monkeypatch):
+    import numpy as np
+
+    monkeypatch.setattr(ribs, "steep_samples", lambda mid, x, z, **k: np.ones(len(x), dtype=bool))
+    cfg = _cfg()
+    prep = preview.prepare(step, cfg)
+    plates = preview.plates_2d(prep, cfg)
+    assert plates == []
+    est = preview.estimates(prep, plates, cfg)
+    assert [w for w in est["avertissements"] if "parois" in w and "principal" in w]
+
+
+def test_no_wall_warning_when_plates_remain(prep, plates):
+    est = preview.estimates(prep, plates, _cfg())
+    assert not [w for w in est["avertissements"] if "parois" in w]

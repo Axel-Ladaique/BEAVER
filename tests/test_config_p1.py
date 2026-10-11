@@ -191,3 +191,11 @@ def test_3mf_format_accepted():
     assert load_config(overrides={"output": {"formats": ["3mf"]}}).output.formats == ["3mf"]
     with pytest.raises(ConfigError):
         load_config(overrides={"output": {"formats": ["obj"]}})
+
+
+def test_slit_wider_than_the_mouth_budget_rejected():
+    # w = 0,36 / cos 45° = 0,509 ≥ max_mouth_width 0,5 : chaque fente entamerait la peau, même à plat
+    with pytest.raises(ConfigError, match=r"slit_width.*max_mouth_width"):
+        load_config(overrides={"slit_width": 0.36})
+    load_config(overrides={"slit_width": 0.35})  # w = 0,495 : encore admis
+    load_config(overrides={"slit_width": 0.36, "validation": {"max_mouth_width": 0.6}})

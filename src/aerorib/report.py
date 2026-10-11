@@ -44,6 +44,19 @@ def format_text(report: Report, title: str = "") -> str:
     return "\n".join(lines)
 
 
+def format_bays(bays) -> str:
+    """Baies de servo : côté d'ouverture, dimensions utiles (corde × envergure), longueur d'ouverture (rampes
+    comprises)."""
+    items = []
+    for b in bays:
+        lo, hi = b.opening
+        items.append(
+            f"{b.name} (baie {b.side_name}, {b.x1 - b.x0:.1f} × {b.z1 - b.z0:.1f} mm utiles, "
+            f"ouverture {hi - lo:.1f} mm, profondeur {b.depth:.1f} mm)"
+        )
+    return "  baies : " + (" ; ".join(items) if items else "aucune")
+
+
 def _ring_path(coords) -> str:
     pts = list(coords)
     return "M" + " L".join(f"{x:.3f},{-y:.3f}" for x, y in pts) + " Z"

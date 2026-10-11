@@ -14,6 +14,7 @@ from shapely.ops import unary_union
 
 from aerorib.config import RibLayer
 from aerorib.features.bores import Bore, bore_extent
+from aerorib.features.servo import ServoBay, pocket_zones_2d
 from aerorib.midsurface import MidSurface
 
 _FAR = 1e4
@@ -292,13 +293,14 @@ class PlateProfile:
 def diamond_profiles(
     bb, mid: MidSurface, bores: list[Bore], layer: RibLayer, *, angle_deg: float, gap: float, slit: float,
     min_depth: float, line_width: float, max_mouth: float, exclude: Sequence[tuple[int, float]] = (),
-    walls: bool = True,
+    walls: bool = True, bays: Sequence[ServoBay] = (), pocket_strip: float = 0.0,
 ) -> list[PlateProfile]:
     """Profils 2D des plaques d'un niveau, sans construire les solides (aperçu rapide).
 
     `exclude` : plans (famille, c) déjà coupés par un niveau plus profond. `line_width`, `max_mouth` : largeur
     de ligne et bouche max de la validation, d'où l'arrêt des plaques avant les parois raides (`wall_limits`) ;
     `walls=False` : sans cet arrêt (pour vérifier qu'il ne vide pas un niveau, voir `emptied_by_walls`).
+    `bays` : baies de servo, zones interdites (poche + `pocket_strip`) avec la même ombre que les trous.
     """
     max_slope, margin = wall_limits(slit=slit, angle_deg=angle_deg, line_width=line_width, max_mouth=max_mouth)
     # deux bandes qui se croisent, chacune à band_tol de ym ± gap/2, se recouvrent d'au moins gap − 2·band_tol :
@@ -322,6 +324,9 @@ def diamond_profiles(
         if walls and cand.any():
             steep[cand] = steep_samples(mid, x[cand], z[cand], max_slope=max_slope, margin=margin)
         zones = [z for b in bores for z in bore_zones_2d(b, c, d0, d1, zmin, zmax, slit=slit)]
+        zones += [
+            z for bay in bays for z in pocket_zones_2d(bay, c, d0, d1, zmin, zmax, strip=pocket_strip, slit=slit)
+        ]
         for top, poly in plate_profiles_2d(
             ss, ym, th, zones, gap=gap, min_depth=min_depth, ytop=ytop, ybot=ybot, edge_vertices=layer.samples,
             depth=None if layer.depth == "full" else layer.depth, steep=steep, band_tol=band_tol,
@@ -341,10 +346,11 @@ def emptied_by_walls(bb, mid: MidSurface, bores: list[Bore], layer: RibLayer, **
 def diamond_plates(
     bb, mid: MidSurface, bores: list[Bore], layer: RibLayer, *, angle_deg: float, gap: float, slit: float,
     min_depth: float, line_width: float, max_mouth: float, exclude: Sequence[tuple[int, float]] = (),
+    bays: Sequence[ServoBay] = (), pocket_strip: float = 0.0,
 ) -> list[Solid]:
     """Plaques d'un niveau ; `exclude` : plans (famille, c) déjà coupés par un niveau plus profond."""
     profiles = diamond_profiles(
         bb, mid, bores, layer, angle_deg=angle_deg, gap=gap, slit=slit, min_depth=min_depth,
-        line_width=line_width, max_mouth=max_mouth, exclude=exclude,
+        line_width=line_width, max_mouth=max_mouth, exclude=exclude, bays=bays, pocket_strip=pocket_strip,
     )
     return [plate_solid(p.polygon, p.c, p.d0, p.d1, bb.min.Z, slit) for p in profiles]

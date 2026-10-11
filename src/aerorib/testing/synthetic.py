@@ -126,3 +126,37 @@ def wing_x_bodies(
         NamedBody(("Aile_test",), wing.moved(to_x).solids()[0]),
         NamedBody(("SBAR_8",), spar.moved(to_x).solids()[0]),
     ]
+
+
+ServoBox = tuple[float, float, float, float, float, float]  # x0, x1, y0, y1, z0, z1 (repère de construction)
+# boîtes servo par défaut sur l'aile NACA 4412 (corde 100) : extrados à y ≈ 9,9, intrados à y ≈ -2,1 vers x = 30
+SERVO_BOXES: dict[str, ServoBox] = {
+    "extrados": (22.0, 42.0, 3.0, 16.0, 40.0, 75.0),
+    "intrados": (22.0, 42.0, -8.0, 1.5, 40.0, 75.0),
+}
+
+
+def servo_wing_bodies(
+    side: Literal["extrados", "intrados"] = "extrados",
+    box: ServoBox | None = None,
+    tilt_deg: float = 0.0,
+    chord: float = 100.0,
+    span: float = 120.0,
+    cable: bool = False,
+) -> list["NamedBody"]:
+    """Aile droite (envergure Z > corde : orientée sans longeron) + corps `SERVO_1` (boîte), dans le repère de
+    construction (corde X, épaisseur Y, envergure Z). `tilt_deg` : boîte tournée autour de Y (baie non alignée).
+    `cable` : gaine `SBAR_CABLE_SERVO` (Ø6) de l'emplanture (z = 0) jusque dans la boîte, dépassant de son fond."""
+    from aerorib.io_step import NamedBody
+
+    wing, _ = naca_wing(chord=chord, span=span)
+    x0, x1, y0, y1, z0, z1 = box if box is not None else SERVO_BOXES[side]
+    servo = Box(x1 - x0, y1 - y0, z1 - z0).moved(
+        Location(((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2), (0, tilt_deg, 0))
+    )
+    bodies = [NamedBody(("Aile_servo",), wing.solids()[0]), NamedBody(("SERVO_1",), servo.solids()[0])]
+    if cable:
+        zc = (z0 + z1) / 2
+        tube = Cylinder(3.0, zc).moved(Location(((x0 + x1) / 2, y0 - 1.0, zc / 2)))
+        bodies.append(NamedBody(("SBAR_CABLE_SERVO",), tube.solids()[0]))
+    return bodies

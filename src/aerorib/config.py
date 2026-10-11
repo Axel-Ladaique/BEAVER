@@ -142,6 +142,14 @@ class PassageSettings(_Strict):
     max_tilt_deg: float = Field(default=5.0, gt=0, lt=90)
 
 
+class ServoSettings(_Strict):
+    """Baies de servo (corps SERVO…) : poche ouverte sur une peau, rampes aux deux bouts."""
+
+    strip: float = Field(default=2.0, gt=0)  # mm : bande sans nervure autour de la poche
+    min_floor_gap: float = Field(default=1.0, gt=0)  # mm : écart minimal entre le fond de la baie et la peau opposée
+    # (renfort de la poche par fente parallèle : tâche 5)
+
+
 class OutputSettings(_Strict):
     dir: str = "out"
     formats: list[Literal["step", "stl", "3mf"]] = ["step", "stl"]
@@ -183,6 +191,7 @@ class Config(_Strict):
     rib_layers: list[RibLayer] = Field(default_factory=lambda: [RibLayer()])
     spars: dict[str, dict[str, Any]] = Field(default_factory=dict)
     passages: PassageSettings = Field(default_factory=PassageSettings)
+    servo: ServoSettings = Field(default_factory=ServoSettings)
     output: OutputSettings = Field(default_factory=OutputSettings)
     segment: SegmentSettings = Field(default_factory=SegmentSettings)
     bambu: BambuSettings = Field(default_factory=BambuSettings)

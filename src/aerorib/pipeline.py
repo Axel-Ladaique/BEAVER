@@ -6,7 +6,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import NamedTuple
 
-from build123d import Solid
+from build123d import Cylinder, Location, Solid
 from OCP.Standard import Standard_Failure
 from shapely.geometry import Point, Polygon
 
@@ -18,6 +18,7 @@ from aerorib.features.bores import (
     BoreError,
     Passage,
     bore_cut_tools,
+    bore_extent,
     extend_to_existing_bores,
     fill_radius,
     fill_tools,
@@ -27,6 +28,7 @@ from aerorib.features.bores import (
     spar_bores,
 )
 from aerorib.features.ribs import diamond_plates, emptied_by_walls, plate_lines
+from aerorib.features.servo import ServoBay, ServoError, pocket_solid, servo_bays
 from aerorib.midsurface import MidSurface
 from aerorib.orient import Orientation, orient
 from aerorib.segment import SegmentError, plan_cuts, split_part
@@ -49,6 +51,7 @@ class BodyResult:
     filled: tuple[Passage, ...] = ()  # alésages rebouchés (passages: {mode: fill})
     warnings: tuple[str, ...] = ()  # avertissements de volume d'impression / gabarit
     segments: tuple[Solid, ...] = ()  # tronçons imprimables, emplanture → saumon (un seul si pas de découpe)
+    bays: tuple[ServoBay, ...] = ()  # baies de servo
 
 
 @dataclass(frozen=True)
@@ -139,22 +142,23 @@ def fill_skin(skin: Solid, passages: list[tuple[str, Passage]], tol: float) -> S
     return solids[0]
 
 
-def rib_options(cfg: Config, bb, i: int) -> dict:
+def rib_options(cfg: Config, bb, i: int, bays: Sequence[ServoBay] = ()) -> dict:
     """Paramètres de `diamond_plates` / `diamond_profiles` pour le niveau i : un seul jeu pour la génération et
-    l'aperçu, qui doivent produire exactement les mêmes plaques."""
+    l'aperçu, qui doivent produire exactement les mêmes plaques (`bays` : baies de servo à contourner)."""
     layer = cfg.rib_layers[i]
     return dict(
         angle_deg=cfg.rib_angle(layer), gap=cfg.split.gap, slit=cfg.slit_width, min_depth=cfg.split.min_rib_depth,
         line_width=cfg.preset.line_width, max_mouth=cfg.validation.max_mouth_width, exclude=deeper_lines(cfg, bb, i),
+        bays=tuple(bays), pocket_strip=cfg.servo.strip,
     )
 
 
-def wall_warnings(bb, mid, bores, cfg: Config, counts: Sequence[int]) -> list[str]:
+def wall_warnings(bb, mid, bores, cfg: Config, counts: Sequence[int], bays: Sequence[ServoBay] = ()) -> list[str]:
     """Avertissements des niveaux de nervures vidés par l'arrêt avant les parois raides (`counts` : plaques par
     niveau). Calcul refait seulement pour un niveau sans plaque : rare, donc sans coût en temps normal."""
     out = []
     for i, (layer, n) in enumerate(zip(cfg.rib_layers, counts)):
-        if n == 0 and emptied_by_walls(bb, mid, list(bores), layer, **rib_options(cfg, bb, i)):
+        if n == 0 and emptied_by_walls(bb, mid, list(bores), layer, **rib_options(cfg, bb, i, bays)):
             out.append(
                 f"niveau de nervures « {layer.name} » : aucune plaque — toutes écartées des parois trop raides pour "
                 f"la fente (slit_width {cfg.slit_width} mm, angle {cfg.rib_angle(layer)}°, "
@@ -185,6 +189,26 @@ def deeper_lines(cfg: Config, bb, i: int) -> list[tuple[int, float]]:
     ]
 
 
+def enters_bay(b: Bore, bay: ServoBay) -> bool:
+    """Le trou du longeron / de la gaine touche la poche de la baie (il y débouche : la poche fait partie de
+    l'extérieur, le bord du trou dans la poche aussi)."""
+    if not b.cut_hole:
+        return False
+    lo, hi = bay.opening
+    ylo, yhi = sorted((bay.y_floor, bay.y_out))
+    zlo, zhi = b.z0 - b.clearance, b.z1 + b.clearance
+    return (
+        b.x + b.radius > bay.x0 and b.x - b.radius < bay.x1 and b.y + b.radius > ylo and b.y - b.radius < yhi
+        and zhi > lo and zlo < hi
+    )
+
+
+def bore_hole(b: Bore, bb) -> Solid:
+    """Cylindre du trou seul (sans fente ni attache), comme dans `bore_cut_tools`."""
+    lo, hi = bore_extent(b, bb.min.Z, bb.max.Z)
+    return Cylinder(b.radius, hi - lo).moved(Location((b.x, b.y, (hi + lo) / 2)))
+
+
 class Generated(NamedTuple):
     result: Solid
     bores: tuple[Bore, ...]
@@ -192,10 +216,15 @@ class Generated(NamedTuple):
     filled: tuple[Passage, ...]
     slivers: int = 0  # éclats négligeables retirés après la découpe
     warnings: tuple[str, ...] = ()  # niveaux de nervures vidés par l'arrêt avant les parois raides
+    bays: tuple[ServoBay, ...] = ()  # baies de servo
+    # ouvertures voulues de la peau (poches des baies, trous qui débouchent dans une poche) : retirées de
+    # l'original pour la validation
+    openings: tuple[Solid, ...] = ()
 
 
 def generate_skin(
-    skin: Solid, spars: list[tuple[str, Solid]], cfg: Config, cables: frozenset[str] = frozenset()
+    skin: Solid, spars: list[tuple[str, Solid]], cfg: Config, cables: frozenset[str] = frozenset(),
+    servos: Sequence[tuple[str, Solid]] = (),
 ) -> Generated:
     tol = cfg.validation.tessellation_tol
     bb = skin.bounding_box()
@@ -207,22 +236,28 @@ def generate_skin(
         bores = extend_to_existing_bores(spar_bores(inside, cfg, cables), skin, cfg, found)
         to_fill = passages_to_fill(skin, cfg, exclude=bores, found=found)
         bores += passage_bores(skin, cfg, exclude=bores, found=found)
-    except BoreError as exc:
+        bays = servo_bays(servos, skin, mid, cfg)
+    except (BoreError, ServoError) as exc:
         raise PipelineError(str(exc)) from exc
     skin = fill_skin(skin, to_fill, tol)
     plates, counts = [], []
     for i, layer in enumerate(cfg.rib_layers):
-        layer_plates = diamond_plates(bb, mid, bores, layer, **rib_options(cfg, bb, i))
+        layer_plates = diamond_plates(bb, mid, bores, layer, **rib_options(cfg, bb, i, bays))
         plates += layer_plates
         counts.append(len(layer_plates))
-    warns = wall_warnings(bb, mid, bores, cfg, counts)
-    result = skin.cut(*plates, *bore_cut_tools(bores, bb, mid))
+    warns = wall_warnings(bb, mid, bores, cfg, counts, bays)
+    # gaines et longerons qui entrent dans une baie : simplement découpés par la poche
+    pockets = [pocket_solid(b) for b in bays]
+    result = skin.cut(*plates, *bore_cut_tools(bores, bb, mid), *pockets)
     part, slivers = main_solid(result)
     for name, spar in inside:
         blocked = spar_obstruction(spar, part)
         if blocked > MAX_SPAR_OBSTRUCTION:
             raise PipelineError(f"{name} : le longeron traverse la matière ({blocked:.0f} mm³) — vérifier son axe")
-    return Generated(part, tuple(bores), len(plates), tuple(f for _, f in to_fill), slivers, tuple(warns))
+    openings = (*pockets, *(bore_hole(b, bb) for b in bores if any(enters_bay(b, bay) for bay in bays)))
+    return Generated(
+        part, tuple(bores), len(plates), tuple(f for _, f in to_fill), slivers, tuple(warns), tuple(bays), openings,
+    )
 
 
 
@@ -314,12 +349,13 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
     progress(f"orientation : {o.source}")
     spars = [(s.body.name, s.body.solid.moved(o.location)) for s in model.of("spar")]
     cables = frozenset(c.body.name for c in model.cables)
+    servos = [(s.body.name, s.body.solid.moved(o.location)) for s in model.of("servo")]
     bodies = []
     for s in skins:
         skin = s.body.solid.moved(o.location)
         progress(f"{s.body.name} : surface médiane, trous et nervures…")
         try:
-            gen = generate_skin(skin, spars, cfg, cables)
+            gen = generate_skin(skin, spars, cfg, cables, servos)
             result, bores, n, filled = gen.result, gen.bores, gen.plates, gen.filled
         except PipelineError:
             raise
@@ -332,14 +368,20 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
             + (f"{cables_n} gaine(s), " if cables_n else "")
             + f"{len(bores) - spars_n - cables_n} passage(s) relié(s), "
             f"{len(filled)} rebouché(s)"
+            + (f", {len(gen.bays)} baie(s) de servo" if gen.bays else "")
             + (f", {gen.slivers} éclat(s) négligeable(s) retiré(s)" if gen.slivers else "")
             + " — validation…"
         )
-        # l'original reste la peau avant rebouchage : seuls ses contours extérieurs sont comparés
-        report = validate(result, cfg, original=skin)
+        # l'original reste la peau avant rebouchage : seuls ses contours extérieurs sont comparés ; les poches des
+        # baies en sont retirées (ouverture voulue, pas une « peau entamée »)
+        try:
+            original = skin.cut(*gen.openings) if gen.openings else skin
+        except GEOMETRY_ERRORS as exc:
+            raise PipelineError(f"{s.body.name} : poche de servo impossible ({type(exc).__name__} : {exc})") from exc
+        report = validate(result, cfg, original=original)
         segments, warns = _segment(s.body.name, result, cfg, progress)
         if gen.slivers:
             warns = (*warns, f"{gen.slivers} éclat(s) négligeable(s) (< {MAX_SLIVER_VOLUME} mm³) retiré(s) à la découpe")
         warns = (*gen.warnings, *warns)
-        bodies.append(BodyResult(s.body.name, skin, result, report, bores, n, filled, warns, segments))
+        bodies.append(BodyResult(s.body.name, skin, result, report, bores, n, filled, warns, segments, gen.bays))
     return RunResult(o, tuple(bodies))

@@ -41,6 +41,7 @@ from aerorib.features.bores import (
     spar_bores,
 )
 from aerorib.features.ribs import diamond_profiles, plate_solid
+from aerorib.features.servo import ServoBay, ServoError, pocket_section, servo_bays
 from aerorib.io_step import StepReadError, read_step
 from aerorib.midsurface import MidSurface
 from aerorib.orient import Orientation, orient
@@ -113,6 +114,7 @@ class Prepared:
     mesh: trimesh.Trimesh  # maillage de la peau orientée
     prepare_s: float  # durée de la préparation (s)
     key: tuple[str, str] = ("", "")
+    bays: tuple[ServoBay, ...] = ()  # baies de servo (même calcul que generate_skin)
     mesh_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @property
@@ -144,7 +146,7 @@ class Prepared:
         }
 
 
-_PREP_FIELDS = ("naming", "roles", "orientation", "split", "spars", "passages")
+_PREP_FIELDS = ("naming", "roles", "orientation", "split", "spars", "passages", "servo")
 
 
 def prepare_key(cfg: Config) -> str:
@@ -152,6 +154,8 @@ def prepare_key(cfg: Config) -> str:
     data = cfg.model_dump(mode="json", include=set(_PREP_FIELDS))
     data["split"] = {"grid": data["split"]["grid"]}
     data["tessellation_tol"] = cfg.validation.tessellation_tol
+    # matière : manchon des gaines (largeur de ligne), rampes des baies de servo (surplomb max)
+    data["preset"] = {"line_width": cfg.preset.line_width, "max_overhang_deg": cfg.preset.max_overhang_deg}
     return json.dumps(data, sort_keys=True, separators=(",", ":"))
 
 
@@ -258,6 +262,7 @@ def _prepare(path: Path, cfg: Config, key: tuple[str, str]) -> Prepared:
     s = skins[0]
     skin = s.body.solid.moved(o.location)
     spars = tuple((b.body.name, b.body.solid.moved(o.location)) for b in model.of("spar"))
+    servos = [(b.body.name, b.body.solid.moved(o.location)) for b in model.of("servo")]
     tol = cfg.validation.tessellation_tol
     try:
         # mêmes étapes que generate_skin, sans les booléens
@@ -270,16 +275,17 @@ def _prepare(path: Path, cfg: Config, key: tuple[str, str]) -> Prepared:
         to_fill = passages_to_fill(skin, cfg, exclude=bores, found=found)
         bores += passage_bores(skin, cfg, exclude=bores, found=found)
         check_fill(skin, to_fill, tol)
+        bays = tuple(servo_bays(servos, skin, mid, cfg))
         anchors = tuple(tuple(anchor_profiles_2d(b, mid, bb)) if b.anchor_gap > 0 else () for b in bores)
         mesh = to_mesh(skin, tol)
         obb = skin.bounding_box(optimal=True)
-    except (PipelineError, BoreError) as exc:
+    except (PipelineError, BoreError, ServoError) as exc:
         raise PreviewError(f"{s.body.name} : {exc}") from exc
     except GEOMETRY_ERRORS as exc:
         raise PreviewError(f"{s.body.name} : préparation impossible ({type(exc).__name__} : {exc})") from exc
     return Prepared(
         s.body.name, skin, spars, o, bb, (obb.min.Z, obb.max.Z), mid, tuple(bores), tuple(to_fill), anchors, mesh,
-        time.perf_counter() - t0, key,
+        time.perf_counter() - t0, key, bays=bays,
     )
 
 
@@ -322,7 +328,7 @@ def plates_2d(prep: Prepared, cfg: Config) -> list[Plate2D]:
     bb = prep.bb
     out = []
     for i, layer in enumerate(cfg.rib_layers):
-        for p in diamond_profiles(bb, prep.mid, list(prep.bores), layer, **rib_options(cfg, bb, i)):
+        for p in diamond_profiles(bb, prep.mid, list(prep.bores), layer, **rib_options(cfg, bb, i, prep.bays)):
             out.append(
                 Plate2D(i, layer.name, p.family, p.c, p.d0, p.d1, bb.min.Z, p.top, layer.depth, cfg.slit_width, p.polygon)
             )
@@ -402,7 +408,7 @@ def _skin_slices(prep: Prepared, zs: list[float]) -> list[list[Polygon]]:
 
 
 def _bore_tools(prep: Prepared, z: float) -> list[Polygon]:
-    """Trous, fentes et attaches à la hauteur z (outils de `bore_cut_tools` coupés par le plan z)."""
+    """Trous, fentes, attaches et poches de servo à la hauteur z (outils de coupe coupés par le plan z)."""
     bb = prep.bb
     reach = (bb.max.Y - bb.min.Y) + 20
     tools: list[Polygon] = []
@@ -418,6 +424,10 @@ def _bore_tools(prep: Prepared, z: float) -> list[Polygon]:
             cut = prof.intersection(LineString([(z, -_FAR), (z, _FAR)]))
             if not cut.is_empty:
                 tools.append(box(b.x - b.slit / 2, cut.bounds[1], b.x + b.slit / 2, cut.bounds[3]))
+    for bay in prep.bays:
+        pocket = pocket_section(bay, z)
+        if pocket is not None:
+            tools.append(pocket)
     return tools
 
 
@@ -547,7 +557,7 @@ def estimates(prep: Prepared, plates: list[Plate2D], cfg: Config, *, cached: boo
     cuts, warns = _cuts(prep, cfg)
     bounds = [0.0, *cuts, zhi - zlo]
     troncons = [b - a for a, b in pairwise(bounds)] if not warns else None
-    warns = [*wall_warnings(prep.bb, prep.mid, prep.bores, cfg, per_layer), *warns]
+    warns = [*wall_warnings(prep.bb, prep.mid, prep.bores, cfg, per_layer, prep.bays), *warns]
     bb = prep.bb
     zs = layer_heights(bb.min.Z, bb.max.Z, preset.layer_height)
     n = len(zs)

@@ -9,6 +9,7 @@ import json
 import multiprocessing
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -36,14 +37,47 @@ def step_bytes(tmp_path_factory):
     return p.read_bytes()
 
 
+def _groupe(pgid: int) -> list[int]:
+    """PIDs vivants du groupe de processus `pgid` (fils de génération et ses descendants : pool, tracker)."""
+    r = subprocess.run(["pgrep", "-g", str(pgid)], capture_output=True, text=True)
+    return [int(x) for x in r.stdout.split()]
+
+
+def _groupe_vide(pgid: int, timeout: float = 15.0) -> list[int]:
+    t0 = time.monotonic()
+    while (restants := _groupe(pgid)) and time.monotonic() - t0 < timeout:
+        time.sleep(0.2)
+    return restants
+
+
 @pytest.fixture(scope="module", autouse=True)
 def aucun_processus_orphelin():
-    yield
+    """Aucun fils ni descendant (pool de validation) ne survit : chaque fils de génération est chef de son groupe."""
+    pids: list[int] = []
+    origine = travaux.JobManager.start
+
+    def start(self, nom):
+        job = origine(self, nom)
+        pids.append(job.process.pid)
+        return job
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(travaux.JobManager, "start", start)
+        yield pids
     restants = multiprocessing.active_children()
     for p in restants:
         p.kill()
         p.join(5)
     assert not restants, "un processus de génération a survécu aux tests"
+    if sys.platform != "win32":
+        orphelins = {pid: r for pid in pids if (r := _groupe_vide(pid, 5.0))}
+        for r in orphelins.values():
+            for pid in r:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        assert not orphelins, f"descendants du fils de génération survivants : {orphelins}"
 
 
 def _app_client(root: Path, step_bytes: bytes, projets: dict[str, str]):
@@ -154,6 +188,31 @@ def test_generation_avec_pool_de_validation(client, monkeypatch):
     assert r.status_code == 202, r.text
     d = _attendre_fin(client, r.json()["id"])
     assert d["statut"] in ("ok", "non imprimable"), d
+    if sys.platform != "win32":  # fin normale : le pool et le fils sont partis
+        assert _groupe_vide(client.app.state.travaux.get(r.json()["id"]).process.pid) == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="groupes de processus POSIX (pgrep)")
+def test_annulation_pendant_validation_tue_le_pool(client, monkeypatch):
+    """Annuler pendant la validation parallèle tue tout l'arbre : fils, pool de validation et tracker."""
+    monkeypatch.setenv("AERORIB_PARALLEL_MIN_LAYERS", "1")
+    monkeypatch.setenv("AERORIB_TEST_DELAI_VALIDATION", "30")  # chaque couche validée attend : pool occupé
+    r = client.post("/api/projets/aile1/generations", headers=H)
+    assert r.status_code == 202, r.text
+    job = r.json()
+    pid = client.app.state.travaux.get(job["id"]).process.pid
+    t0 = time.monotonic()
+    while len(_groupe(pid)) < 3:  # fils + au moins deux processus du pool
+        assert time.monotonic() - t0 < 120, "le pool de validation n'a pas démarré"
+        assert client.get(f"/api/generations/{job['id']}", headers=H).json()["statut"] == "en cours"
+        time.sleep(0.2)
+    descendants = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout.split()
+    assert descendants  # le pool est bien un descendant du fils
+    st = client.post(f"/api/generations/{job['id']}/annuler", headers=H).json()
+    assert st["statut"] == "annulé"
+    assert _groupe_vide(pid) == []
+    for d in descendants:
+        assert subprocess.run(["kill", "-0", d], capture_output=True).returncode != 0, d
 
 
 def test_flux_progression_puis_final(genere):
@@ -396,3 +455,50 @@ def test_chemins_hors_essai_refuses(client, tmp_path):
 def test_methode_non_autorisee_405(client):
     assert client.put("/api/generations/x/annuler", headers=H).status_code == 405
     assert client.get("/api/projets/aile1/generations", headers=H).status_code == 405
+
+
+class _FauxProc:
+    pid = 4242
+
+    def __init__(self):
+        self.appels = []
+        self.vivant = True
+
+    def join(self, timeout=None):
+        self.appels.append("join")
+
+    def is_alive(self):
+        return self.vivant
+
+    def terminate(self):
+        self.appels.append("terminate")
+
+    def kill(self):
+        self.appels.append("kill")
+        self.vivant = False
+
+
+def test_tuer_arbre_windows_taskkill(monkeypatch):
+    """Windows : taskkill /T /F tue l'arbre (pool compris) ; kill() en dernier recours."""
+    tues = []
+    monkeypatch.setattr(travaux.sys, "platform", "win32")
+    monkeypatch.setattr(travaux, "_taskkill", tues.append)
+    proc = _FauxProc()
+    travaux._tuer_arbre(proc)
+    assert tues == [4242] and proc.appels == ["join", "kill", "join"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="signaux POSIX")
+def test_tuer_arbre_posix_groupe(monkeypatch):
+    """POSIX : SIGTERM au groupe, attente bornée, SIGKILL au groupe ; terminate() si pas encore de groupe."""
+    signaux = []
+    monkeypatch.setattr(travaux.sys, "platform", "darwin")
+    monkeypatch.setattr(travaux, "_killpg", lambda pgid, sig: signaux.append((pgid, sig)) or True)
+    proc = _FauxProc()
+    proc.vivant = False
+    travaux._tuer_arbre(proc)
+    assert signaux == [(4242, signal.SIGTERM), (4242, signal.SIGKILL)] and proc.appels == ["join", "join"]
+    monkeypatch.setattr(travaux, "_killpg", lambda pgid, sig: False)
+    proc = _FauxProc()
+    travaux._tuer_arbre(proc)
+    assert proc.appels == ["terminate", "join", "kill", "join"]

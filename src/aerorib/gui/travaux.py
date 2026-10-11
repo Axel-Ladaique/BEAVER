@@ -9,7 +9,8 @@ ajoute `{"type": "annule", "message": …}`.
 
 Crochets de test (lus dans le fils, car le monkeypatch ne franchit pas spawn) :
 - `AERORIB_TEST_DELAI` : secondes d'attente avant le calcul (travail lent, pour l'annulation) ;
-- `AERORIB_TEST_PLANTAGE` : le fils meurt aussitôt sans message final.
+- `AERORIB_TEST_PLANTAGE` : le fils meurt aussitôt sans message final ;
+- `AERORIB_TEST_DELAI_VALIDATION` (lu par `aerorib.validate`) : attente par couche validée (pool occupé).
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ from aerorib.gui.projects import CONFIG_NAME, ProjectError, ProjectStore, _flatt
 
 HEARTBEAT = 15.0  # s entre deux commentaires de maintien du flux SSE
 POLL = 0.1  # s, scrutation des messages (flux SSE et queue du fils)
-TERMINATE_TIMEOUT = 5.0  # s avant de passer de terminate() à kill()
+TERMINATE_TIMEOUT = 5.0  # s avant de passer de SIGTERM (terminate) à SIGKILL (kill)
 ESSAIS = "essais"
 RESUME = "resume.json"
 EN_COURS = "en cours"
@@ -107,8 +108,15 @@ def _issues(report) -> tuple[list[str], list[str]]:
 
 def _run_job(step: str, config_path: str, out_dir: str, queue) -> None:
     """Génération complète (comme `aerorib run --3mf`) dans le processus fils ; écrit `resume.json`."""
-    # Ctrl+C dans le terminal atteint tout le groupe de processus : seul le serveur décide de l'arrêt
-    # (son extinction annule le travail proprement), le fils ne doit pas mourir d'un KeyboardInterrupt.
+    # POSIX : le fils devient chef de son propre groupe de processus ; ses descendants (pool de validation,
+    # tracker de ressources) en héritent, et l'annulation tue tout le groupe (`_tuer_arbre`). Ctrl+C ne
+    # l'atteint plus ; on ignore quand même SIGINT : seul le serveur décide de l'arrêt (son extinction
+    # annule le travail proprement), le fils ne doit pas mourir d'un KeyboardInterrupt.
+    if hasattr(os, "setpgid"):
+        try:
+            os.setpgid(0, 0)
+        except OSError:
+            pass
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     t0 = time.monotonic()
     out = Path(out_dir)
@@ -197,6 +205,41 @@ def _run_job(step: str, config_path: str, out_dir: str, queue) -> None:
 
 
 # --- côté serveur ------------------------------------------------------------------------------------
+def _killpg(pgid: int, sig: int) -> bool:
+    """Signal au groupe `pgid` ; False s'il n'existe pas (fils pas encore chef de groupe, ou déjà parti).
+
+    Sûr : un identifiant de groupe est le PID de son chef, qui ne peut être réattribué tant que le groupe vit.
+    """
+    try:
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def _taskkill(pid: int) -> None:
+    """Windows : termine le processus et tous ses descendants (/T), de force (/F)."""
+    subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True, check=False)
+
+
+def _tuer_arbre(proc) -> None:
+    """Termine le fils de génération et tous ses descendants (pool de validation), puis l'attend.
+
+    `terminate()` seul laisserait les processus du pool orphelins (bloqués sur leur queue, pour toujours).
+    """
+    if sys.platform == "win32":
+        _taskkill(proc.pid)
+        proc.join(TERMINATE_TIMEOUT)
+    else:
+        if not _killpg(proc.pid, signal.SIGTERM):  # fils pas encore chef de groupe : pas encore de pool
+            proc.terminate()
+        proc.join(TERMINATE_TIMEOUT)
+        _killpg(proc.pid, signal.SIGKILL)  # retardataires (le tracker de ressources ignore SIGTERM)
+    if proc.is_alive():
+        proc.kill()
+    proc.join()
+
+
 class Job:
     def __init__(self, job_id: str, nom: str, essai: str, dossier: Path) -> None:
         self.id = job_id
@@ -372,11 +415,7 @@ class JobManager:
         if deja:
             return job.public()
         proc = job.process
-        proc.terminate()
-        proc.join(TERMINATE_TIMEOUT)
-        if proc.is_alive():
-            proc.kill()
-            proc.join()
+        _tuer_arbre(proc)
         if job.pompe is not None:
             job.pompe.join(TERMINATE_TIMEOUT)
         self._clore_sans_final(job, proc.exitcode)  # sans effet si la pompe a déjà clos (message final ou mort)
@@ -424,8 +463,7 @@ class JobManager:
             if proc is not None and proc.is_alive():
                 proc.join(TERMINATE_TIMEOUT)
                 if proc.is_alive():
-                    proc.kill()
-                    proc.join()
+                    _tuer_arbre(proc)
 
 
 # --- historique ----------------------------------------------------------------------------------

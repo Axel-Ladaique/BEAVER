@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -25,6 +26,9 @@ PARALLEL_MIN_LAYERS = 200
 # Réglage de test/ajustement : AERORIB_PARALLEL_MIN_LAYERS remplace le seuil ci-dessus. Lu à chaque
 # appel (donc hérité par les processus lancés en « spawn »).
 PARALLEL_ENV = "AERORIB_PARALLEL_MIN_LAYERS"
+# Crochet de test : secondes d'attente par couche contrôlée (validation lente, pour tester l'annulation
+# pendant le pool). Lu dans chaque processus du pool (hérité en « spawn »).
+TEST_DELAY_ENV = "AERORIB_TEST_DELAI_VALIDATION"
 
 
 def parallel_min_layers() -> int:
@@ -161,6 +165,8 @@ def check_skin(layer: Layer, original: Layer, max_mouth: float, tol: float) -> l
 def _check_layer(args) -> list[Issue]:
     """Contrôles d'une couche ; fonction de module (picklable) pour le pool de processus."""
     z, polygons, original_polygons, min_slit, line_width, max_mouth, skin_tol = args
+    if delai := os.environ.get(TEST_DELAY_ENV):
+        time.sleep(float(delai))
     layer = Layer(z, polygons)
     closed = Layer(z, slicer_closing(polygons, min_slit))
     found = check_connectivity(closed)

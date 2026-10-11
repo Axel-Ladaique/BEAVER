@@ -257,17 +257,19 @@ class ProfileStore:
         with self._lock:
             lower = self._lower(nom)
             target = self._target(nom)
-            raw_template = None  # valeur brute de la couche utilisateur : le gabarit n'est pas éditable ici
+            # valeur brute de la couche utilisateur, recopiée telle quelle (le gabarit n'est pas éditable ici) ;
+            # on garde la PRÉSENCE de la clé : `template: null` y désactive un gabarit hérité
+            raw_bambu: dict = {}
             if target.is_file():
                 try:
                     raw = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
                 except (OSError, UnicodeDecodeError, yaml.YAMLError):
                     raw = {}
                 if isinstance(raw, dict) and isinstance(raw.get("bambu"), dict):
-                    raw_template = raw["bambu"].get("template")
+                    raw_bambu = raw["bambu"]
             diff = _diff(_without_template(lower), _without_template(donnees)) or {}
-            if raw_template is not None:
-                diff.setdefault("bambu", {})["template"] = raw_template
+            if "template" in raw_bambu:
+                diff.setdefault("bambu", {})["template"] = raw_bambu["template"]
             texte = yaml.safe_dump(diff, allow_unicode=True, sort_keys=False) if diff else "{}\n"
 
             def validate(tmp: Path) -> None:

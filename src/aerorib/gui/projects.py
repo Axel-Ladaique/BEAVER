@@ -96,7 +96,20 @@ class ProjectStore:
         d = (root / nom).resolve()
         if d.parent != root:
             raise ProjectError(422, "nom de projet invalide : hors du dossier des projets")
-        return d
+        return root / self._nom_sur_disque(root, d.name)
+
+    @staticmethod
+    def _nom_sur_disque(root: Path, nom: str) -> str:
+        """Orthographe réelle du dossier : sur un disque insensible à la casse (macOS, Windows), « AILE » et
+        « aile » sont le même projet ; verrous, travaux et historique sont indexés par le nom sur disque."""
+        try:
+            noms = [e.name for e in root.iterdir()]
+        except OSError:
+            return nom
+        if nom in noms:
+            return nom
+        proches = [n for n in noms if n.casefold() == nom.casefold()]
+        return proches[0] if len(proches) == 1 and (root / nom).exists() else nom
 
     def _existing(self, nom: str) -> Path:
         d = self._dir(nom)
@@ -144,10 +157,13 @@ class ProjectStore:
             d.mkdir()
         except FileExistsError:
             raise ProjectError(409, f"le projet « {nom} » existe déjà") from None
+        # écrit sous un nom caché puis renommé en dernier : tant que `piece.step` est absent, le projet
+        # n'est ni listé ni ouvrable (un autre onglet ne voit jamais un import partiel ou refusé)
+        tmp = d / f".{STEP_NAME}.import.step"
         try:
             stream = io.BytesIO(source) if isinstance(source, (bytes, bytearray)) else source
             total = 0
-            with (d / STEP_NAME).open("wb") as out:
+            with tmp.open("wb") as out:
                 while chunk := stream.read(1024 * 1024):
                     total += len(chunk)
                     if total > MAX_STEP_BYTES:
@@ -156,11 +172,12 @@ class ProjectStore:
             if total == 0:
                 raise ProjectError(422, "fichier vide")
             try:
-                read_step(d / STEP_NAME)
+                read_step(tmp)
             except StepReadError as exc:
-                raise ProjectError(422, str(exc).replace(str(d / STEP_NAME), filename)) from exc
+                raise ProjectError(422, str(exc).replace(str(tmp), filename)) from exc
             text = f"material: {material}\n" if material else "{}\n"
             (d / CONFIG_NAME).write_text(text, encoding="utf-8")
+            os.replace(tmp, d / STEP_NAME)
         except BaseException:
             shutil.rmtree(d, ignore_errors=True)
             raise

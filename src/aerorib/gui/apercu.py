@@ -16,6 +16,26 @@ from aerorib.gui.projects import ProjectError, ProjectStore, scrub_paths
 
 _EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="aerorib-apercu")
 _RESULTS = 8  # résultats de vue gardés (plaques, plan, estimations)
+# Le fil de l'exécuteur est attendu à la sortie de l'interpréteur : après Ctrl+C, le serveur finit la
+# préparation en cours avant de quitter (annoncé par `run_gui`).
+_EN_COURS = 0
+_EN_COURS_LOCK = threading.Lock()
+
+
+def _preparer(step, cfg):
+    global _EN_COURS
+    with _EN_COURS_LOCK:
+        _EN_COURS += 1
+    try:
+        return preview.prepare_status(step, cfg)
+    finally:
+        with _EN_COURS_LOCK:
+            _EN_COURS -= 1
+
+
+def preparation_en_cours() -> bool:
+    with _EN_COURS_LOCK:
+        return _EN_COURS > 0
 
 
 def _impossible(exc: BaseException) -> ProjectError:
@@ -48,7 +68,7 @@ class Apercu:
                     if prep is not None:
                         return prep, True
                     self._cancel_previous(nom, key)
-                    fut = self._jobs[key] = _EXECUTOR.submit(preview.prepare_status, step, cfg)
+                    fut = self._jobs[key] = _EXECUTOR.submit(_preparer, step, cfg)
                     self._latest[nom] = key
             if not fut.done() and not wait:
                 return None

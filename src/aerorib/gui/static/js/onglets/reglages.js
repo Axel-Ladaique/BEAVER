@@ -2,7 +2,7 @@
 
 import { api, ErreurApi, seg } from "../api.js";
 import { debounce, el, gabaritLectureSeule, message, vider } from "../dom.js";
-import { cleChemin, estPose, lire } from "../chemins.js";
+import { canonique, cleChemin, estPose, lire } from "../chemins.js";
 import { erreursParChamp } from "../erreurs.js";
 import { Formulaire } from "../formulaire.js";
 import { Schema } from "../schema.js";
@@ -25,6 +25,7 @@ const etat = {
   texte: "",
   modifie: false,
   chargement: 0,
+  reference: null, // JSON canonique du formulaire tel qu'enregistré (indicateur de modification)
 };
 
 export function estModifie() {
@@ -95,7 +96,8 @@ const proposer = debounce(() => {
 }, DEBOUNCE_MS);
 
 async function changement() {
-  marquer(true);
+  // revenir à l'état enregistré (ex. « revenir à l'hérité ») efface l'indicateur
+  marquer(formulaire.aDesErreursLocales() || canonique(formulaire.donnees()) !== etat.reference);
   const mat = matiereCourante();
   if (!profils.has(mat)) {
     await profil(mat);
@@ -138,6 +140,7 @@ async function charger() {
     const projet = cfg.donnees && typeof cfg.donnees === "object" && !Array.isArray(cfg.donnees) ? cfg.donnees : {};
     formulaire.chargerProjet({ projet, herite, choix: { material: sch.matieres, corps: corpsParProjet.get(nom) || [] } });
     formulaire.effacerErreurs();
+    etat.reference = canonique(formulaire.donnees());
     marquer(false);
     ui.etat.textContent = "";
     ctx.emettre("config-proposee", formulaire.donnees());

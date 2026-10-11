@@ -14,7 +14,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from aerorib import __version__
 from aerorib.gui import apercu
-from aerorib.gui.projects import ProjectError, ProjectStore
+from aerorib.gui.projects import ProjectError, ProjectStore, scrub_paths
 
 
 def build_router(root: Path) -> APIRouter:
@@ -102,6 +102,14 @@ def validation_error_handler(_request: Request, exc: RequestValidationError) -> 
         champ = _CHAMP.get(champ, champ)
         msg = f"champ « {champ} » {'manquant' if kind == 'missing' else 'invalide'}"
     return JSONResponse({"erreur": f"requête invalide : {msg}"}, status_code=422)
+
+
+def internal_error_handler(_request: Request, exc: Exception) -> JSONResponse:
+    """Dernier recours : 500 JSON en français, sans trace ni chemin. Starlette relance ensuite l'exception,
+    que uvicorn journalise avec sa trace dans le terminal du serveur."""
+    detail = scrub_paths(str(exc)).strip()
+    message = f"erreur interne : {type(exc).__name__}" + (f" : {detail}" if detail else "")
+    return JSONResponse({"erreur": message}, status_code=500)
 
 
 def http_error_handler(_request: Request, exc: StarletteHTTPException) -> JSONResponse:

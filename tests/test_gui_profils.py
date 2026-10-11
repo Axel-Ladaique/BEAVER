@@ -337,3 +337,10 @@ def test_memes_couches_que_le_coeur(client, udir, tmp_path):
     client.put("/api/profils/pla_aero", headers=H, json={"donnees": v})
     assert "material_settings" not in yaml.safe_load((udir / "pla_aero.yaml").read_text())
     assert load_profile("pla_aero")[0]["material_settings"]["density"] == 0.9
+
+
+def test_aller_retour_gabarit_null_explicite_conserve(client, udir):
+    """`bambu.template: null` dans la couche utilisateur désactive le gabarit embarqué : garder la clé."""
+    avant, f = _round_trip(client, udir, "pla_aero", "bambu: {template: null}\n")
+    assert yaml.safe_load(f.read_text()) == {"bambu": {"template": None}}
+    assert valeurs(client)["bambu"]["template"] is None  # le gabarit embarqué ne revient pas

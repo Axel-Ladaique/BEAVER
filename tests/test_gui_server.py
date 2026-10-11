@@ -193,3 +193,56 @@ def test_commande_gui_appelle_run_gui(tmp_path, monkeypatch):
     r = CliRunner().invoke(app, ["gui", "--dossier", str(tmp_path), "--port", "1234", "--sans-navigateur"])
     assert r.exit_code == 0
     assert calls == {"r": tmp_path, "p": 1234, "o": False}
+
+
+def test_exception_imprevue_500_json_francais(tmp_path):
+    """Toute exception non prévue : 500 JSON en français, chemins effacés, aucune trace dans le corps."""
+    extra = APIRouter(prefix="/api")
+
+    @extra.put("/boum")
+    def boum():
+        raise PermissionError(13, "Permission denied", "/Users/moi/projets/aile/config.yaml")
+
+    c = TestClient(create_app(tmp_path, TOKEN, routers=[extra]), base_url="http://127.0.0.1",
+                   raise_server_exceptions=False)
+    r = c.put("/api/boum", headers={"X-AeroRib-Token": TOKEN})
+    assert r.status_code == 500 and r.headers["content-type"].startswith("application/json")
+    erreur = r.json()["erreur"]
+    assert erreur.startswith("erreur interne : PermissionError")
+    assert "/Users" not in erreur and "config.yaml" in erreur and "Traceback" not in r.text
+
+
+def test_arret_signale_la_preparation_en_cours(tmp_path, monkeypatch, capsys):
+    """Ctrl+C pendant une préparation d'aperçu : l'attente de fin est annoncée en français."""
+    from aerorib.gui import apercu
+
+    record = {"opened": []}
+    _fake_server(monkeypatch, record)
+    monkeypatch.setattr(apercu, "preparation_en_cours", lambda: True)
+    server.run_gui(tmp_path, port=0, open_browser=False)
+    assert "arrêt après la préparation de l'aperçu en cours" in capsys.readouterr().out
+
+
+def test_preparation_en_cours_suivie(monkeypatch):
+    import threading
+
+    from aerorib.gui import apercu
+
+    go = threading.Event()
+    monkeypatch.setattr(apercu.preview, "prepare_status", lambda step, cfg: go.wait(10) and ("prep", False))
+    assert not apercu.preparation_en_cours()
+    fut = apercu._EXECUTOR.submit(apercu._preparer, "s", None)
+    t0 = time.monotonic()
+    while not apercu.preparation_en_cours():
+        assert time.monotonic() - t0 < 5
+        time.sleep(0.01)
+    go.set()
+    assert fut.result(5) == ("prep", False)
+    assert not apercu.preparation_en_cours()
+
+
+def test_entetes_de_securite(tmp_path):
+    c = _client(tmp_path)
+    for r in (c.get("/"), c.get("/api/sante", headers={"X-AeroRib-Token": TOKEN}), c.get("/api/sante")):
+        assert r.headers["x-content-type-options"] == "nosniff"
+        assert r.headers["content-security-policy"] == "frame-ancestors 'none'"

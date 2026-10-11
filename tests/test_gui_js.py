@@ -99,3 +99,16 @@ return groupes.map((g) => ({
     assert lon["rects"] == [["gaine", 0, -34, 80, 8], ["trou", 0, -33.1, 80, 6.2]]
     assert pas["classe"] == "trou-dessus passage" and "P<1>" in pas["titre"]
     assert pas["rects"][-1][0] == "trou" and pas["rects"][-1][1:] == [10, -71.2, 50, 2.4]
+
+
+def test_json_canonique_pour_l_indicateur_de_modification():
+    out = _node("""
+const { canonique } = await js("chemins.js");
+return [
+  canonique({ b: 1, a: { d: [ { y: 2, x: 1 } ], c: null } }) === canonique({ a: { c: null, d: [ { x: 1, y: 2 } ] }, b: 1 }),
+  canonique({ a: 1 }) === canonique({ a: 1, b: undefined }),
+  canonique({ a: [1, 2] }) === canonique({ a: [2, 1] }),
+  canonique({ a: 1 }) === canonique({ a: "1" }),
+];
+""")
+    assert out == [True, True, False, False]

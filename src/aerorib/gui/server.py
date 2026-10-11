@@ -24,11 +24,12 @@ from starlette.requests import HTTPConnection
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from aerorib.gui import profils, projects, travaux
+from aerorib.gui import apercu, profils, projects, travaux
 from aerorib.gui.api import (
     build_fallback_router,
     build_router,
     http_error_handler,
+    internal_error_handler,
     project_error_handler,
     validation_error_handler,
 )
@@ -60,6 +61,26 @@ class StatiqueRevalide(StaticFiles):
         reponse = super().file_response(*args, **kwargs)
         reponse.headers["Cache-Control"] = "no-cache"
         return reponse
+
+
+class EntetesSecurite:
+    """Défense en profondeur sur toutes les réponses : pas de reniflage de type, pas d'affichage en cadre."""
+
+    ENTETES = [(b"x-content-type-options", b"nosniff"), (b"content-security-policy", b"frame-ancestors 'none'")]
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        async def envoyer(message):
+            if message["type"] == "http.response.start":
+                message = {**message, "headers": [*message.get("headers", []), *self.ENTETES]}
+            await send(message)
+
+        await self.app(scope, receive, envoyer)
 
 
 class BodyTooLarge(BaseException):  # pas Exception : FastAPI le convertirait en 400
@@ -164,9 +185,11 @@ def create_app(
     app.add_middleware(BodyLimitMiddleware)
     app.add_middleware(TokenMiddleware, token=token)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
+    app.add_middleware(EntetesSecurite)  # le plus extérieur : aussi sur les refus (hôte, jeton, taille)
     app.add_exception_handler(ProjectError, project_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.add_exception_handler(StarletteHTTPException, http_error_handler)
+    app.add_exception_handler(Exception, internal_error_handler)
     principal = build_router(Path(root))
     app.include_router(principal)
     app.state.travaux = travaux.JobManager(ProjectStore(Path(root)))
@@ -229,3 +252,5 @@ def run_gui(root: Path, port: int = 0, open_browser: bool = True) -> None:
     if open_browser:
         threading.Thread(target=_open_when_started, args=(server, url), daemon=True).start()
     server.run(sockets=[sock])
+    if apercu.preparation_en_cours():
+        print("AeroRib : arrêt après la préparation de l'aperçu en cours…")

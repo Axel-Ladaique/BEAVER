@@ -56,7 +56,7 @@ from aerorib.segment import SegmentError, plan_cuts
 from aerorib.slicing import Layer, layer_heights, to_mesh
 from aerorib.validate import Issue, check_connectivity, check_material_width, check_narrow_slits, slicer_closing
 
-SECONDS_PER_PLATE = 1.5  # s : coût estimé d'une plaque dans la découpe booléenne réelle
+SECONDS_PER_PLATE = 0.3  # s : coût estimé d'une plaque (recalé : aile Fusion v2, 84 plaques, 29 s réelles)
 MAX_MESH_PLATES = 600  # au-delà, pas de maillage 3D des plaques (trop lourd pour le navigateur)
 SAMPLED_LAYERS = 20  # couches échantillonnées pour le trajet et la masse
 CACHE_SIZE = 4
@@ -70,7 +70,7 @@ class PreviewError(ValueError):
 
 
 def _round(v: float) -> float:
-    return round(float(v), 4)
+    return round(float(v), 4) + 0.0  # + 0.0 : jamais « -0 » à l'écran
 
 
 def _ring(coords) -> list[list[float]]:

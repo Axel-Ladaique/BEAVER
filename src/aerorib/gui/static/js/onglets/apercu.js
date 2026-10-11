@@ -514,5 +514,6 @@ export function masquer() {
     clearTimeout(etat.relance);
     etat.relance = null;
     etat.aJour = false;
+    ui.etat.textContent = ""; // « Calcul… » / « Préparation… » abandonnés : relancés à l'affichage
   }
 }

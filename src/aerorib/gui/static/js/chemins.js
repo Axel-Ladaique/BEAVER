@@ -50,3 +50,13 @@ export function retirer(obj, chemin) {
 
 export const copie = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
 export const cleChemin = (chemin) => chemin.join(".");
+
+/** JSON canonique (clés triées à tous les niveaux) : comparer un état édité à l'état enregistré. */
+export function canonique(v) {
+  const trier = (x) => {
+    if (Array.isArray(x)) return x.map(trier);
+    if (x === null || typeof x !== "object") return x;
+    return Object.fromEntries(Object.keys(x).sort().filter((k) => x[k] !== undefined).map((k) => [k, trier(x[k])]));
+  };
+  return JSON.stringify(trier(v));
+}

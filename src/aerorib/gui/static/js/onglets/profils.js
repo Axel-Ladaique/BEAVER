@@ -1,6 +1,7 @@
 // Profils matière (PLA Aero, ASA Aero, copies) : liste, édition (même formulaire que les réglages), copie.
 
 import { api, ErreurApi, seg } from "../api.js";
+import { canonique } from "../chemins.js";
 import { el, gabaritLectureSeule, message, vider } from "../dom.js";
 import { erreursParChamp } from "../erreurs.js";
 import { Formulaire } from "../formulaire.js";
@@ -13,6 +14,7 @@ const ui = {};
 let formulaire = null;
 let courant = null; // réponse GET /api/profils/{nom}
 let modifie = false;
+let reference = null; // JSON canonique du profil tel qu'enregistré
 
 function gabarit() {
   return gabaritLectureSeule(courant && courant.gabarit, { note: " (lecture seule : à changer dans le fichier YAML du profil)" });
@@ -75,7 +77,7 @@ async function afficherProfil(p) {
     const sch = await api.get("/api/schema");
     formulaire = new Formulaire({
       schema: new Schema(sch.schema), mode: "profil", speciaux: { "bambu.template": gabarit },
-      surChangement: () => marquer(true),
+      surChangement: () => marquer(formulaire.aDesErreursLocales() || canonique(formulaire.donnees()) !== reference),
     });
     ui.zoneFormulaire.append(formulaire.element);
   }
@@ -87,6 +89,7 @@ async function afficherProfil(p) {
   ui.copier.hidden = !(p.origine === "embarqué");
   formulaire.chargerProfil({ valeurs: p.valeurs, provenance: p.provenance });
   formulaire.effacerErreurs();
+  reference = canonique(formulaire.donnees());
   marquer(false);
 }
 

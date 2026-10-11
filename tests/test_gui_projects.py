@@ -262,3 +262,35 @@ def test_provenance_cas_limites(client, step_bytes):
     assert prov["rib_layers"] == "projet"
     assert prov["spars.default.clearance"] == "projet"  # explicite, même égal au profil
     assert prov["printer"] == "défaut"
+
+
+def test_projet_invisible_pendant_l_import(tmp_path, step_bytes, monkeypatch):
+    """Pendant la lecture du STEP importé, le projet n'est ni listé ni ouvrable ; piece.step arrive en dernier."""
+    store = ProjectStore(tmp_path)
+    vu = {}
+    lire = projects.read_step
+
+    def lecture(path):
+        vu["liste"] = store.list()
+        vu["piece"] = (tmp_path / "aile1" / "piece.step").exists()
+        with pytest.raises(ProjectError) as exc:
+            store.require("aile1")
+        vu["statut"] = exc.value.status
+        return lire(path)
+
+    monkeypatch.setattr(projects, "read_step", lecture)
+    store.create("aile1", step_bytes, "aile.step")
+    assert vu == {"liste": [], "piece": False, "statut": 404}
+    assert [p["nom"] for p in store.list()] == ["aile1"] and (tmp_path / "aile1" / "config.yaml").is_file()
+    assert sorted(p.name for p in (tmp_path / "aile1").iterdir()) == ["config.yaml", "piece.step"]
+
+
+def test_casse_differente_meme_projet_sur_disque_insensible(client, step_bytes, tmp_path):
+    """Disque insensible à la casse : /api/projets/AILE1 désigne « aile1 » (nom réel), pas un double."""
+    assert _creer(client, step_bytes).status_code == 201
+    if not (tmp_path / "projets" / "AILE1").exists():
+        pytest.skip("système de fichiers sensible à la casse")
+    assert client.get("/api/projets/AILE1", headers=H).json()["nom"] == "aile1"
+    store = ProjectStore(tmp_path / "projets")
+    assert store.require("AILE1").name == "aile1" and store.config_path("Aile1").parent.name == "aile1"
+    assert _creer(client, step_bytes, nom="AILE1").status_code == 409

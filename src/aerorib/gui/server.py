@@ -23,7 +23,7 @@ from starlette.requests import HTTPConnection
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from aerorib.gui import projects
+from aerorib.gui import projects, travaux
 from aerorib.gui.api import (
     build_fallback_router,
     build_router,
@@ -31,13 +31,14 @@ from aerorib.gui.api import (
     project_error_handler,
     validation_error_handler,
 )
-from aerorib.gui.projects import ProjectError
+from aerorib.gui.projects import ProjectError, ProjectStore
 
 HOST = "127.0.0.1"
 STATIC_DIR = Path(__file__).parent / "static"
 # corps maximal d'un import (STEP 200 Mo + champs multipart) et d'un PUT de configuration ; lus à l'appel
 MAX_UPLOAD_BODY = projects.MAX_STEP_BYTES + 1024 * 1024
 MAX_CONFIG_BODY = 1024 * 1024
+MAX_SMALL_BODY = 64 * 1024
 
 
 class BodyTooLarge(BaseException):  # pas Exception : FastAPI le convertirait en 400
@@ -59,6 +60,9 @@ class BodyLimitMiddleware:
             return MAX_CONFIG_BODY, "configuration trop volumineuse (max 1 Mo)"
         if method == "PUT" and path.startswith("/api/projets/") and path.endswith("/config"):
             return MAX_CONFIG_BODY, "configuration trop volumineuse (max 1 Mo)"
+        if method in ("POST", "PUT", "PATCH", "DELETE") and path.startswith("/api/"):
+            # générations, annulation, ouvertures : pas de corps attendu
+            return MAX_SMALL_BODY, "corps de requête trop volumineux (max 64 Ko)"
         return None
 
     async def __call__(self, scope, receive, send):
@@ -141,16 +145,21 @@ def create_app(root: Path, token: str, routers: Sequence[APIRouter] | None = Non
     app.add_exception_handler(StarletteHTTPException, http_error_handler)
     principal = build_router(Path(root))
     app.include_router(principal)
+    app.state.travaux = travaux.JobManager(ProjectStore(Path(root)))
+    generations = travaux.build_router(app.state.travaux.store, app.state.travaux)
+    app.include_router(generations)
+    app.router.add_event_handler("shutdown", app.state.travaux.shutdown)
     for router in routers or ():
         app.include_router(router)
-    app.include_router(build_fallback_router([principal, *(routers or ())]))
+    app.include_router(build_fallback_router([principal, generations, *(routers or ())]))
     # le montage statique est ajouté EN DERNIER : il ne doit masquer aucune route /api
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app
 
 
 def build_uvicorn_config(app: FastAPI) -> uvicorn.Config:
-    return uvicorn.Config(app, host=HOST, log_level="warning")
+    # un flux SSE ouvert ne doit pas bloquer l'arrêt (Ctrl+C) : le travail en cours est annulé ensuite
+    return uvicorn.Config(app, host=HOST, log_level="warning", timeout_graceful_shutdown=2)
 
 
 def bind_socket(port: int = 0) -> socket.socket:

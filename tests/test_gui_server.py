@@ -46,6 +46,7 @@ def test_racine_sert_html(tmp_path):
 def test_config_uvicorn_127(tmp_path):
     cfg = server.build_uvicorn_config(create_app(tmp_path, TOKEN))
     assert cfg.host == "127.0.0.1"
+    assert cfg.timeout_graceful_shutdown is not None  # un flux SSE ouvert ne bloque pas l'arrêt
 
 
 def _fake_server(monkeypatch, record):

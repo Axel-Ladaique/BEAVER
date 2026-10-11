@@ -20,11 +20,87 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import HTTPConnection
 
-from aerorib.gui.api import build_router, project_error_handler
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from aerorib.gui import projects
+from aerorib.gui.api import (
+    build_fallback_router,
+    build_router,
+    http_error_handler,
+    project_error_handler,
+    validation_error_handler,
+)
 from aerorib.gui.projects import ProjectError
 
 HOST = "127.0.0.1"
 STATIC_DIR = Path(__file__).parent / "static"
+# corps maximal d'un import (STEP 200 Mo + champs multipart) et d'un PUT de configuration ; lus à l'appel
+MAX_UPLOAD_BODY = projects.MAX_STEP_BYTES + 1024 * 1024
+MAX_CONFIG_BODY = 1024 * 1024
+
+
+class BodyTooLarge(BaseException):  # pas Exception : FastAPI le convertirait en 400
+    pass
+
+
+class BodyLimitMiddleware:
+    """Plafonne le corps RÉEL des requêtes (octets reçus, Content-Length non fiable) avant tout stockage."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    @staticmethod
+    def _limit(scope) -> tuple[int, str] | None:
+        path, method = scope["path"].rstrip("/"), scope["method"]
+        if method == "POST" and path == "/api/projets":
+            return MAX_UPLOAD_BODY, "fichier trop volumineux (max 200 Mo)"
+        if method == "PUT" and path.startswith("/api/projets/") and path.endswith("/config"):
+            return MAX_CONFIG_BODY, "configuration trop volumineuse (max 1 Mo)"
+        return None
+
+    async def __call__(self, scope, receive, send):
+        rule = self._limit(scope) if scope["type"] == "http" else None
+        if rule is None:
+            await self.app(scope, receive, send)
+            return
+        limit, message = rule
+        started = False
+
+        async def refuse():
+            corps = json.dumps({"erreur": message}).encode()
+            await send({"type": "http.response.start", "status": 413,
+                        "headers": [(b"content-type", b"application/json"),
+                                    (b"content-length", str(len(corps)).encode()),
+                                    (b"connection", b"close")]})
+            await send({"type": "http.response.body", "body": corps})
+
+        declared = dict(scope["headers"]).get(b"content-length", b"")
+        if declared.isdigit() and int(declared) > limit:  # voie rapide
+            await refuse()
+            return
+        total = 0
+
+        async def counting_receive():
+            nonlocal total
+            msg = await receive()
+            if msg["type"] == "http.request":
+                total += len(msg.get("body", b""))
+                if total > limit:
+                    raise BodyTooLarge
+            return msg
+
+        async def tracking_send(msg):
+            nonlocal started
+            if msg["type"] == "http.response.start":
+                started = True
+            await send(msg)
+
+        try:
+            await self.app(scope, counting_receive, tracking_send)
+        except BodyTooLarge:
+            if not started:
+                await refuse()
 
 
 class TokenMiddleware:
@@ -55,12 +131,16 @@ def create_app(root: Path, token: str, routers: Sequence[APIRouter] | None = Non
     app = FastAPI(title="AeroRib", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.root = Path(root)
     app.state.token = token
+    app.add_middleware(BodyLimitMiddleware)
     app.add_middleware(TokenMiddleware, token=token)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
     app.add_exception_handler(ProjectError, project_error_handler)
+    app.add_exception_handler(RequestValidationError, validation_error_handler)
+    app.add_exception_handler(StarletteHTTPException, http_error_handler)
     app.include_router(build_router(Path(root)))
     for router in routers or ():
         app.include_router(router)
+    app.include_router(build_fallback_router())
     # le montage statique est ajouté EN DERNIER : il ne doit masquer aucune route /api
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app

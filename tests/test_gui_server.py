@@ -5,6 +5,7 @@ import time
 import pytest
 from fastapi import APIRouter
 from fastapi.testclient import TestClient
+from starlette.routing import Mount
 from typer.testing import CliRunner
 
 from aerorib import __version__
@@ -109,24 +110,35 @@ def test_route_api_ajoutee_protegee(tmp_path):
 
 def test_toutes_les_routes_api_exigent_le_jeton(tmp_path):
     extra = APIRouter(prefix="/api")
-    extra.add_api_route("/autre", lambda: {})
+    extra.add_api_route("/autre/{x}", lambda x: {})
     app = create_app(tmp_path, TOKEN, routers=[extra])
     c = TestClient(app, base_url="http://127.0.0.1")
-    # FastAPI récent enveloppe les routeurs inclus : on déplie pour atteindre les routes réelles
-    toutes = [
-        sub for r in app.routes for sub in (r.original_router.routes if hasattr(r, "original_router") else [r])
-    ]
-    chemins = [r for r in toutes if getattr(r, "path", "").startswith("/api")]
-    assert len(chemins) >= 8
-    for r in chemins:
-        path = r.path.replace("{nom}", "x")
-        for method in r.methods - {"HEAD", "OPTIONS"}:
-            assert c.request(method, path).status_code == 401, (method, r.path)
+    paths = app.openapi()["paths"]
+    assert "/api/autre/{x}" in paths and "/api/projets/{nom}/config" in paths and len(paths) >= 8
+    for path, ops in paths.items():
+        url = path.replace("{nom}", "x").replace("{x}", "y").replace("{chemin}", "z")
+        for method in ops:
+            assert c.request(method.upper(), url).status_code == 401, (method, path)
 
 
 def test_montage_statique_en_dernier(tmp_path):
-    app = create_app(tmp_path, TOKEN)
-    assert app.routes[-1].path == ""  # Mount("/") : après toutes les routes /api
+    app = create_app(tmp_path, TOKEN, routers=[APIRouter(prefix="/api")])
+    assert isinstance(app.routes[-1], Mount)
+
+
+def test_route_api_inconnue_404_francais(tmp_path):
+    c = _client(tmp_path)
+    r = c.get("/api/inconnu", headers={"X-AeroRib-Token": TOKEN})
+    assert r.status_code == 404 and r.json() == {"erreur": "route inconnue"}
+    r = c.delete("/api/projets/x", headers={"X-AeroRib-Token": TOKEN})
+    assert r.status_code in (404, 405) and "erreur" in r.json()
+
+
+def test_route_extra_non_masquee_par_le_repli(tmp_path):
+    extra = APIRouter(prefix="/api")
+    extra.add_api_route("/zzz", lambda: {"ok": 1})
+    c = TestClient(create_app(tmp_path, TOKEN, routers=[extra]), base_url="http://127.0.0.1")
+    assert c.get("/api/zzz", headers={"X-AeroRib-Token": TOKEN}).json() == {"ok": 1}
 
 
 def test_bind_erreur_autre_que_port_occupe(monkeypatch):

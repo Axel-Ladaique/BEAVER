@@ -5,10 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from aerorib import __version__
-from aerorib.gui import projects
 from aerorib.gui.projects import ProjectError, ProjectStore
 
 
@@ -29,10 +30,7 @@ def build_router(root: Path) -> APIRouter:
         return store.list()
 
     @router.post("/projets", status_code=201)
-    def creer(request: Request, nom: str = Form(...), fichier: UploadFile = File(...)) -> dict:
-        declared = request.headers.get("content-length")
-        if declared and declared.isdigit() and int(declared) > projects.MAX_STEP_BYTES + 1024 * 1024:
-            raise ProjectError(413, "fichier trop volumineux (max 200 Mo)")
+    def creer(nom: str = Form(...), fichier: UploadFile = File(...)) -> dict:
         return store.create(nom, fichier.file, fichier.filename or "")
 
     @router.get("/projets/{nom}")
@@ -64,3 +62,39 @@ def build_router(root: Path) -> APIRouter:
 
 def project_error_handler(_request: Request, exc: ProjectError) -> JSONResponse:
     return JSONResponse({"erreur": exc.message}, status_code=exc.status)
+
+
+def build_fallback_router() -> APIRouter:
+    """Routes /api inconnues : 404 en français (à inclure APRÈS tous les autres routeurs)."""
+    router = APIRouter(prefix="/api")
+
+    @router.api_route("/{chemin:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], include_in_schema=False)
+    def inconnue(chemin: str) -> JSONResponse:
+        return JSONResponse({"erreur": "route inconnue"}, status_code=404)
+
+    return router
+
+
+_CHAMP = {"nom": "nom", "fichier": "fichier"}
+
+
+def validation_error_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    errs = exc.errors()
+    first = errs[0] if errs else {}
+    loc = [str(x) for x in first.get("loc", ())]
+    kind = first.get("type", "")
+    if loc == ["body"] and kind != "missing":
+        msg = "le corps doit être un objet JSON"
+    elif kind.startswith("json_") or kind == "model_attributes_type":
+        msg = "corps JSON invalide" if kind.startswith("json_") else "corps de requête invalide"
+    else:
+        champ = loc[-1] if loc else "corps"
+        champ = _CHAMP.get(champ, champ)
+        msg = f"champ « {champ} » {'manquant' if kind == 'missing' else 'invalide'}"
+    return JSONResponse({"erreur": f"requête invalide : {msg}"}, status_code=422)
+
+
+def http_error_handler(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    textes = {404: "route inconnue", 405: "méthode non autorisée"}
+    detail = exc.detail if isinstance(exc.detail, str) else ""
+    return JSONResponse({"erreur": textes.get(exc.status_code, detail or "erreur")}, status_code=exc.status_code)

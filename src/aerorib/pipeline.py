@@ -85,10 +85,10 @@ def spar_obstruction(spar: Solid, result: Solid) -> float:
 _FILL_WALL = 1e-3  # mm : matière minimale laissée entre le rebouchage et la surface extérieure
 
 
-def fill_skin(skin: Solid, passages: list[tuple[str, Passage]], tol: float) -> Solid:
-    """Rebouche les passages : fusion d'un cylindre par passage, sans toucher la surface extérieure."""
+def check_fill(skin: Solid, passages: list[tuple[str, Passage]], tol: float) -> None:
+    """Refuse un rebouchage qui dépasserait la surface extérieure (ou la laisserait trop mince)."""
     if not passages:
-        return skin
+        return
     zs, owners = [], []
     for i, (_, f) in enumerate(passages):
         for t in (0.05, 0.5, 0.95):  # trois hauteurs dans l'étendue (pas sur les faces d'extrémité)
@@ -111,6 +111,13 @@ def fill_skin(skin: Solid, passages: list[tuple[str, Passage]], tol: float) -> S
                 f"{name} (x={f.x:.1f}, y={f.y:.1f}, Ø{2 * f.r:.1f}) : {why} — rebouchage impossible sans déformer la peau "
                 "(corriger le modèle, ou passages: {mode: link} / {mode: off})"
             )
+
+
+def fill_skin(skin: Solid, passages: list[tuple[str, Passage]], tol: float) -> Solid:
+    """Rebouche les passages : fusion d'un cylindre par passage, sans toucher la surface extérieure."""
+    if not passages:
+        return skin
+    check_fill(skin, passages, tol)
     filled = skin.fuse(*fill_tools([f for _, f in passages])).clean()
     solids = filled.solids()
     if not filled.is_valid or len(solids) != 1:
@@ -118,7 +125,7 @@ def fill_skin(skin: Solid, passages: list[tuple[str, Passage]], tol: float) -> S
     return solids[0]
 
 
-def _deeper_lines(cfg: Config, bb, i: int) -> list[tuple[int, float]]:
+def deeper_lines(cfg: Config, bb, i: int) -> list[tuple[int, float]]:
     """Plans (famille, c) des niveaux au moins aussi profonds que le niveau i peu profond, de même angle :
     une plaque peu profonde sur l'un d'eux y est contenue (booléen inutile, faces coplanaires)."""
     layer = cfg.rib_layers[i]
@@ -164,7 +171,7 @@ def generate_skin(skin: Solid, spars: list[tuple[str, Solid]], cfg: Config) -> G
     for i, layer in enumerate(cfg.rib_layers):
         plates += diamond_plates(
             bb, mid, bores, layer, angle_deg=cfg.rib_angle(layer), gap=cfg.split.gap,
-            slit=cfg.slit_width, min_depth=cfg.split.min_rib_depth, exclude=_deeper_lines(cfg, bb, i),
+            slit=cfg.slit_width, min_depth=cfg.split.min_rib_depth, exclude=deeper_lines(cfg, bb, i),
         )
     result = skin.cut(*plates, *bore_cut_tools(bores, bb, mid))
     solids = result.solids()
@@ -193,6 +200,15 @@ def _print_volume(cfg: Config) -> tuple[tuple[float, float, float], str | None]:
             f"{exc} — volume de l'imprimante {cfg.printer} utilisé" if cfg.bambu.template is not None else None
         )
     return tuple(cfg.printer_spec.volume), warn
+
+
+def usable_height(cfg: Config) -> float:
+    """Hauteur max d'un tronçon (mm) : segment.max_height, sinon hauteur d'impression − marge."""
+    seg = cfg.segment
+    if seg.max_height is not None:
+        return seg.max_height
+    (_, _, H), _ = _print_volume(cfg)
+    return H - seg.margin
 
 
 def _segment(

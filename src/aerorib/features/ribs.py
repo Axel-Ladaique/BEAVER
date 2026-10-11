@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import numpy as np
 from build123d import Face, Solid, Vector, Wire, extrude
@@ -168,27 +169,53 @@ def plate_lines(bb, layer: RibLayer, angle_deg: float) -> list[tuple[int, float]
     return out
 
 
-def diamond_plates(
+@dataclass(frozen=True)
+class PlateProfile:
+    """Profil 2D d'une plaque dans son plan (x = c + s·d0, z = zmin + s·d1) ; `polygon` en (s, y)."""
+
+    family: int  # ±1
+    c: float
+    d0: float
+    d1: float
+    top: bool  # côté extrados (+Y) de la bande de séparation
+    polygon: Polygon
+
+
+def diamond_profiles(
     bb, mid: MidSurface, bores: list[Bore], layer: RibLayer, *, angle_deg: float, gap: float, slit: float,
     min_depth: float, exclude: Sequence[tuple[int, float]] = (),
-) -> list[Solid]:
-    """Plaques d'un niveau ; `exclude` : plans (famille, c) déjà coupés par un niveau plus profond."""
+) -> list[PlateProfile]:
+    """Profils 2D des plaques d'un niveau, sans construire les solides (aperçu rapide).
+
+    `exclude` : plans (famille, c) déjà coupés par un niveau plus profond.
+    """
     ang = math.radians(angle_deg)
     zmin, zmax = bb.min.Z, bb.max.Z
     ytop, ybot = bb.max.Y + 5, bb.min.Y - 5
     length = _plate_length(bb, angle_deg)
     # échantillonnage fin (≈ 0,5 mm) pour situer les transitions d'épaisseur ; bord à `samples` sommets
     ss = np.linspace(-5, length, max(layer.samples, math.ceil((length + 5) / _DEPTH_STEP) + 1))
-    plates: list[Solid] = []
+    out: list[PlateProfile] = []
     for sign, c in plate_lines(bb, layer, angle_deg):
         if any(es == sign and abs(ec - c) < _SAME_LINE for es, ec in exclude):
             continue
         d0, d1 = sign * math.sin(ang), math.cos(ang)
         ym, th = mid.at(c + ss * d0, zmin + ss * d1)
         zones = [z for b in bores for z in bore_zones_2d(b, c, d0, d1, zmin, zmax, slit=slit)]
-        for _, poly in plate_profiles_2d(
+        for top, poly in plate_profiles_2d(
             ss, ym, th, zones, gap=gap, min_depth=min_depth, ytop=ytop, ybot=ybot, edge_vertices=layer.samples,
             depth=None if layer.depth == "full" else layer.depth,
         ):
-            plates.append(plate_solid(poly, c, d0, d1, zmin, slit))
-    return plates
+            out.append(PlateProfile(sign, c, d0, d1, top, poly))
+    return out
+
+
+def diamond_plates(
+    bb, mid: MidSurface, bores: list[Bore], layer: RibLayer, *, angle_deg: float, gap: float, slit: float,
+    min_depth: float, exclude: Sequence[tuple[int, float]] = (),
+) -> list[Solid]:
+    """Plaques d'un niveau ; `exclude` : plans (famille, c) déjà coupés par un niveau plus profond."""
+    profiles = diamond_profiles(
+        bb, mid, bores, layer, angle_deg=angle_deg, gap=gap, slit=slit, min_depth=min_depth, exclude=exclude
+    )
+    return [plate_solid(p.polygon, p.c, p.d0, p.d1, bb.min.Z, slit) for p in profiles]

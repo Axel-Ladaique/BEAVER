@@ -257,12 +257,12 @@ ANCHOR_STEP = 2.0  # mm, pas max d'échantillonnage de la peau opposée le long 
 ANCHOR_MIN = 0.2  # mm : attache plus courte (hors du trou) → omise à cette hauteur
 
 
-def anchor_tools(b: Bore, mid: MidSurface, bb) -> list[Solid]:
-    """Attache côté opposé à la fente : fente borgne dans le plan x = b.x, du centre du trou jusqu'à
+def anchor_profiles_2d(b: Bore, mid: MidSurface, bb) -> list[Polygon]:
+    """Profils (z, y) de l'attache côté opposé à la fente, dans le plan x = b.x : du centre du trou jusqu'à
     `anchor_gap` de la peau opposée (lue dans la surface médiane), sur l'étendue en Z du trou.
 
-    Construite en 2D (z, y) puis extrudée de ± slit/2 en X. Aux hauteurs où la peau opposée est à moins de
-    `radius + anchor_gap + ANCHOR_MIN` du centre, pas d'attache (une plaque par portion continue).
+    Aux hauteurs où la peau opposée est à moins de `radius + anchor_gap + ANCHOR_MIN` du centre, pas
+    d'attache (un profil par portion continue).
     """
     lo, hi = bore_extent(b, bb.min.Z, bb.max.Z)
     zs = np.linspace(lo, hi, max(2, math.ceil((hi - lo) / ANCHOR_STEP) + 1))
@@ -270,13 +270,21 @@ def anchor_tools(b: Bore, mid: MidSurface, bb) -> list[Solid]:
     skin = ym - b.side * th / 2  # peau opposée à la fente
     room = (th > 0) & (b.side * (b.y - skin) >= b.radius + b.anchor_gap + ANCHOR_MIN)
     y_end = skin + b.side * b.anchor_gap
-    faces = []
+    out = []
     idx = np.flatnonzero(np.diff(np.concatenate([[0], room.astype(int), [0]])))
     for i, j in zip(idx[::2], idx[1::2]):  # échantillons i … j−1 avec de la place
         if j - i < 2:
             continue
         pts = [(zs[i], b.y), (zs[j - 1], b.y)] + [(zs[k], y_end[k]) for k in range(j - 1, i - 1, -1)]
-        poly = Polygon(pts).simplify(0.01)
+        out.append(Polygon(pts).simplify(0.01))
+    return out
+
+
+def anchor_tools(b: Bore, mid: MidSurface, bb) -> list[Solid]:
+    """Attache côté opposé à la fente : fente borgne dans le plan x = b.x (voir `anchor_profiles_2d`),
+    construite en 2D (z, y) puis extrudée de ± slit/2 en X."""
+    faces = []
+    for poly in anchor_profiles_2d(b, mid, bb):
         ring = [Vector(b.x, y, z) for z, y in list(poly.exterior.coords)[:-1]]
         faces.append(Face(Wire.make_polygon(ring, close=True)))
     return [extrude(f, amount=b.slit / 2, dir=Vector(1, 0, 0), both=True) for f in faces]

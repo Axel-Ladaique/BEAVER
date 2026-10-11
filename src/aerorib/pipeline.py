@@ -74,6 +74,20 @@ def spars_inside(skin: Solid, spars: list[tuple[str, Solid]], tol: float) -> lis
 
 
 MAX_SPAR_OBSTRUCTION = 1.0  # mm³ : au-delà, le longeron ne rentre pas dans la pièce générée
+# mm³ : en dessous, un solide séparé est un éclat du booléen (fins de plaques presque jointives), pas de la matière
+MAX_SLIVER_VOLUME = 0.5
+
+
+def main_solid(result) -> tuple[Solid, int]:
+    """(pièce, nombre d'éclats retirés) ; refuse une découpe invalide ou en plusieurs vrais morceaux."""
+    solids = result.solids()
+    kept = [s for s in solids if s.volume > MAX_SLIVER_VOLUME]
+    if not result.is_valid or len(kept) != 1:
+        raise PipelineError(
+            f"découpe invalide ({len(kept)} morceaux, valide={result.is_valid}) : "
+            + ", ".join(f"{s.volume:.1f} mm³" for s in solids)
+        )
+    return kept[0], len(solids) - 1
 
 
 def spar_obstruction(spar: Solid, result: Solid) -> float:
@@ -151,6 +165,7 @@ class Generated(NamedTuple):
     bores: tuple[Bore, ...]
     plates: int
     filled: tuple[Passage, ...]
+    slivers: int = 0  # éclats négligeables retirés après la découpe
 
 
 def generate_skin(skin: Solid, spars: list[tuple[str, Solid]], cfg: Config) -> Generated:
@@ -174,14 +189,12 @@ def generate_skin(skin: Solid, spars: list[tuple[str, Solid]], cfg: Config) -> G
             slit=cfg.slit_width, min_depth=cfg.split.min_rib_depth, exclude=deeper_lines(cfg, bb, i),
         )
     result = skin.cut(*plates, *bore_cut_tools(bores, bb, mid))
-    solids = result.solids()
-    if not result.is_valid or len(solids) != 1:
-        raise PipelineError(f"découpe invalide ({len(solids)} solide(s), valide={result.is_valid})")
+    part, slivers = main_solid(result)
     for name, spar in inside:
-        blocked = spar_obstruction(spar, solids[0])
+        blocked = spar_obstruction(spar, part)
         if blocked > MAX_SPAR_OBSTRUCTION:
             raise PipelineError(f"{name} : le longeron traverse la matière ({blocked:.0f} mm³) — vérifier son axe")
-    return Generated(solids[0], tuple(bores), len(plates), tuple(f for _, f in to_fill))
+    return Generated(part, tuple(bores), len(plates), tuple(f for _, f in to_fill), slivers)
 
 
 
@@ -277,7 +290,8 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
         skin = s.body.solid.moved(o.location)
         progress(f"{s.body.name} : surface médiane, trous et nervures…")
         try:
-            result, bores, n, filled = generate_skin(skin, spars, cfg)
+            gen = generate_skin(skin, spars, cfg)
+            result, bores, n, filled = gen.result, gen.bores, gen.plates, gen.filled
         except PipelineError:
             raise
         except GEOMETRY_ERRORS as exc:
@@ -285,7 +299,9 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
         spars_n = sum(b.cut_hole for b in bores)
         progress(
             f"{s.body.name} : {n} nervures, {spars_n} longeron(s), {len(bores) - spars_n} passage(s) relié(s), "
-            f"{len(filled)} rebouché(s) — validation…"
+            f"{len(filled)} rebouché(s)"
+            + (f", {gen.slivers} éclat(s) négligeable(s) retiré(s)" if gen.slivers else "")
+            + " — validation…"
         )
         # l'original reste la peau avant rebouchage : seuls ses contours extérieurs sont comparés
         report = validate(result, cfg, original=skin)

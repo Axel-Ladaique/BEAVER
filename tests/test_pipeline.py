@@ -59,7 +59,7 @@ def _half_span_case():
 @pytest.fixture(scope="module")
 def half_span():
     skin, spar, camber = _half_span_case()
-    result, bores, _, _ = generate_skin(skin, [("SBAR_demi", spar)], HALF)
+    result, bores, _, _, _ = generate_skin(skin, [("SBAR_demi", spar)], HALF)
     return skin, spar, camber, result, bores
 
 
@@ -149,7 +149,7 @@ def test_coaxial_small_bore_is_not_recut_by_the_spar(monkeypatch):
         - Cylinder(1, 40).moved(Location((10, 0, 80)))
     ).solids()[0]
     spar = Cylinder(4, 40).moved(Location((10, 0, 20)))
-    result, bores, _, _ = generate_skin(skin, [("SBAR", spar)], HALF_LINK)
+    result, bores, _, _, _ = generate_skin(skin, [("SBAR", spar)], HALF_LINK)
     assert sorted((b.name, b.cut_hole, round(b.radius, 2)) for b in bores) == [
         ("SBAR", True, 4.15), ("passage 1", False, 1.0)
     ]
@@ -226,7 +226,7 @@ def no_ribs(monkeypatch):
 def test_anchor_off_has_no_notch(no_ribs):
     skin, spar, camber = _half_span_case()
     cfg = load_config(overrides={"spars": {"default": {"anchor": False}}})
-    result, (b,), _, _ = generate_skin(skin, [("SBAR_demi", spar)], cfg)
+    result, (b,), _, _, _ = generate_skin(skin, [("SBAR_demi", spar)], cfg)
     assert b.anchor_gap == 0.0
     yc = camber(30)
     (layer,) = slice_layers(result, [20.0])
@@ -242,7 +242,7 @@ def _parasitic_case():
 
 def test_parasitic_bore_is_filled_by_default(no_ribs):
     skin, spar, camber = _parasitic_case()
-    result, bores, _, filled = generate_skin(skin, [("SBAR", spar)], HALF)
+    result, bores, _, filled, _ = generate_skin(skin, [("SBAR", spar)], HALF)
     assert [b.name for b in bores] == ["SBAR"]
     (f,) = filled
     assert (f.x, f.y, f.r) == (pytest.approx(70.0), pytest.approx(camber(70)), pytest.approx(1.2))
@@ -261,7 +261,7 @@ def test_parasitic_bore_is_filled_by_default(no_ribs):
 
 def test_parasitic_bore_linked_in_link_mode(no_ribs):
     skin, spar, camber = _parasitic_case()
-    result, bores, _, filled = generate_skin(skin, [("SBAR", spar)], HALF_LINK)
+    result, bores, _, filled, _ = generate_skin(skin, [("SBAR", spar)], HALF_LINK)
     assert filled == ()
     assert [b.name for b in bores] == ["SBAR", "passage 1"]
     (layer,) = slice_layers(result, [40.0])
@@ -382,3 +382,26 @@ def test_partial_layer_skips_plates_of_deeper_layers(monkeypatch):
     generate_skin(skin, [("SBAR_demi", spar)], alone)
     assert 0 < with_main["peau"] < seen["peau"]
     assert with_main["peau"] + with_main["principal"] >= seen["peau"]  # chaque doublon est couvert par une principale
+
+
+def test_main_solid_retire_les_eclats_negligeables():
+    from build123d import Box, Compound, Pos
+
+    from aerorib.pipeline import main_solid
+
+    big = Box(10, 10, 10).solid()
+    sliver = (Pos(50, 0, 0) * Box(0.05, 1.0, 0.1)).solid()
+    solid, dropped = main_solid(Compound([big, sliver]))
+    assert dropped == 1
+    assert abs(solid.volume - 1000) < 1e-6
+
+
+def test_main_solid_refuse_deux_vrais_morceaux():
+    from build123d import Box, Compound, Pos
+
+    from aerorib.pipeline import PipelineError, main_solid
+
+    a = Box(10, 10, 10).solid()
+    b = (Pos(50, 0, 0) * Box(10, 10, 10)).solid()
+    with pytest.raises(PipelineError, match="2 morceaux"):
+        main_solid(Compound([a, b]))

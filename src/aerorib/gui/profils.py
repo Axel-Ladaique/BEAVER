@@ -3,13 +3,15 @@
 Dossier des profils utilisateur : résolu UNE fois à la création de l'application, comme `material_profiles`
 (variable `AERORIB_PROFILES` si définie, sinon `./profiles` du répertoire de lancement) ; injectable pour les
 tests. Les valeurs d'un profil = couche embarquée (si elle existe) fusionnée avec `<dossier>/<nom>.yaml`.
-Le second dossier lu par le cœur (`./profiles` quand `AERORIB_PROFILES` est défini) n'est pas pris en compte ici.
+Le dossier d'écriture est le seul où l'API écrit ; la lecture suit toutes les couches du cœur.
 
+Lecture : exactement les couches du cœur (`find_profiles`/`load_profile` : embarqué < ./profiles < $AERORIB_PROFILES).
 Écriture (`PUT`) : le serveur reçoit les valeurs complètes de l'éditeur, calcule la différence imbriquée avec
-l'embarqué de même nom et n'écrit QUE cette différence (les listes comme `rib_layers` sont remplacées en bloc).
-Sans profil embarqué du même nom, tout est écrit. Différence vide : le fichier n'est jamais supprimé ; s'il
-existe il devient `{}` (mapping vide, profil toujours valide), sinon il reste absent. Le gabarit Bambu est exposé
-par son nom de fichier seul ; la valeur identique au gabarit embarqué n'est jamais écrite.
+la fusion de toutes les couches INFÉRIEURES au fichier écrit et n'écrit QUE cette différence (5 == 5.0) (les listes comme `rib_layers` sont remplacées en bloc).
+Sans couche inférieure, tout est écrit. Les commentaires du fichier ne sont pas conservés. Différence vide : le fichier n'est jamais supprimé ; s'il
+existe il devient `{}` (mapping vide, profil toujours valide), sinon il reste absent. `bambu.template` est en
+lecture seule : exposé par son nom de fichier seul, ignoré dans `donnees`, et la valeur brute de la couche
+utilisateur existante est conservée telle quelle (relative, absolue ou absente).
 
 Copie (`POST …/copier`) : sans corps, comme `aerorib profils --copier` (profil embarqué copié tel quel, sans
 `bambu.template`, vers `<dossier>/<nom>.yaml`). Avec `{"vers": "nouveau"}`, les valeurs fusionnées actuelles du
@@ -37,12 +39,21 @@ from aerorib.material_profiles import (
     ENV_VAR,
     ProfileError,
     _deep_merge,
-    _is_profile,
     _read_layer,
     copy_profile,
     embedded_dir,
+    find_profiles,
 )
 
+
+
+def _read_umask() -> int:
+    umask = os.umask(0)
+    os.umask(umask)
+    return umask
+
+
+_MODE = 0o666 & ~_read_umask()  # lu une fois à l'import ; le umask du processus n'est plus touché ensuite
 NAME_RE = re.compile(r"[a-z0-9_]{1,40}")
 _MSG = {"missing": "champ manquant", "extra_forbidden": "champ inconnu"}
 
@@ -60,6 +71,21 @@ def check_name(nom: str) -> str:
     return nom
 
 
+def _num(x: Any) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def _same(a: Any, b: Any) -> bool:
+    """Égalité de valeurs YAML/JSON : 5 et 5.0 sont identiques (un aller-retour JS perd le « .0 »), pas True et 1."""
+    if _num(a) and _num(b):
+        return a == b
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+    return type(a) is type(b) and a == b
+
+
 def _diff(base: Any, new: Any) -> Any:
     """Plus petit sous-ensemble imbriqué de `new` qui, fusionné sur `base`, redonne `new` (None = identique)."""
     if isinstance(base, dict) and isinstance(new, dict):
@@ -72,15 +98,25 @@ def _diff(base: Any, new: Any) -> Any:
                 if d is not None or (v is None and base[k] is not None):
                     out[k] = d
         return out or None
-    return None if base == new and type(base) is type(new) else new
+    return None if _same(base, new) else new
 
 
 def _with_template_name(data: dict) -> dict:
-    """Copie où bambu.template (chemin) est réduit à son nom de fichier."""
+    """Copie où bambu.template (chemin) est réduit à son nom de fichier (affichage seul)."""
     out = copy.deepcopy(data)
     bambu = out.get("bambu")
     if isinstance(bambu, dict) and isinstance(bambu.get("template"), str):
         bambu["template"] = Path(bambu["template"]).name
+    return out
+
+
+def _without_template(data: dict) -> dict:
+    out = copy.deepcopy(data)
+    bambu = out.get("bambu")
+    if isinstance(bambu, dict):
+        bambu.pop("template", None)
+        if not bambu:
+            del out["bambu"]
     return out
 
 
@@ -107,29 +143,25 @@ def _config_message(exc: ValidationError) -> str:
 
 
 class ProfileStore:
+    """Lecture : exactement les couches du cœur (`find_profiles`/`load_profile`). Écriture : `user_dir` seul."""
+
     def __init__(self, user_dir: Path | None = None) -> None:
         self.user_dir = Path(user_dir) if user_dir is not None else default_user_dir()
         self._lock = threading.Lock()
 
-    # --- lecture -----------------------------------------------------------------------------
-    def _embedded_path(self, nom: str) -> Path | None:
-        p = embedded_dir() / f"{nom}.yaml"
-        return p if p.is_file() else None
+    def _target(self, nom: str) -> Path:
+        return self.user_dir / f"{nom}.yaml"
 
-    def _user_path(self, nom: str) -> Path | None:
-        p = self.user_dir / f"{nom}.yaml"
-        return p if p.is_file() and _is_profile(p) else None
-
-    def _layers(self, nom: str) -> tuple[dict, dict, bool, bool]:
-        """(couche embarquée, couche utilisateur, a un embarqué, a un utilisateur) ; `_read_layer` résout le gabarit."""
-        emb, usr = self._embedded_path(nom), self._user_path(nom)
+    @staticmethod
+    def _info(nom: str):
         try:
-            return (
-                _read_layer(emb) if emb else {},
-                _read_layer(usr) if usr else {},
-                emb is not None,
-                usr is not None,
-            )
+            return find_profiles().get(nom)
+        except ProfileError as exc:
+            raise ProjectError(422, scrub_paths(str(exc))) from exc
+
+    def _layer_data(self, paths) -> list[tuple[Path, dict]]:
+        try:
+            return [(p, _read_layer(p)) for p in paths]
         except ProfileError as exc:
             raise ProjectError(422, scrub_paths(str(exc))) from exc
 
@@ -146,30 +178,35 @@ class ProfileStore:
 
     def get(self, nom: str) -> dict:
         check_name(nom)
-        emb, usr, has_emb, has_usr = self._layers(nom)
-        if not has_emb and not has_usr:
+        info = self._info(nom)
+        if info is None:
             raise ProjectError(404, f"profil inconnu : « {nom} »")
-        merged = _deep_merge(emb, usr)
+        layers = self._layer_data(info.layers)
+        merged: dict = {}
+        for _, data in layers:
+            merged = _deep_merge(merged, data)
+        user = [d for p, d in layers if p.parent != embedded_dir()]
         valeurs = _with_template_name(merged)
         provenance = [
-            {"chemin": list(loc), "origine": "utilisateur" if _is_set(usr, loc) else "embarqué"}
+            {"chemin": list(loc), "origine": "utilisateur" if any(_is_set(u, loc) for u in user) else "embarqué"}
             for loc in _flatten(valeurs)
         ]
         return {
             "nom": nom,
-            "origine": "utilisateur" if has_usr else "embarqué",
-            "embarque": has_emb,
+            "origine": info.origin,
+            "embarque": any(p.parent == embedded_dir() for p, _ in layers),
             "valeurs": valeurs,
             "provenance": provenance,
             "gabarit": self._gabarit(merged),
         }
 
     def list(self) -> list[dict]:
-        noms = {p.stem for p in embedded_dir().glob("*.yaml")}
-        if self.user_dir.is_dir():
-            noms |= {p.stem for p in self.user_dir.glob("*.yaml") if NAME_RE.fullmatch(p.stem) and _is_profile(p)}
+        try:
+            noms = sorted(n for n in find_profiles() if NAME_RE.fullmatch(n))
+        except ProfileError as exc:
+            raise ProjectError(422, scrub_paths(str(exc))) from exc
         out = []
-        for nom in sorted(noms):
+        for nom in noms:
             try:
                 d = self.get(nom)
             except ProjectError as exc:  # profil illisible : listé, avec son erreur
@@ -181,7 +218,7 @@ class ProfileStore:
 
     # --- écriture ----------------------------------------------------------------------------
     def _write(self, nom: str, texte: str, validate) -> None:
-        """Écriture atomique (temporaire + fsync + replace, droits suivant le umask), `validate(tmp)` avant remplacement."""
+        """Écriture atomique (temporaire + fsync + replace, droits 0666 & ~umask), `validate(tmp)` avant remplacement."""
         self.user_dir.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(dir=self.user_dir, prefix=f".{nom}.", suffix=".tmp")
         tmp = Path(tmp_name)
@@ -191,44 +228,57 @@ class ProfileStore:
                 fh.flush()
                 os.fsync(fh.fileno())
             validate(tmp)
-            umask = os.umask(0)
-            os.umask(umask)
-            os.chmod(tmp, 0o666 & ~umask)
-            os.replace(tmp, self.user_dir / f"{nom}.yaml")
+            os.chmod(tmp, _MODE)
+            os.replace(tmp, self._target(nom))
         finally:
             tmp.unlink(missing_ok=True)
 
-    def _validated(self, nom: str, emb_layer: dict, usr_layer: dict) -> None:
+    @staticmethod
+    def _validated(base: dict, usr_layer: dict) -> None:
         try:
-            Config.model_validate(_deep_merge(emb_layer, usr_layer))
+            Config.model_validate(_deep_merge(base, usr_layer))
         except ValidationError as exc:
             raise ProjectError(422, scrub_paths(_config_message(exc))) from exc
+
+    def _lower(self, nom: str) -> dict:
+        """Fusion de toutes les couches du cœur sauf le fichier écrit."""
+        info = self._info(nom)
+        target = self._target(nom).resolve()
+        paths = [p for p in (info.layers if info else ()) if p.resolve() != target]
+        merged: dict = {}
+        for _, data in self._layer_data(paths):
+            merged = _deep_merge(merged, data)
+        return merged
 
     def put(self, nom: str, donnees: Any) -> dict:
         check_name(nom)
         if not isinstance(donnees, dict):
             raise ProjectError(422, "« donnees » doit être un dictionnaire de valeurs de profil")
-        emb_path = self._embedded_path(nom)
-        try:
-            raw = yaml.safe_load(emb_path.read_text(encoding="utf-8")) if emb_path else {}
-        except (OSError, yaml.YAMLError) as exc:  # ne devrait pas arriver (profil du paquet)
-            raise ProjectError(500, "profil embarqué illisible") from exc
-        base = _with_template_name(raw or {})
-        diff = _diff(base, donnees) or {}
-        usr_exists = self.user_dir.joinpath(f"{nom}.yaml").is_file()
-        texte = yaml.safe_dump(diff, allow_unicode=True, sort_keys=False) if diff else "{}\n"
-        emb_layer = _read_layer(emb_path) if emb_path else {}
-
-        def validate(tmp: Path) -> None:
-            try:
-                usr_layer = _read_layer(tmp)
-            except ProfileError as exc:
-                raise ProjectError(422, _fix(exc, tmp=tmp, nom=nom)) from exc
-            self._validated(nom, emb_layer, usr_layer)
-
         with self._lock:
-            if not diff and not usr_exists:
-                self._validated(nom, emb_layer, {})  # rien à écrire : le fichier reste absent
+            lower = self._lower(nom)
+            target = self._target(nom)
+            raw_template = None  # valeur brute de la couche utilisateur : le gabarit n'est pas éditable ici
+            if target.is_file():
+                try:
+                    raw = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+                except (OSError, UnicodeDecodeError, yaml.YAMLError):
+                    raw = {}
+                if isinstance(raw, dict) and isinstance(raw.get("bambu"), dict):
+                    raw_template = raw["bambu"].get("template")
+            diff = _diff(_without_template(lower), _without_template(donnees)) or {}
+            if raw_template is not None:
+                diff.setdefault("bambu", {})["template"] = raw_template
+            texte = yaml.safe_dump(diff, allow_unicode=True, sort_keys=False) if diff else "{}\n"
+
+            def validate(tmp: Path) -> None:
+                try:
+                    usr_layer = _read_layer(tmp)
+                except ProfileError as exc:
+                    raise ProjectError(422, _fix(exc, tmp=tmp, nom=nom)) from exc
+                self._validated(lower, usr_layer)
+
+            if not diff and not target.is_file():
+                self._validated(lower, {})  # rien à écrire : le fichier reste absent
             else:
                 self._write(nom, texte, validate)
         return self.get(nom)
@@ -238,7 +288,7 @@ class ProfileStore:
         with self._lock:
             if vers is None:
                 try:
-                    if (self.user_dir / f"{nom}.yaml").exists():
+                    if self._target(nom).exists():
                         raise ProjectError(409, f"{nom}.yaml existe déjà : supprimez-le ou éditez-le directement")
                     copy_profile(nom, self.user_dir)
                 except ProfileError as exc:
@@ -247,16 +297,14 @@ class ProfileStore:
             if not isinstance(vers, str):
                 raise ProjectError(422, "« vers » doit être un nom de profil")
             check_name(vers)
-            self.get(nom)  # 404 si la source n'existe pas
-            if self._embedded_path(vers) is not None:
-                raise ProjectError(409, f"un profil embarqué porte déjà le nom « {vers} »")
-            if (self.user_dir / f"{vers}.yaml").exists():
-                raise ProjectError(409, f"{vers}.yaml existe déjà")
-            valeurs = _with_template_name(_deep_merge(*self._layers(nom)[:2]))
+            source = self.get(nom)  # 404 si la source n'existe pas
+            if self._info(vers) is not None or self._target(vers).exists():
+                raise ProjectError(409, f"un profil « {vers} » existe déjà")
+            valeurs = copy.deepcopy(source["valeurs"])
             valeurs.setdefault("bambu", {})["template"] = None
             entete = f"# Copie du profil « {nom} » : profil autonome (gabarit Bambu à renseigner dans bambu.template).\n"
             texte = entete + yaml.safe_dump(valeurs, allow_unicode=True, sort_keys=False)
-            self._write(vers, texte, lambda tmp: self._validated(vers, {}, _read_layer(tmp)))
+            self._write(vers, texte, lambda tmp: self._validated({}, _read_layer(tmp)))
         return self.get(vers)
 
 

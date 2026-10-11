@@ -186,6 +186,8 @@ def format_bores(bores, filled=()) -> str:
     for b in bores:
         if not b.cut_hole:
             items.append(f"{b.name} (Ø{2 * b.radius:.1f}, x={b.x:.1f}, y={b.y:.1f})")
+        elif b.cable:
+            items.append(f"{b.name} (gaine, Ø{2 * b.radius:.1f})")
         elif b.anchor_gap > 0:  # l'attache est du côté opposé à la fente
             items.append(f"{b.name} (longeron, Ø{2 * b.radius:.1f}, attache {'intrados' if b.side > 0 else 'extrados'})")
         else:

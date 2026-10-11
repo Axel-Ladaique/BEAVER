@@ -194,7 +194,9 @@ class Generated(NamedTuple):
     warnings: tuple[str, ...] = ()  # niveaux de nervures vidés par l'arrêt avant les parois raides
 
 
-def generate_skin(skin: Solid, spars: list[tuple[str, Solid]], cfg: Config) -> Generated:
+def generate_skin(
+    skin: Solid, spars: list[tuple[str, Solid]], cfg: Config, cables: frozenset[str] = frozenset()
+) -> Generated:
     tol = cfg.validation.tessellation_tol
     bb = skin.bounding_box()
     nx, nz = cfg.split.grid
@@ -202,7 +204,7 @@ def generate_skin(skin: Solid, spars: list[tuple[str, Solid]], cfg: Config) -> G
     inside = spars_inside(skin, spars, tol)
     try:
         found = find_passages(skin, cfg.passages.max_tilt_deg)  # une seule recherche des alésages
-        bores = extend_to_existing_bores(spar_bores(inside, cfg), skin, cfg, found)
+        bores = extend_to_existing_bores(spar_bores(inside, cfg, cables), skin, cfg, found)
         to_fill = passages_to_fill(skin, cfg, exclude=bores, found=found)
         bores += passage_bores(skin, cfg, exclude=bores, found=found)
     except BoreError as exc:
@@ -311,20 +313,24 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
         raise PipelineError(f"orientation impossible : {exc}") from exc
     progress(f"orientation : {o.source}")
     spars = [(s.body.name, s.body.solid.moved(o.location)) for s in model.of("spar")]
+    cables = frozenset(c.body.name for c in model.cables)
     bodies = []
     for s in skins:
         skin = s.body.solid.moved(o.location)
         progress(f"{s.body.name} : surface médiane, trous et nervures…")
         try:
-            gen = generate_skin(skin, spars, cfg)
+            gen = generate_skin(skin, spars, cfg, cables)
             result, bores, n, filled = gen.result, gen.bores, gen.plates, gen.filled
         except PipelineError:
             raise
         except GEOMETRY_ERRORS as exc:
             raise PipelineError(f"{s.body.name} : génération impossible ({type(exc).__name__} : {exc})") from exc
-        spars_n = sum(b.cut_hole for b in bores)
+        cables_n = sum(b.cable for b in bores)
+        spars_n = sum(b.cut_hole for b in bores) - cables_n
         progress(
-            f"{s.body.name} : {n} nervures, {spars_n} longeron(s), {len(bores) - spars_n} passage(s) relié(s), "
+            f"{s.body.name} : {n} nervures, {spars_n} longeron(s), "
+            + (f"{cables_n} gaine(s), " if cables_n else "")
+            + f"{len(bores) - spars_n - cables_n} passage(s) relié(s), "
             f"{len(filled)} rebouché(s)"
             + (f", {gen.slivers} éclat(s) négligeable(s) retiré(s)" if gen.slivers else "")
             + " — validation…"

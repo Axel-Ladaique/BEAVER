@@ -35,6 +35,7 @@ class Bore:
     slit: float  # largeur de la fente vers la peau
     clearance: float  # marge en Z aux extrémités intérieures (longeron : jeu ; passage : 0)
     anchor_gap: float = 0.0  # > 0 : attache côté opposé, arrêtée à cette distance de la peau (0 : pas d'attache)
+    cable: bool = False  # gaine de câble : trou + fente, manchon minimal, sans attache
 
 
 OPEN_END = 1.0  # extrémité à moins de 1 mm du bord de la pièce : le trou débouche
@@ -56,7 +57,10 @@ def _tilt_deg(dz: float) -> float:
     return math.degrees(math.acos(min(1.0, abs(dz))))
 
 
-def spar_bores(spars: list[tuple[str, Solid]], cfg: Config) -> list[Bore]:
+def spar_bores(
+    spars: list[tuple[str, Solid]], cfg: Config, cables: frozenset[str] | set[str] = frozenset()
+) -> list[Bore]:
+    """`cables` : noms des longerons qui sont des gaines de câble (réglages `spars.cable`)."""
     limit = math.cos(math.radians(cfg.passages.max_tilt_deg))
     out = []
     for name, solid in spars:
@@ -65,7 +69,8 @@ def spar_bores(spars: list[tuple[str, Solid]], cfg: Config) -> list[Bore]:
             raise BoreError(f"{name} : aucun cylindre détecté")
         if abs(info.axis_dir[2]) < limit:
             raise BoreError(f"{name} : longeron non parallèle à l'axe d'impression (pris en charge en P5)")
-        s = cfg.spar_settings(name)
+        is_cable = name in cables
+        s = cfg.spar_settings(name, cable=is_cable)
         tilt = _tilt_deg(info.axis_dir[2])
         drift = info.length * math.tan(math.radians(tilt))
         if drift > s.clearance / 2:
@@ -80,7 +85,7 @@ def spar_bores(spars: list[tuple[str, Solid]], cfg: Config) -> list[Bore]:
             Bore(
                 name, mid[0], mid[1], info.diameter / 2 + s.clearance, s.sleeve, s.strip, _side(s.slit_side),
                 True, min(start[2], z_end), max(start[2], z_end), s.slit_width, s.clearance,
-                s.anchor_gap if s.anchor else 0.0,
+                s.anchor_gap if s.anchor else 0.0, is_cable,
             )
         )
     return out

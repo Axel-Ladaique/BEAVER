@@ -114,6 +114,10 @@ class RibLayer(_Strict):
         return v
 
 
+CABLE_KEY = "cable"  # spars.cable : réglages communs des gaines de câble
+CABLE_SLEEVE_LINES = 1.2  # manchon d'une gaine, en largeurs de ligne (0 ou 1 ligne : matière trop fine)
+
+
 class BoreSettings(_Strict):
     clearance: float = Field(default=0.15, ge=0)  # jeu radial autour du longeron
     # strictement > 0 : le manchon est le seul pont entre les deux côtés du trou sur la plaque opposée à la fente
@@ -224,15 +228,20 @@ class Config(_Strict):
                 )
         for name in self.spars:
             try:
-                self.spar_settings(name)
+                self.spar_settings(name, cable=name == CABLE_KEY)
             except ValidationError as exc:
                 raise ValueError(f"spars '{name}' invalide : {exc}") from exc
         return self
 
+    def _spar_entries(self) -> list[tuple[str, BoreSettings]]:
+        """Réglages à contrôler : (libellé, réglages) de chaque entrée `spars` ; gaine incluse."""
+        names = list(self.spars) or ["default"]
+        return [(f"spars '{n}'", self.spar_settings(n, cable=n == CABLE_KEY)) for n in names]
+
     @model_validator(mode="after")
     def _printable_widths(self) -> "Config":
         lw = self.preset.line_width
-        sleeves = [(f"spars '{n}'", self.spar_settings(n).sleeve) for n in self.spars or {"default": {}}]
+        sleeves = [(w, st.sleeve) for w, st in self._spar_entries()]
         sleeves.append(("passages", self.passages.sleeve))
         for where, sleeve in sleeves:
             if sleeve < lw:
@@ -240,11 +249,10 @@ class Config(_Strict):
                     f"{where} : manchon (sleeve) {sleeve} mm < largeur de ligne {lw} mm — "
                     "la matière autour du trou serait plus fine qu'une ligne"
                 )
-        for name in self.spars or {"default": {}}:
-            s = self.spar_settings(name)
+        for where, s in self._spar_entries():
             if s.anchor and s.anchor_gap < lw:
                 raise ValueError(
-                    f"spars '{name}' : anchor_gap {s.anchor_gap} mm < largeur de ligne {lw} mm — "
+                    f"{where} : anchor_gap {s.anchor_gap} mm < largeur de ligne {lw} mm — "
                     "le pont entre l'attache et la peau ne serait pas imprimable"
                 )
         need = SLIT_MARGIN * self.preset.min_slit_width
@@ -264,7 +272,7 @@ class Config(_Strict):
                     f"à {self.rib_angle(layer)}° ≥ ouverture max validation.max_mouth_width {mouth} mm — chaque fente "
                     "entamerait la peau, même plate ; réduire slit_width (ou augmenter validation.max_mouth_width)"
                 )
-        slits = [(f"spars '{n}'", self.spar_settings(n).slit_width) for n in self.spars or {"default": {}}]
+        slits = [(w, st.slit_width) for w, st in self._spar_entries()]
         slits.append(("passages", self.passages.slit_width))
         for where, width in slits:
             if width < need - 1e-9:
@@ -296,12 +304,20 @@ class Config(_Strict):
     def rib_angle(self, layer: RibLayer) -> float:
         return layer.angle if layer.angle is not None else min(45.0, self.preset.max_overhang_deg)
 
-    def spar_settings(self, name: str) -> BoreSettings:
+    def spar_settings(self, name: str, cable: bool = False) -> BoreSettings:
+        """Réglages d'un longeron. Précédence : défauts du code < `spars.default` < (gaine) `spars.cable`
+        < `spars.<nom>`. Gaine : manchon minimal imprimable (1,2 × largeur de ligne ; un manchon de 0 ou d'une
+        seule ligne est refusé par la validation : « matière plus fine qu'une largeur de ligne »), sans attache,
+        bande = largeur de ligne du preset."""
         base = self.spars.get("default", {})
+        layer: dict[str, Any] = {}
+        if cable:
+            lw = self.preset.line_width
+            layer = {"sleeve": CABLE_SLEEVE_LINES * lw, "anchor": False, "strip": lw, **self.spars.get(CABLE_KEY, {})}
         override = next(
-            (v for k, v in self.spars.items() if k != "default" and k.lower() == name.lower()), {}
+            (v for k, v in self.spars.items() if k not in ("default", CABLE_KEY) and k.lower() == name.lower()), {}
         )
-        return BoreSettings.model_validate({**base, **override})
+        return BoreSettings.model_validate({**base, **layer, **override})
 
 
 class ConfigError(ValueError):

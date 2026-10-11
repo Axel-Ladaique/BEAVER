@@ -127,7 +127,7 @@ class Prepared:
         for b in self.bores:
             lo, hi = bore_extent(b, zmin, zmax)
             if z is None or lo <= z <= hi:
-                kind = "longeron" if b.cut_hole else "passage relié"
+                kind = "gaine" if b.cable else "longeron" if b.cut_hole else "passage relié"
                 out.append({"nom": b.name, "type": kind, "x": _round(b.x), "y": _round(b.y), "r": _round(b.radius)})
         for name, f in self.filled:
             if z is None or f.z0 <= z <= f.z1:
@@ -266,7 +266,7 @@ def _prepare(path: Path, cfg: Config, key: tuple[str, str]) -> Prepared:
         mid = MidSurface.from_skin(skin, nx, nz, tol)
         inside = spars_inside(skin, list(spars), tol)
         found = find_passages(skin, cfg.passages.max_tilt_deg)
-        bores = extend_to_existing_bores(spar_bores(inside, cfg), skin, cfg, found)
+        bores = extend_to_existing_bores(spar_bores(inside, cfg, frozenset(c.body.name for c in model.cables)), skin, cfg, found)
         to_fill = passages_to_fill(skin, cfg, exclude=bores, found=found)
         bores += passage_bores(skin, cfg, exclude=bores, found=found)
         check_fill(skin, to_fill, tol)
@@ -489,7 +489,7 @@ def _plan_bores(prep: Prepared) -> list[dict]:
         lo, hi = bore_extent(b, zmin, zmax)
         lo, hi = max(lo, zmin), min(hi, zmax)  # débouchant : l'outil dépasse la pièce
         out.append({
-            "nom": b.name, "type": "longeron" if b.cut_hole else "passage relié", "x": _round(b.x),
+            "nom": b.name, "type": "gaine" if b.cable else "longeron" if b.cut_hole else "passage relié", "x": _round(b.x),
             "r": _round(b.radius), "gaine": _round(b.radius + b.sleeve), "z0": _round(lo), "z1": _round(hi),
         })
     for name, f in prep.filled:

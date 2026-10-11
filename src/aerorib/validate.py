@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -21,6 +22,16 @@ MAX_FAILED_LAYERS = 20
 NARROW_AREA_FACTOR = 0.5
 # en dessous, le coût de démarrage des processus (spawn sous macOS/Windows) dépasse le gain
 PARALLEL_MIN_LAYERS = 200
+# Réglage de test/ajustement : AERORIB_PARALLEL_MIN_LAYERS remplace le seuil ci-dessus. Lu à chaque
+# appel (donc hérité par les processus lancés en « spawn »).
+PARALLEL_ENV = "AERORIB_PARALLEL_MIN_LAYERS"
+
+
+def parallel_min_layers() -> int:
+    try:
+        return int(os.environ[PARALLEL_ENV])
+    except (KeyError, ValueError):
+        return PARALLEL_MIN_LAYERS
 
 
 @dataclass(frozen=True)
@@ -161,12 +172,13 @@ def _check_layer(args) -> list[Issue]:
 
 
 def _run_checks(jobs: list) -> list[list[Issue]]:
-    if len(jobs) >= PARALLEL_MIN_LAYERS:
+    if len(jobs) >= parallel_min_layers():
         try:
             with ProcessPoolExecutor() as pool:
                 return list(pool.map(_check_layer, jobs, chunksize=16))
-        except (BrokenProcessPool, OSError):
-            pass  # processus indisponibles ou morts : repli en série, même résultat
+        except (BrokenProcessPool, OSError, AssertionError):
+            # processus indisponibles ou morts, ou parent démon (AssertionError) : repli en série, même résultat
+            pass
     return [_check_layer(job) for job in jobs]
 
 

@@ -271,7 +271,8 @@ class JobManager:
             job.queue = ctx.Queue()
             job.process = ctx.Process(
                 target=_run_job, args=(str(step), str(dossier / CONFIG_NAME), str(dossier), job.queue),
-                name=f"aerorib-generation-{essai}", daemon=True)
+                name=f"aerorib-generation-{essai}",
+                daemon=False)  # non démon : la validation ouvre un pool ; shutdown()/cancel() le terminent explicitement
             job.process.start()
             job.pompe = threading.Thread(target=self._pomper, args=(job,), name="aerorib-pompe", daemon=True)
             self._jobs[job.id] = job

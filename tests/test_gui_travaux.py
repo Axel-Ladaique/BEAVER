@@ -147,6 +147,15 @@ def test_generation_complete(genere):
     assert c.get("/api/projets/aile1", headers=H).json()["nb_essais"] == 2
 
 
+def test_generation_avec_pool_de_validation(client, monkeypatch):
+    """Seuil abaissé à 1 couche : la validation ouvre un pool depuis le fils de génération."""
+    monkeypatch.setenv("AERORIB_PARALLEL_MIN_LAYERS", "1")
+    r = client.post("/api/projets/aile1/generations", headers=H)
+    assert r.status_code == 202, r.text
+    d = _attendre_fin(client, r.json()["id"])
+    assert d["statut"] in ("ok", "non imprimable"), d
+
+
 def test_flux_progression_puis_final(genere):
     flux = [e for e in genere["flux"] if isinstance(e, dict)]
     types = [e["type"] for e in flux]

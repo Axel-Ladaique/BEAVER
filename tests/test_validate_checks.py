@@ -1,3 +1,5 @@
+import multiprocessing
+
 import pytest
 from shapely.geometry import Point, Polygon, box
 
@@ -115,3 +117,30 @@ def test_material_width_tapered_trailing_edge_ok():
 def test_material_width_reports_each_polygon_once():
     # deux îlots déjà distincts : c'est l'affaire du contrôle de connexité, pas de celui-ci
     assert check_material_width(Layer(1.0, (box(0, 0, 1, 1), box(5, 0, 6, 1))), line_width=0.45) == []
+
+
+def _worker_daemon(q):
+    import os
+
+    from aerorib.validate import PARALLEL_ENV, _check_layer, _run_checks
+
+    os.environ[PARALLEL_ENV] = "1"
+    jobs = [(float(i), (BASE,), None, 0.4, 0.4, 2.0, 0.1) for i in range(4)]
+    try:
+        q.put(("ok", _run_checks(jobs) == [_check_layer(j) for j in jobs]))
+    except BaseException as e:  # noqa: BLE001
+        q.put(("exc", repr(e)))
+
+
+def test_run_checks_repli_serie_dans_processus_demon():
+    ctx = multiprocessing.get_context("spawn")
+    q = ctx.Queue()
+    p = ctx.Process(target=_worker_daemon, args=(q,), daemon=True)
+    p.start()
+    try:
+        assert q.get(timeout=60) == ("ok", True)
+    finally:
+        p.join(10)
+        if p.is_alive():
+            p.kill()
+            p.join()

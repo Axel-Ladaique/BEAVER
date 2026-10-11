@@ -103,3 +103,72 @@ def test_fusion_fixture_roles_and_spar():
     assert spar.spar.diameter == pytest.approx(14.0)
     assert spar.spar.axis_dir == pytest.approx((1, 0, 0), abs=1e-9)
     assert spar.spar.length == pytest.approx(210.0)
+
+
+# --- rôle servo et gaines (servo, tâche 1) ----------------------------------
+
+
+def cable_solid():
+    return Cylinder(5.75, 190).moved(Location((40, 5, 95)))
+
+
+def test_servo_leaf_beats_parent_skin():
+    m = classify(
+        [nb("Aile_4412", "WING_1"), nb("Aile_4412", "SERVO_1"), nb("Aile_4412", "SBAR_1", solid=spar_solid())],
+        load_config(),
+    )
+    assert roles(m) == {"Aile_4412/WING_1": "skin", "Aile_4412/SERVO_1": "servo", "Aile_4412/SBAR_1": "spar"}
+    assert [cb.body.name for cb in m.of("servo")] == ["SERVO_1"]
+    assert "SERVO" in m.of("servo")[0].matched_by
+
+
+def test_parent_explicit_role_does_not_override_leaf_prefix():
+    cfg = load_config(overrides={"roles": {"Aile_4412": "skin"}})
+    m = classify([nb("Aile_4412", "WING_1"), nb("Aile_4412", "SERVO_1")], cfg)
+    assert roles(m)["Aile_4412/SERVO_1"] == "servo"
+
+
+def test_leaf_explicit_role_still_wins():
+    cfg = load_config(overrides={"roles": {"SERVO_1": "ignore"}})
+    m = classify([nb("SKIN"), nb("SERVO_1")], cfg)
+    assert roles(m)["SERVO_1"] == "ignore"
+
+
+def test_servo_prefix_configurable():
+    cfg = load_config(overrides={"naming": {"servo": ["BAIE"]}})
+    m = classify([nb("SKIN"), nb("baie_aileron")], cfg)
+    assert roles(m)["baie_aileron"] == "servo"
+
+
+def test_cable_marker_marks_spar():
+    m = classify(
+        [nb("SKIN"), nb("A", "SBAR_CABLES_SERVO", solid=cable_solid()), nb("A", "SBAR_2", solid=spar_solid())],
+        load_config(),
+    )
+    spars = {cb.body.name: cb.spar for cb in m.of("spar")}
+    assert spars["SBAR_CABLES_SERVO"].cable is True
+    assert spars["SBAR_2"].cable is False
+    assert [cb.body.name for cb in m.cables] == ["SBAR_CABLES_SERVO"]
+    assert m.of("spar")[0].is_cable and not m.of("spar")[1].is_cable
+
+
+def test_cable_marker_case_insensitive_and_own_name_only():
+    m = classify(
+        [nb("SKIN"), nb("SPAR_fil_cable", solid=cable_solid()), nb("CABLES", "SPAR_main", solid=spar_solid())],
+        load_config(),
+    )
+    spars = {cb.body.name: cb.spar.cable for cb in m.of("spar")}
+    assert spars == {"SPAR_fil_cable": True, "SPAR_main": False}
+
+
+def test_cable_markers_configurable():
+    cfg = load_config(overrides={"naming": {"cable_markers": ["FIL"]}})
+    m = classify([nb("SKIN"), nb("SPAR_FIL", solid=cable_solid()), nb("SPAR_CABLE", solid=spar_solid())], cfg)
+    spars = {cb.body.name: cb.spar.cable for cb in m.of("spar")}
+    assert spars == {"SPAR_FIL": True, "SPAR_CABLE": False}
+
+
+def test_cable_marker_ignored_on_non_spar():
+    m = classify([nb("SKIN"), nb("SERVO_CABLE")], load_config())
+    assert roles(m)["SERVO_CABLE"] == "servo"
+    assert m.cables == []

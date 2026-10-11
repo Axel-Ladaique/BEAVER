@@ -51,3 +51,20 @@ def test_inspect_missing_file(tmp_path: Path):
     r = runner.invoke(app, ["inspect", str(tmp_path / "nope.step")])
     assert r.exit_code == 1
     assert "erreur : fichier introuvable" in r.output
+
+
+def test_inspect_shows_servo_and_gaine(tmp_path: Path):
+    f = step_with(
+        tmp_path,
+        NamedBody(("SKIN_wing",), Box(150, 20, 200)),
+        NamedBody(("SERVO_1",), Box(32, 20, 46.5).moved(Location((40, 0, 60)))),
+        NamedBody(("SBAR_CABLES",), Cylinder(5.75, 190).moved(Location((10, 0, 95)))),
+        NamedBody(("SPAR_main",), Cylinder(7, 200).moved(Location((-30, 0, 100)))),
+    )
+    r = runner.invoke(app, ["inspect", str(f)])
+    assert r.exit_code == 0, r.output
+    assert "servo   AERORIB/SERVO_1" in r.output
+    assert "boîte 32.0 × 20.0 × 46.5 mm" in r.output
+    assert "gaine   AERORIB/SBAR_CABLES" in r.output
+    assert "marqueur de gaine 'CABLE'" in r.output
+    assert "spar    AERORIB/SPAR_main" in r.output

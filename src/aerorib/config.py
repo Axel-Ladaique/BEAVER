@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from aerorib.material_profiles import ProfileError, load_profile, profile_names
 
-Role = Literal["skin", "spar", "split", "norib", "cut", "ignore"]
+Role = Literal["skin", "spar", "servo", "split", "norib", "cut", "ignore"]
 
 
 SLIT_MARGIN = 1.1  # une fente doit dépasser de 10 % le seuil de fermeture du slicer
@@ -46,8 +46,11 @@ class Naming(_Strict):
     split: list[str] = ["SPLIT"]
     norib: list[str] = ["NORIB"]
     cut: list[str] = ["CUT"]
+    servo: list[str] = ["SERVO"]  # baie de servo (boîte = espace utile + jeu)
+    # un longeron dont le nom propre contient l'un de ces marqueurs est une gaine de câble
+    cable_markers: list[str] = ["CABLE"]
 
-    @field_validator("skin", "spar", "split", "norib", "cut")
+    @field_validator("skin", "spar", "split", "norib", "cut", "servo", "cable_markers")
     @classmethod
     def _no_blank_prefix(cls, v: list[str]) -> list[str]:
         if any(not p.strip() for p in v):

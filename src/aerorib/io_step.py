@@ -58,8 +58,89 @@ class NamedBody:
         return "/".join(self.path) if self.path else "<sans nom>"
 
 
-def _brep_names(path: Path) -> list[tuple[str, int]]:
-    """Noms des entités MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS et nombre de faces de leur coque."""
+# type d'entité de surface STEP → nom du GeomAbs_SurfaceType lu par OCC
+_STEP_SURFACES = {
+    "PLANE": "Plane",
+    "CYLINDRICAL_SURFACE": "Cylinder",
+    "CONICAL_SURFACE": "Cone",
+    "SPHERICAL_SURFACE": "Sphere",
+    "TOROIDAL_SURFACE": "Torus",
+    "DEGENERATE_TOROIDAL_SURFACE": "Torus",
+    "B_SPLINE_SURFACE": "BSplineSurface",
+    "B_SPLINE_SURFACE_WITH_KNOTS": "BSplineSurface",
+    "BEZIER_SURFACE": "BSplineSurface",
+    "RATIONAL_B_SPLINE_SURFACE": "BSplineSurface",
+    "SURFACE_OF_REVOLUTION": "SurfaceOfRevolution",
+    "SURFACE_OF_LINEAR_EXTRUSION": "SurfaceOfExtrusion",
+    "OFFSET_SURFACE": "OffsetSurface",
+}
+_COMPLEX = re.compile(r"#(\d+)\s*=\s*\((.*?)\)\s*;", re.S)
+_KEYWORD = re.compile(r"([A-Z_][A-Z0-9_]*)\s*\(")
+_LENGTH_UNIT = re.compile(r"#\d+\s*=\s*\(([^;]*?\bLENGTH_UNIT\s*\([^;]*?)\)\s*;", re.S)
+_SI_PREFIX = {"$": 1000.0, ".KILO.": 1e6, ".DECI.": 100.0, ".CENTI.": 10.0, ".MILLI.": 1.0, ".MICRO.": 1e-3}
+_CONVERTED = {"INCH": 25.4, "FOOT": 304.8, "MILLIMETRE": 1.0, "MILLIMETER": 1.0, "METRE": 1000.0}
+RADIUS_DECIMALS = 2  # rayons de cylindre arrondis à 0,01 mm dans la signature
+
+
+@dataclass(frozen=True)
+class Signature:
+    """Empreinte géométrique d'un solide : types de surfaces (triés) et rayons des cylindres (mm)."""
+
+    types: tuple[str, ...]
+    radii: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class _BrepEntry:
+    name: str
+    n_faces: int
+    signature: Signature | None = None
+
+
+def solid_signature(solid: Solid) -> Signature:
+    """Signature des faces OCC d'un solide (types GeomAbs, rayons de cylindre)."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+
+    types, radii = [], []
+    for face in solid.faces():
+        surf = BRepAdaptor_Surface(face.wrapped)
+        kind = GeomAbs_SurfaceType(surf.GetType()).name.removeprefix("GeomAbs_")
+        if kind == "BezierSurface":
+            kind = "BSplineSurface"
+        types.append(kind)
+        if kind == "Cylinder":
+            radii.append(round(surf.Cylinder().Radius(), RADIUS_DECIMALS))
+    return Signature(tuple(sorted(types)), tuple(sorted(radii)))
+
+
+def _length_factor(data: str) -> float:
+    """Facteur fichier → mm de l'unité de longueur déclarée (OCC convertit en mm à la lecture)."""
+    m = _LENGTH_UNIT.search(data)
+    if not m:
+        return 1.0
+    body = m.group(1)
+    conv = re.search(r"CONVERSION_BASED_UNIT\s*\(\s*'([^']*)'", body)
+    if conv:
+        return _CONVERTED.get(conv.group(1).strip().upper(), 1.0)
+    si = re.search(r"SI_UNIT\s*\(\s*([^,\s]+)\s*,\s*\.METRE\.", body)
+    if si:
+        return _SI_PREFIX.get(si.group(1).upper(), 1.0)
+    return 1.0
+
+
+def _surface_kind(kind: str, args: str) -> str:
+    if kind:
+        return _STEP_SURFACES.get(kind, kind)
+    # entité complexe (« #n=(BOUNDED_SURFACE() B_SPLINE_SURFACE(…) …); »)
+    for keyword in _KEYWORD.findall(args):
+        if keyword in _STEP_SURFACES:
+            return _STEP_SURFACES[keyword]
+    return "Other"
+
+
+def _brep_entries(path: Path) -> list[_BrepEntry]:
+    """Entités MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS : nom, nombre de faces de la coque, signature."""
     raw = path.read_bytes()
     try:
         text = raw.decode("utf-8")
@@ -67,7 +148,32 @@ def _brep_names(path: Path) -> list[tuple[str, int]]:
         text = raw.decode("latin-1")
     if "DATA;" not in text:
         return []
-    entities = {int(m.group(1)): (m.group(2), m.group(3)) for m in _ENTITY.finditer(text.split("DATA;", 1)[1])}
+    data = text.split("DATA;", 1)[1]
+    entities = {int(m.group(1)): (m.group(2), m.group(3)) for m in _ENTITY.finditer(data)}
+    for m in _COMPLEX.finditer(data):
+        entities.setdefault(int(m.group(1)), ("", m.group(2)))
+    factor = _length_factor(data)
+
+    def signature(face_refs: list[int]) -> Signature | None:
+        types, radii = [], []
+        for ref in face_refs:
+            face = entities.get(ref)
+            if face is None or face[0] not in ("ADVANCED_FACE", "FACE_SURFACE"):
+                return None
+            surf_refs = _REF.findall(face[1])
+            surf = entities.get(int(surf_refs[-1])) if surf_refs else None
+            if surf is None:
+                return None
+            kind = _surface_kind(*surf)
+            types.append(kind)
+            if kind == "Cylinder":
+                try:
+                    radius = float(surf[1].rsplit(",", 1)[1]) * factor
+                except (IndexError, ValueError):
+                    return None
+                radii.append(round(radius, RADIUS_DECIMALS))
+        return Signature(tuple(sorted(types)), tuple(sorted(radii)))
+
     found = []
     for kind, args in entities.values():
         if kind not in ("MANIFOLD_SOLID_BREP", "BREP_WITH_VOIDS"):
@@ -78,8 +184,14 @@ def _brep_names(path: Path) -> list[tuple[str, int]]:
             continue
         name = _decode_step_string(name_match.group(1)).strip()
         if name:
-            found.append((name, len(_REF.findall(entities[refs[0]][1]))))
+            face_refs = [int(r) for r in _REF.findall(entities[refs[0]][1])]
+            found.append(_BrepEntry(name, len(face_refs), signature(face_refs)))
     return found
+
+
+def _brep_names(path: Path) -> list[tuple[str, int]]:
+    """Noms des entités MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS et nombre de faces de leur coque."""
+    return [(e.name, e.n_faces) for e in _brep_entries(path)]
 
 
 def read_step(path: str | Path) -> list[NamedBody]:
@@ -117,33 +229,79 @@ def read_step(path: str | Path) -> list[NamedBody]:
         raise StepReadError(f"{path} : aucun solide trouvé")
 
     named = {p[-1] for p, _, anon in found if p and not anon}
-    pool = [(n, f) for n, f in _brep_names(path) if n not in named]
+    pool = [e for e in _brep_entries(path) if e.name not in named]
     return _assign_brep_names(found, pool)
 
 
-def _assign_brep_names(
-    found: list[tuple[tuple[str, ...], Solid, bool]], pool: list[tuple[str, int]]
-) -> list[NamedBody]:
-    """Attribue aux solides anonymes les noms du texte STEP, par nombre de faces.
+def _radii_close(a: tuple[float, ...], b: tuple[float, ...]) -> bool:
+    tol = 10 ** -RADIUS_DECIMALS + 1e-9  # deux arrondis à 0,01 de part et d'autre d'une demi-unité
+    return len(a) == len(b) and all(abs(x - y) <= tol for x, y in zip(a, b))
 
-    Si plusieurs noms libres avaient le même nombre de faces, l'appariement est une
-    devinette : elle est signalée dans `NamedBody.note`.
+
+def _signature_filter(sig: Signature, cands: list[int], pool: list[_BrepEntry]) -> list[int]:
+    """Candidats compatibles avec la signature : complète d'abord, rayons seuls ensuite."""
+    known = [j for j in cands if pool[j].signature is not None]
+    full = [
+        j
+        for j in known
+        if pool[j].signature.types == sig.types and _radii_close(pool[j].signature.radii, sig.radii)
+    ]
+    if full:
+        return full
+    return [j for j in known if _radii_close(pool[j].signature.radii, sig.radii)]
+
+
+def _assign_brep_names(
+    found: list[tuple[tuple[str, ...], Solid, bool]],
+    pool: list[_BrepEntry] | list[tuple[str, int]],
+) -> list[NamedBody]:
+    """Attribue aux solides anonymes les noms du texte STEP.
+
+    Critères : nombre de faces, puis signature géométrique (types de surfaces et rayons des
+    cylindres, lus dans le texte STEP et comparés aux faces OCC). Un premier passage attribue
+    les correspondances uniques ; ensuite seulement, s'il reste plusieurs noms libres
+    indiscernables, l'appariement est une devinette signalée dans `NamedBody.note`.
     """
-    used = [False] * len(pool)
+    entries = [p if isinstance(p, _BrepEntry) else _BrepEntry(p[0], p[1]) for p in pool]
+    used = [False] * len(entries)
+    chosen: dict[int, tuple[int, str]] = {}
+    sigs: dict[int, Signature] = {}
+
+    def candidates(i: int, solid: Solid) -> list[int]:
+        n_faces = len(solid.faces())
+        cands = [j for j, e in enumerate(entries) if not used[j] and e.n_faces == n_faces]
+        if len(cands) > 1 and any(entries[j].signature is not None for j in cands):
+            if i not in sigs:
+                sigs[i] = solid_signature(solid)
+            cands = _signature_filter(sigs[i], cands, entries) or cands
+        return cands
+
+    # 1er passage : correspondances uniques (le nombre de faces ou la signature suffit)
+    for i, (_, solid, anonymous) in enumerate(found):
+        if anonymous:
+            cands = candidates(i, solid)
+            if len(cands) == 1:
+                used[cands[0]] = True
+                chosen[i] = (cands[0], "")
+    # 2e passage : le reste, dans l'ordre (devinette signalée)
+    for i, (_, solid, anonymous) in enumerate(found):
+        if anonymous and i not in chosen:
+            cands = candidates(i, solid)
+            if cands:
+                used[cands[0]] = True
+                note = ""
+                if len(cands) > 1:
+                    note = "nom deviné parmi : " + ", ".join(entries[j].name for j in cands)
+                chosen[i] = (cands[0], note)
+
     bodies: list[NamedBody] = []
     counter = 0
-    for here, solid, anonymous in found:
+    for i, (here, solid, anonymous) in enumerate(found):
         if not anonymous:
             bodies.append(NamedBody(here, solid))
-            continue
-        n_faces = len(solid.faces())
-        candidates = [j for j, (_, f) in enumerate(pool) if not used[j] and f == n_faces]
-        if candidates:
-            used[candidates[0]] = True
-            note = ""
-            if len(candidates) > 1:
-                note = "nom deviné parmi : " + ", ".join(pool[j][0] for j in candidates)
-            bodies.append(NamedBody(here + (pool[candidates[0]][0],), solid, note))
+        elif i in chosen:
+            j, note = chosen[i]
+            bodies.append(NamedBody(here + (entries[j].name,), solid, note))
         else:
             counter += 1
             base = here[-1] if here else "corps"

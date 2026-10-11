@@ -131,3 +131,14 @@ def test_gabarit_avec_octet_nul_donne_config_error(tmp_path):
     p.write_text('bambu:\n  template: "a\\0b"\n', encoding="utf-8")
     with pytest.raises(ConfigError, match="gabarit"):
         load_config(p)
+
+
+def test_naming_servo_and_cable_defaults():
+    cfg = load_config()
+    assert cfg.naming.servo == ["SERVO"]
+    assert cfg.naming.cable_markers == ["CABLE"]
+    with pytest.raises(ConfigError):
+        load_config(overrides={"naming": {"servo": [""]}})
+    with pytest.raises(ConfigError):
+        load_config(overrides={"naming": {"cable_markers": [" "]}})
+    assert load_config(overrides={"roles": {"Baie": "servo"}}).roles == {"Baie": "servo"}

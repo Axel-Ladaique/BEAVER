@@ -171,3 +171,68 @@ def test_inspect_shows_ambiguity_note(tmp_path: Path):
     (tmp_path / "amb.step").write_text(text, encoding="utf-8")
     r = CliRunner().invoke(app, ["inspect", str(tmp_path / "amb.step")])
     assert "⚠ nom ambigu, nom deviné parmi : SKIN_A, SKIN_B" in r.output, r.output
+
+
+# --- signature géométrique (servo, tâche 1) ---------------------------------
+
+SERVO_FIXTURE = Path(__file__).parent / "fixtures" / "aile_4412_servo_extrados.step"
+
+
+def test_brep_signatures_from_text():
+    from aerorib.io_step import _brep_entries
+
+    entries = {e.name: e for e in _brep_entries(SERVO_FIXTURE)}
+    assert set(entries) == {"SBAR_14mm_1", "WING_1", "SBAR_2", "SERVO_1", "SBAR_CABLES_SERVO"}
+    cables = entries["SBAR_CABLES_SERVO"]
+    assert cables.n_faces == 3
+    assert cables.signature.radii == (5.75,)
+    assert sorted(cables.signature.types) == ["Cylinder", "Plane", "Plane"]
+    assert entries["SBAR_2"].signature.radii == (6.0,)
+    assert entries["SERVO_1"].signature.types == ("Plane",) * 6
+    assert "BSplineSurface" in entries["WING_1"].signature.types
+
+
+def test_signature_resolves_same_face_count():
+    from aerorib.io_step import _assign_brep_names, _BrepEntry, solid_signature
+
+    small, big = Cylinder(5, 10), Cylinder(6, 10).moved(Location((20, 0, 0)))
+    found = [((), small, True), ((), big, True)]
+    # ordre du texte inverse de celui des solides : le nombre de faces seul se tromperait
+    pool = [
+        _BrepEntry("GROS", 3, solid_signature(big)),
+        _BrepEntry("PETIT", 3, solid_signature(small)),
+    ]
+    bodies = _assign_brep_names(found, pool)
+    assert [(b.name, b.note) for b in bodies] == [("PETIT", ""), ("GROS", "")]
+
+
+def test_signature_unit_scaling_inch(tmp_path: Path):
+    from aerorib.io_step import _brep_entries
+
+    src = SERVO_FIXTURE.read_text(encoding="utf-8")
+    inch = src.replace(
+        "LENGTH_UNIT()\nNAMED_UNIT(*)\nSI_UNIT(.MILLI.,.METRE.)",
+        "CONVERSION_BASED_UNIT('INCH',#9999)\nLENGTH_UNIT()\nNAMED_UNIT(#9998)",
+    )
+    assert inch != src
+    p = tmp_path / "inch.step"
+    p.write_text(inch, encoding="utf-8")
+    entries = {e.name: e for e in _brep_entries(p)}
+    assert entries["SBAR_2"].signature.radii == (round(6.0 * 25.4, 2),)
+
+
+def test_servo_fixture_names_by_signature():
+    from aerorib.classify import classify
+    from aerorib.config import load_config
+
+    bodies = read_step(SERVO_FIXTURE)
+    assert all(b.note == "" for b in bodies), [b.note for b in bodies]
+    model = classify(bodies, load_config())
+    spars = {cb.body.name: cb.spar for cb in model.of("spar")}
+    assert spars["SBAR_CABLES_SERVO"].diameter == pytest.approx(11.5, abs=0.02)
+    assert spars["SBAR_2"].diameter == pytest.approx(12.0, abs=0.02)
+    assert spars["SBAR_14mm_1"].diameter == pytest.approx(14.0, abs=0.02)
+    assert [cb.body.name for cb in model.of("skin")] == ["WING_1"]
+    assert [cb.body.name for cb in model.of("servo")] == ["SERVO_1"]
+    assert [cb.body.name for cb in model.cables] == ["SBAR_CABLES_SERVO"]
+    assert len(spars) == 3  # 2 longerons + 1 gaine (une gaine reste un spar marqué cable)

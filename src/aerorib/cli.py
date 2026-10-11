@@ -9,7 +9,7 @@ from typing import NoReturn, Optional
 import typer
 
 from aerorib import __version__
-from aerorib.classify import ClassifyError, classify
+from aerorib.classify import ClassifyError, cable_marker, classify
 from aerorib.bambu import BambuError, open_in_bambu, read_template
 from aerorib.config import Config, ConfigError, load_config, resolve_template
 from aerorib.material_profiles import ProfileError, copy_profile, find_profiles, load_profile
@@ -68,8 +68,12 @@ def inspect(
     model = _classify(file, cfg)
     typer.echo(f"{file.name} : {len(model.bodies)} corps")
     for cb in model.bodies:
-        role = cb.role or "—"
-        how = f"   ({cb.matched_by})" if cb.matched_by else ""
+        # une gaine de câble est un longeron marqué : affichée « gaine »
+        role = "gaine" if cb.is_cable else (cb.role or "—")
+        how = cb.matched_by
+        if cb.is_cable:
+            how += f", marqueur de gaine '{cable_marker(cb.body, cfg)}'"
+        how = f"   ({how})" if how else ""
         typer.echo(f"  {role:<6}  {cb.body.display}{how}")
         if cb.body.note:
             typer.echo(f"      ⚠ nom ambigu, {cb.body.note}")
@@ -78,6 +82,9 @@ def inspect(
             typer.echo(
                 f"      Ø {s.diameter:.1f} mm · axe {_fmt_vec(s.axis_dir)} · longueur {s.length:.1f} mm"
             )
+        if cb.role == "servo":
+            bb = cb.body.solid.bounding_box()
+            typer.echo(f"      boîte {bb.size.X:.1f} × {bb.size.Y:.1f} × {bb.size.Z:.1f} mm")
 
 
 def _classify(file: Path, cfg: Config):

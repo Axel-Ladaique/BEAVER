@@ -13,6 +13,7 @@ import json
 import threading
 import time
 from collections import OrderedDict
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
@@ -44,11 +45,11 @@ from aerorib.io_step import StepReadError, read_step
 from aerorib.midsurface import MidSurface
 from aerorib.orient import Orientation, orient
 from aerorib.pipeline import (
-    _GEOMETRY_ERRORS,
+    GEOMETRY_ERRORS,
     PipelineError,
-    _spars_inside,
     check_fill,
     deeper_lines,
+    spars_inside,
     usable_height,
 )
 from aerorib.segment import SegmentError, plan_cuts
@@ -91,21 +92,27 @@ def _parts(geom) -> list[Polygon]:
 
 @dataclass(frozen=True, eq=False)
 class Prepared:
-    """Pièce orientée et tout ce qui ne dépend pas des nervures (même calcul que `generate_skin`)."""
+    """Pièce orientée et tout ce qui ne dépend pas des nervures (même calcul que `generate_skin`).
+
+    Partagée par le cache entre appels (et threads) : **lecture seule**. Ses champs sont immuables, sauf le
+    maillage, dont trimesh remplit un cache interne paresseux : tout accès passe par `mesh_lock`.
+    """
 
     name: str
     skin: Solid  # peau orientée, avant rebouchage
     spars: tuple[tuple[str, Solid], ...]  # longerons orientés (tous)
     orientation: Orientation
     bb: object  # BoundBox de la peau (non optimale, comme generate_skin)
-    zrange: tuple[float, float]  # étendue Z exacte (boîte optimale, comme la découpe en tronçons)
+    # étendue Z exacte (boîte optimale) : `_segment` mesure le résultat, mais la découpe ne change pas l'étendue en Z
+    zrange: tuple[float, float]
     mid: MidSurface
     bores: tuple[Bore, ...]
     filled: tuple[tuple[str, Passage], ...]  # passages rebouchés
-    anchors: dict[int, list[Polygon]]  # indice du trou → profils (z, y) de son attache
+    anchors: tuple[tuple[Polygon, ...], ...]  # par trou (même indice que `bores`) : profils (z, y) de son attache
     mesh: trimesh.Trimesh  # maillage de la peau orientée
     prepare_s: float  # durée de la préparation (s)
     key: tuple[str, str] = ("", "")
+    mesh_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @property
     def bounds(self) -> tuple[float, float, float, float, float, float]:
@@ -148,7 +155,8 @@ def prepare_key(cfg: Config) -> str:
 
 
 _cache: OrderedDict[tuple[str, str], Prepared] = OrderedDict()
-_hashes: dict[tuple[str, int, int], str] = {}
+_pending: dict[tuple[str, str], Future] = {}  # préparations en cours : les appelants suivants les attendent
+_hashes: OrderedDict[tuple[str, int, int], str] = OrderedDict()
 _lock = threading.Lock()
 
 
@@ -159,36 +167,65 @@ def clear_cache() -> None:
 
 
 def _file_sha1(path: Path) -> str:
-    st = path.stat()
+    try:
+        st = path.stat()
+    except OSError as exc:
+        raise PreviewError(f"fichier introuvable ou illisible : {path}") from exc
     stamp = (str(path.resolve()), st.st_mtime_ns, st.st_size)
     with _lock:
         if stamp in _hashes:
+            _hashes.move_to_end(stamp)
             return _hashes[stamp]
     h = hashlib.sha1()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
+    try:
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError as exc:
+        raise PreviewError(f"fichier illisible : {path} ({exc.strerror or exc})") from exc
     digest = h.hexdigest()
     with _lock:
         _hashes[stamp] = digest
+        while len(_hashes) > CACHE_SIZE:
+            _hashes.popitem(last=False)
     return digest
 
 
-def prepare(step_path: str | Path, cfg: Config) -> Prepared:
-    """Orientation, peau orientée, surface médiane, trous, maillage ; en cache LRU (fichier, réglages)."""
+def prepare_status(step_path: str | Path, cfg: Config) -> tuple[Prepared, bool]:
+    """(préparation, servie_par_le_cache). Servie par le cache aussi quand l'appel a attendu une préparation
+    identique déjà en cours (un seul calcul par clé) ; un échec n'est pas mis en cache (l'appel suivant réessaie)."""
     path = Path(step_path)
     key = (_file_sha1(path), prepare_key(cfg))
     with _lock:
         if key in _cache:
             _cache.move_to_end(key)
-            return _cache[key]
-    prep = _prepare(path, cfg, key)
+            return _cache[key], True
+        fut = _pending.get(key)
+        owner = fut is None
+        if owner:
+            fut = _pending[key] = Future()
+    if not owner:
+        return fut.result(), True
+    try:
+        prep = _prepare(path, cfg, key)
+    except BaseException as exc:
+        with _lock:
+            _pending.pop(key, None)
+        fut.set_exception(exc)
+        raise
     with _lock:
         _cache[key] = prep
         _cache.move_to_end(key)
         while len(_cache) > CACHE_SIZE:
             _cache.popitem(last=False)
-    return prep
+        _pending.pop(key, None)
+    fut.set_result(prep)
+    return prep, False
+
+
+def prepare(step_path: str | Path, cfg: Config) -> Prepared:
+    """Orientation, peau orientée, surface médiane, trous, maillage ; en cache LRU (fichier, réglages)."""
+    return prepare_status(step_path, cfg)[0]
 
 
 def _prepare(path: Path, cfg: Config, key: tuple[str, str]) -> Prepared:
@@ -205,7 +242,7 @@ def _prepare(path: Path, cfg: Config, key: tuple[str, str]) -> Prepared:
         )
     try:
         o = orient(model, cfg)
-    except _GEOMETRY_ERRORS as exc:
+    except GEOMETRY_ERRORS as exc:
         raise PreviewError(f"orientation impossible : {exc}") from exc
     s = skins[0]
     skin = s.body.solid.moved(o.location)
@@ -216,18 +253,18 @@ def _prepare(path: Path, cfg: Config, key: tuple[str, str]) -> Prepared:
         bb = skin.bounding_box()
         nx, nz = cfg.split.grid
         mid = MidSurface.from_skin(skin, nx, nz, tol)
-        inside = _spars_inside(skin, list(spars), tol)
+        inside = spars_inside(skin, list(spars), tol)
         found = find_passages(skin, cfg.passages.max_tilt_deg)
         bores = extend_to_existing_bores(spar_bores(inside, cfg), skin, cfg, found)
         to_fill = passages_to_fill(skin, cfg, exclude=bores, found=found)
         bores += passage_bores(skin, cfg, exclude=bores, found=found)
         check_fill(skin, to_fill, tol)
-        anchors = {i: anchor_profiles_2d(b, mid, bb) for i, b in enumerate(bores) if b.anchor_gap > 0}
+        anchors = tuple(tuple(anchor_profiles_2d(b, mid, bb)) if b.anchor_gap > 0 else () for b in bores)
         mesh = to_mesh(skin, tol)
         obb = skin.bounding_box(optimal=True)
     except (PipelineError, BoreError) as exc:
         raise PreviewError(f"{s.body.name} : {exc}") from exc
-    except _GEOMETRY_ERRORS as exc:
+    except GEOMETRY_ERRORS as exc:
         raise PreviewError(f"{s.body.name} : préparation impossible ({type(exc).__name__} : {exc})") from exc
     return Prepared(
         s.body.name, skin, spars, o, bb, (obb.min.Z, obb.max.Z), mid, tuple(bores), tuple(to_fill), anchors, mesh,
@@ -351,7 +388,8 @@ class SectionView:
 
 
 def _skin_slices(prep: Prepared, zs: list[float]) -> list[list[Polygon]]:
-    sections = prep.mesh.section_multiplane(plane_origin=[0, 0, 0], plane_normal=[0, 0, 1], heights=zs)
+    with prep.mesh_lock:
+        sections = prep.mesh.section_multiplane(plane_origin=[0, 0, 0], plane_normal=[0, 0, 1], heights=zs)
     return [list(s.polygons_full) if s is not None else [] for s in sections]
 
 
@@ -368,7 +406,7 @@ def _bore_tools(prep: Prepared, z: float) -> list[Polygon]:
             tools.append(Point(b.x, b.y).buffer(b.radius, quad_segs=32))
         y0, y1 = (b.y, b.y + reach) if b.side > 0 else (b.y - reach, b.y)
         tools.append(box(b.x - b.slit / 2, y0, b.x + b.slit / 2, y1))
-        for prof in prep.anchors.get(i, []):
+        for prof in prep.anchors[i]:
             cut = prof.intersection(LineString([(z, -_FAR), (z, _FAR)]))
             if not cut.is_empty:
                 tools.append(box(b.x - b.slit / 2, cut.bounds[1], b.x + b.slit / 2, cut.bounds[3]))
@@ -462,12 +500,18 @@ def planform(prep: Prepared, plates: list[Plate2D], cfg: Config | None = None) -
 # --- chiffres estimés ---------------------------------------------------------------------------------------
 
 
-def estimates(prep: Prepared, plates: list[Plate2D], cfg: Config) -> dict:
-    """Plaques par couche, tronçons, trajet et masse (couches échantillonnées), durée estimée de génération."""
+def estimates(prep: Prepared, plates: list[Plate2D], cfg: Config, *, cached: bool = False) -> dict:
+    """Plaques (total et par couche, dans l'ordre de `rib_layers`), tronçons, trajet et masse (couches
+    échantillonnées), durée estimée.
+
+    `duree_s` = plaques × SECONDS_PER_PLATE + durée de préparation mesurée, sauf si `cached` (préparation
+    servie par le cache, voir `prepare_status`) : elle n'est alors pas recomptée. `preparation_s` donne
+    toujours la durée mesurée lors du calcul initial.
+    """
     preset = cfg.preset
-    counts = {layer.name: 0 for layer in cfg.rib_layers}
+    per_layer = [0] * len(cfg.rib_layers)
     for p in plates:
-        counts[p.layer_name] += 1
+        per_layer[p.layer] += 1
     zlo, zhi = prep.zrange
     cuts, warns = _cuts(prep, cfg)
     bounds = [0.0, *cuts, zhi - zlo]
@@ -484,13 +528,16 @@ def estimates(prep: Prepared, plates: list[Plate2D], cfg: Config) -> dict:
     path_mm = float(np.mean(lengths)) * n if lengths else 0.0
     mass_g = path_mm * preset.line_width * preset.layer_height * preset.density / 1000.0
     return {
-        "plaques": counts,
-        "plaques_total": len(plates),
+        "plaques": len(plates),
+        "plaques_par_couche": [
+            {"indice": i, "nom": layer.name, "plaques": n} for i, (layer, n) in enumerate(zip(cfg.rib_layers, per_layer))
+        ],
         "troncons": troncons,
         "couches": n,
         "trajet_m": path_mm / 1000.0,
         "masse_g": mass_g,
-        "duree_s": len(plates) * SECONDS_PER_PLATE + prep.prepare_s,
+        "duree_s": len(plates) * SECONDS_PER_PLATE + (0.0 if cached else prep.prepare_s),
+        "preparation_s": prep.prepare_s,
         "avertissements": warns,
     }
 
@@ -516,4 +563,5 @@ def plates_mesh(prep: Prepared, plates: list[Plate2D]) -> bytes:
 
 def skin_mesh(prep: Prepared) -> bytes:
     """STL binaire de la peau orientée (avant découpe)."""
-    return _stl(prep.mesh)
+    with prep.mesh_lock:
+        return _stl(prep.mesh)

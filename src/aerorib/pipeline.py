@@ -61,7 +61,7 @@ class RunResult:
         return all(b.report.ok for b in self.bodies)
 
 
-def _spars_inside(skin: Solid, spars: list[tuple[str, Solid]], tol: float) -> list[tuple[str, Solid]]:
+def spars_inside(skin: Solid, spars: list[tuple[str, Solid]], tol: float) -> list[tuple[str, Solid]]:
     bb = skin.bounding_box()
     (mid,) = slice_layers(skin, [(bb.min.Z + bb.max.Z) / 2], tol)
     envelope = [Polygon(p.exterior) for p in mid.polygons]
@@ -158,7 +158,7 @@ def generate_skin(skin: Solid, spars: list[tuple[str, Solid]], cfg: Config) -> G
     bb = skin.bounding_box()
     nx, nz = cfg.split.grid
     mid = MidSurface.from_skin(skin, nx, nz, tol)
-    inside = _spars_inside(skin, spars, tol)
+    inside = spars_inside(skin, spars, tol)
     try:
         found = find_passages(skin, cfg.passages.max_tilt_deg)  # une seule recherche des alésages
         bores = extend_to_existing_bores(spar_bores(inside, cfg), skin, cfg, found)
@@ -184,8 +184,10 @@ def generate_skin(skin: Solid, spars: list[tuple[str, Solid]], cfg: Config) -> G
     return Generated(solids[0], tuple(bores), len(plates), tuple(f for _, f in to_fill))
 
 
+
+
 # erreurs de géométrie possibles (build123d / OpenCascade) : traduites en PipelineError
-_GEOMETRY_ERRORS = (ValueError, RuntimeError, Standard_Failure)
+GEOMETRY_ERRORS = (ValueError, RuntimeError, Standard_Failure)
 
 
 def _print_volume(cfg: Config) -> tuple[tuple[float, float, float], str | None]:
@@ -266,7 +268,7 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
     progress("orientation…")
     try:
         o = orient(model, cfg)
-    except _GEOMETRY_ERRORS as exc:
+    except GEOMETRY_ERRORS as exc:
         raise PipelineError(f"orientation impossible : {exc}") from exc
     progress(f"orientation : {o.source}")
     spars = [(s.body.name, s.body.solid.moved(o.location)) for s in model.of("spar")]
@@ -278,7 +280,7 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
             result, bores, n, filled = generate_skin(skin, spars, cfg)
         except PipelineError:
             raise
-        except _GEOMETRY_ERRORS as exc:
+        except GEOMETRY_ERRORS as exc:
             raise PipelineError(f"{s.body.name} : génération impossible ({type(exc).__name__} : {exc})") from exc
         spars_n = sum(b.cut_hole for b in bores)
         progress(

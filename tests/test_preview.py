@@ -4,14 +4,16 @@ import io
 import json
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 import trimesh
 from shapely.ops import unary_union
 
-from aerorib import preview
+from aerorib import pipeline, preview
 from aerorib.config import load_config
+from aerorib.features import ribs
 from aerorib.io_step import write_step
 from aerorib.pipeline import generate_skin
 from aerorib.slicing import slice_layers
@@ -173,11 +175,77 @@ def test_estimates(prep, plates, real):
     gen, report = real
     est = preview.estimates(prep, plates, cfg)
     json.dumps(est)
-    assert est["plaques"] == {"principal": gen.plates}
+    assert est["plaques"] == gen.plates
+    assert est["plaques_par_couche"] == [{"indice": 0, "nom": "principal", "plaques": gen.plates}]
     assert est["troncons"] == pytest.approx([80 / 3] * 3, abs=1e-3)
     assert est["trajet_m"] == pytest.approx(report.stats["path_length_m"], rel=0.10)
     assert est["masse_g"] == pytest.approx(report.stats["mass_g"], rel=0.10)
-    assert est["duree_s"] >= gen.plates * preview.SECONDS_PER_PLATE
+    assert est["duree_s"] == pytest.approx(gen.plates * preview.SECONDS_PER_PLATE + prep.prepare_s)
+    # préparation servie par le cache : sa durée n'est pas recomptée
+    cached = preview.estimates(prep, plates, cfg, cached=True)
+    assert cached["duree_s"] == pytest.approx(gen.plates * preview.SECONDS_PER_PLATE)
+    assert cached["preparation_s"] == prep.prepare_s
+
+
+def test_estimates_per_layer_with_same_names(step, monkeypatch):
+    # deux couches sans nom (toutes deux « principal ») : une pleine, une peu profonde sur une partie des mêmes plans
+    cfg = _cfg(rib_layers=[{"spacing": 20}, {"spacing": 10, "depth": 2}])
+    prep = preview.prepare(step, cfg)
+    est = preview.estimates(prep, preview.plates_2d(prep, cfg), cfg)
+    real_counts = []
+
+    def spy(*a, **k):
+        out = ribs.diamond_plates(*a, **k)
+        real_counts.append(len(out))  # un appel par couche, dans l'ordre de rib_layers
+        return out
+
+    monkeypatch.setattr(pipeline, "diamond_plates", spy)
+    gen = generate_skin(prep.skin, list(prep.spars), cfg)
+    assert [c["nom"] for c in est["plaques_par_couche"]] == ["principal", "principal"]
+    assert [c["indice"] for c in est["plaques_par_couche"]] == [0, 1]
+    assert [c["plaques"] for c in est["plaques_par_couche"]] == real_counts
+    assert all(n > 0 for n in real_counts)
+    assert est["plaques"] == gen.plates == sum(real_counts)
+
+
+def test_prepare_shares_inflight_work(step, monkeypatch):
+    preview.clear_cache()
+    calls = []
+    real_prepare = preview._prepare
+
+    def counting(*a, **k):
+        calls.append(1)
+        time.sleep(0.3)  # laisse les autres threads arriver pendant le calcul
+        return real_prepare(*a, **k)
+
+    monkeypatch.setattr(preview, "_prepare", counting)
+    cfg = _cfg(split={"grid": [41, 9]})
+    with ThreadPoolExecutor(6) as pool:
+        results = list(pool.map(lambda _: preview.prepare_status(step, cfg), range(6)))
+    assert len(calls) == 1
+    assert len({id(p) for p, _ in results}) == 1
+    assert sorted(hit for _, hit in results) == [False] + [True] * 5
+
+
+def test_prepare_failure_is_not_cached(step, monkeypatch):
+    preview.clear_cache()
+    calls = []
+
+    def failing(*a, **k):
+        calls.append(1)
+        raise preview.PreviewError("échec simulé")
+
+    monkeypatch.setattr(preview, "_prepare", failing)
+    cfg = _cfg(split={"grid": [41, 9]})
+    for _ in range(2):
+        with pytest.raises(preview.PreviewError, match="échec simulé"):
+            preview.prepare(step, cfg)
+    assert len(calls) == 2  # pas d'échec mémorisé : chaque appel réessaie
+
+
+def test_prepare_missing_file(tmp_path):
+    with pytest.raises(preview.PreviewError, match="introuvable"):
+        preview.prepare(tmp_path / "absent.step", _cfg())
 
 
 def test_plates_mesh(prep, plates):

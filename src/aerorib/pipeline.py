@@ -28,7 +28,7 @@ from aerorib.features.bores import (
     spar_bores,
 )
 from aerorib.features.ribs import diamond_plates, emptied_by_walls, plate_lines
-from aerorib.features.servo import ServoBay, ServoError, hole_meets_pocket, pocket_solid, reinforce_solids, servo_bays
+from aerorib.features.servo import ServoBay, ServoError, hole_meets_pocket, pocket_solid, reinforce_solids, reinforce_warnings, servo_bays
 from aerorib.midsurface import MidSurface
 from aerorib.orient import Orientation, orient
 from aerorib.segment import SegmentError, plan_cuts, split_part
@@ -242,7 +242,7 @@ def generate_skin(
         layer_plates = diamond_plates(bb, mid, bores, layer, **rib_options(cfg, bb, i, bays))
         plates += layer_plates
         counts.append(len(layer_plates))
-    warns = wall_warnings(bb, mid, bores, cfg, counts, bays)
+    warns = wall_warnings(bb, mid, bores, cfg, counts, bays) + reinforce_warnings(bays)
     # gaines et longerons qui entrent dans une baie : simplement découpés par la poche
     # poches et fentes de renfort : ouvertures voulues de la peau
     pockets = [t for b in bays for t in (pocket_solid(b), *reinforce_solids(b))]

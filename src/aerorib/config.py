@@ -115,6 +115,7 @@ class RibLayer(_Strict):
 
 
 CABLE_KEY = "cable"  # spars.cable : réglages communs des gaines de câble
+REINFORCE_LINES = 1.2  # paroi doublée d'une baie de servo par défaut, en largeurs de ligne
 CABLE_SLEEVE_LINES = 1.2  # manchon d'une gaine, en largeurs de ligne (0 ou 1 ligne : matière trop fine)
 
 
@@ -150,10 +151,11 @@ class ServoSettings(_Strict):
     # renfort : fente parallèle aux parois, au fond et aux rampes de la poche, débouchant sur la peau aux deux bords
     # de l'ouverture ⇒ paroi doublée
     reinforce: bool = True
-    # mm, de la paroi de la poche à l'axe de la fente ; None = largeur de ligne du preset (≥ largeur de ligne)
+    # mm : épaisseur de la paroi doublée, de la paroi de la poche au bord proche de la fente (≥ largeur de ligne) ;
+    # None = 1,2 × largeur de ligne du preset
     reinforce_offset: float | None = Field(default=None, gt=0)
-    # mm : fente verticale, vue telle quelle en tranche (≥ 1,1 × min_slit_width) ; le slit_width global des nervures
-    # (0,1) n'y suffit pas : il n'est assez large qu'incliné
+    # mm : fente verticale, vue telle quelle en tranche (≥ 1,1 × material_settings.min_slit_width du preset) ; le
+    # slit_width global des nervures (0,1) n'y suffit pas : il n'est assez large qu'incliné
     slit_width: float = Field(default=0.15, gt=0)
 
 
@@ -328,9 +330,10 @@ class Config(_Strict):
         return layer.angle if layer.angle is not None else min(45.0, self.preset.max_overhang_deg)
 
     def reinforce_offset(self) -> float:
-        """Décalage paroi de poche → axe de la fente de renfort (mm) : réglé, sinon largeur de ligne du preset."""
+        """Épaisseur de la paroi doublée (paroi de poche → bord proche de la fente de renfort, mm) : réglée, sinon
+        1,2 × largeur de ligne du preset."""
         off = self.servo.reinforce_offset
-        return off if off is not None else self.preset.line_width
+        return off if off is not None else REINFORCE_LINES * self.preset.line_width
 
     def spar_settings(self, name: str, cable: bool = False) -> BoreSettings:
         """Réglages d'un longeron. Précédence : défauts du code < `spars.default` < (gaine) `spars.cable`

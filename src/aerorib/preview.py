@@ -41,7 +41,7 @@ from aerorib.features.bores import (
     spar_bores,
 )
 from aerorib.features.ribs import diamond_profiles, plate_solid
-from aerorib.features.servo import ServoBay, ServoError, pocket_section, reinforce_section, servo_bays
+from aerorib.features.servo import ServoBay, ServoError, pocket_section, reinforce_section, reinforce_warnings, servo_bays
 from aerorib.io_step import StepReadError, read_step
 from aerorib.midsurface import MidSurface
 from aerorib.orient import Orientation, orient
@@ -558,7 +558,7 @@ def estimates(prep: Prepared, plates: list[Plate2D], cfg: Config, *, cached: boo
     cuts, warns = _cuts(prep, cfg)
     bounds = [0.0, *cuts, zhi - zlo]
     troncons = [b - a for a, b in pairwise(bounds)] if not warns else None
-    warns = [*wall_warnings(prep.bb, prep.mid, prep.bores, cfg, per_layer, prep.bays), *warns]
+    warns = [*wall_warnings(prep.bb, prep.mid, prep.bores, cfg, per_layer, prep.bays), *reinforce_warnings(prep.bays), *warns]
     bb = prep.bb
     zs = layer_heights(bb.min.Z, bb.max.Z, preset.layer_height)
     n = len(zs)

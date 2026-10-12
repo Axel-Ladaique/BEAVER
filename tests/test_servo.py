@@ -97,7 +97,7 @@ def test_pocket_zones_cover_the_pocket_with_strip():
     (rbay,), _, _ = _bays(servo_wing_bodies("extrados"), load_config(overrides=OVER))
     (rzone,) = pocket_zones_2d(rbay, c, d0, d1, zmin, zmin + 120, strip=2.0, slit=0.1)
     edge = rbay.y_floor - rbay.reach
-    assert rbay.reach == pytest.approx(0.42 + 0.15 / 2)
+    assert rbay.reach == pytest.approx(1.2 * 0.42 + 0.15)  # paroi doublée (1,2 ligne) + fente
     assert rzone.contains(Point(s_mid, edge - 1.9)) and not rzone.contains(Point(s_mid, edge - 2.2))
 
 
@@ -160,13 +160,21 @@ def test_bay_error_reaches_pipeline_in_french():
 
 def test_reinforce_settings():
     cfg = load_config()
-    assert cfg.servo.reinforce and cfg.reinforce_offset() == cfg.preset.line_width
+    assert cfg.servo.reinforce and cfg.reinforce_offset() == pytest.approx(1.2 * cfg.preset.line_width)
     assert load_config(overrides={"servo": {"reinforce_offset": 0.6}}).reinforce_offset() == 0.6
     with pytest.raises(ValueError, match="servo : reinforce_offset 0.3 mm < largeur de ligne"):
         load_config(overrides={"servo": {"reinforce_offset": 0.3}})
     with pytest.raises(ValueError, match="servo : fente .*slicer la refermerait"):
         load_config(overrides={"servo": {"slit_width": 0.1}})
     load_config(overrides={"servo": {"reinforce": False, "slit_width": 0.1}})  # sans renfort : fente inutilisée
+
+
+def test_min_floor_gap_counts_the_reinforcement():
+    # fond à ≈ 1,2 mm de l'intrados : assez sans renfort, trop avec (paroi + fente ≈ 0,65 mm de plus)
+    box = (22.0, 42.0, -0.5, 16.0, 40.0, 75.0)
+    with pytest.raises(ServoError, match="avec le renfort"):
+        _bays(servo_wing_bodies(box=box), load_config(overrides={**OVER, "servo": {"min_floor_gap": 1.0}}))
+    _bays(servo_wing_bodies(box=box), load_config(overrides={**PLAIN, "servo": {"reinforce": False, "min_floor_gap": 1.0}}))
 
 
 def test_min_floor_gap_setting():
@@ -217,9 +225,63 @@ def test_cable_entering_bay_is_printable(run_of):
     (b,) = body.bores
     ((x, y, ring, za, zb),) = bay.rings
     assert (x, y) == (b.x, b.y) and ring == pytest.approx(b.radius + 2 * 0.42) and za < bay.z0 < zb
-    ((ga, gb),) = bay.rf_gaps
-    assert ga <= b.x - b.radius - 1.0 and gb >= b.x + b.radius + 1.0
     assert body.report.ok, [(i.z, i.message, i.bounds) for i in body.report.errors][:5]
+    # ponts par tranche : autour de la gaine là où elle rejoint la baie, pont minimal ailleurs
+    z_hole, z_free = (bay.z0 + b.z1) / 2, (b.z1 + bay.z1) / 2 + 5  # dans la bande de la gaine / au-delà de son bout
+    assert bay.z0 < z_hole < b.z1 < z_free < bay.z1
+
+    def gap_at(z):
+        (g,) = [g[2:] for g in bay.rf_gaps if g[0] <= z <= g[1]]
+        return g
+
+    ga, gb = gap_at(z_hole)
+    assert ga <= b.x - b.radius - 1.0 and gb >= b.x + b.radius + 1.0
+    ga, gb = gap_at(z_free)
+    assert gb - ga == pytest.approx(1.0)
+    assert bay.rf_lost == ()
+    # le fond reste doublé hors de la bande de la gaine : fente sous le fond sur toute la corde sauf le pont
+    from shapely.geometry import LineString
+
+    from aerorib.slicing import slice_layers
+
+    def floor_slit(z):
+        (layer,) = slice_layers(body.result, [z], 0.02)
+        y = bay.y_floor - bay.rf_offset - bay.rf_width / 2
+        line = LineString([(bay.x0, y), (bay.x1, y)])
+        return line.length - sum(line.intersection(p).length for p in layer.polygons)
+
+    assert floor_slit(z_free) > (bay.x1 - bay.x0) - 1.0 - 0.3  # tout le fond sauf le pont minimal
+    # dans la bande de la gaine : fente + trou, moins les deux ponts de 1 mm de part et d'autre du trou
+    assert floor_slit(z_hole) == pytest.approx((bay.x1 - bay.x0) - 2.0, abs=0.3)
+
+
+def test_preview_equals_generation_with_cable(run_of):
+    cfg = load_config(overrides=OVER)
+    step, run = run_of("gaine")
+    preview.clear_cache()
+    prep = preview.prepare(step, cfg)
+    assert prep.bays == run.bodies[0].bays
+    plates = preview.plates_2d(prep, cfg)
+    assert len(plates) == run.bodies[0].plates
+    (bay,) = prep.bays
+    for z in (bay.z0 - bay.ramp / 2, (bay.z0 + bay.z1) / 2, bay.z1 - 2):
+        view = preview.section(prep, plates, cfg, z)
+        assert not [d for d in view.defects if d.check == "connectivity"], z
+
+
+def test_hole_at_box_edge_loses_a_branch_with_warning():
+    from aerorib.features.bores import Bore
+    from aerorib.features.servo import reinforce_warnings
+
+    cfg = load_config(overrides=OVER)
+    (bay,), skin, mid = _bays(servo_wing_bodies("extrados"), cfg)
+    _, servos = _oriented(servo_wing_bodies("extrados"), cfg)
+    hole = Bore("SBAR_bord", bay.x0, bay.y_floor, 2.0, 0.5, 0.42, 1, True, 0.0, 120.0, 0.15, 0.15, cable=True)
+    (edge,) = servo_bays(servos, skin, mid, cfg, [hole])
+    assert edge.rf_lost and all(g[2] >= edge.x0 - edge.reach - 1e-9 for g in edge.rf_gaps)  # bornés
+    (msg,) = reinforce_warnings([edge])
+    assert msg.startswith("SERVO_1 : renfort incomplet") and reinforce_warnings([bay]) == []
+    assert format_bays([edge]).endswith(", renfort partiel)")
 
 
 def test_cable_breaching_skin_elsewhere_is_still_reported():
@@ -279,7 +341,7 @@ def test_reinforcement_doubles_the_pocket_walls(run_of):
     (body,) = run_of("extrados")[1].bodies
     (plain,) = run_of("sans_renfort")[1].bodies
     (bay,), (pbay,) = body.bays, plain.bays
-    assert pbay.rf_offset == 0 and pbay.rf_gaps == () and bay.rf_offset == pytest.approx(cfg.preset.line_width)
+    assert pbay.rf_offset == 0 and pbay.rf_gaps == () and bay.rf_offset == pytest.approx(1.2 * cfg.preset.line_width)
     assert plain.report.ok and format_bays(plain.bays).endswith("mm)")  # pas de « renfort »
     # 2 bouches de plus sur la peau d'ouverture : les deux branches de la fente
     assert _opening_mouths(body, bay, cfg) == _opening_mouths(plain, pbay, cfg) + 2
@@ -297,9 +359,23 @@ def test_reinforcement_doubles_the_pocket_walls(run_of):
 
     for wall, out in ((bay.x0, -1), (bay.x1, 1)):
         assert not solid(wall - out * 0.1)  # poche
-        assert solid(wall + out * (o - w / 2) / 2)  # paroi doublée (entre poche et fente)
-        assert not solid(wall + out * o)  # fente
-        assert solid(wall + out * (o + w / 2 + 0.15))  # matière au-delà
+        assert solid(wall + out * o / 2)  # paroi doublée (entre poche et fente)
+        assert not solid(wall + out * (o + w / 2))  # fente
+        assert solid(wall + out * (o + w + 0.15))  # matière au-delà
+    # paroi doublée ≥ largeur de ligne, mesurée dans la coupe : parois latérales et fond
+    from shapely.geometry import LineString
+
+    lw = cfg.preset.line_width
+    lines = [
+        LineString([(bay.x0 - bay.reach - 0.1, y), (bay.x0 + 0.05, y)]),
+        LineString([(bay.x1 + bay.reach + 0.1, y), (bay.x1 - 0.05, y)]),
+        LineString([(bay.x0 + 2, bay.y_floor - bay.reach - 0.1), (bay.x0 + 2, bay.y_floor + 0.05)]),
+    ]
+    for line in lines:
+        cut = line.intersection(layer.polygons[0])
+        pieces = sorted(getattr(cut, "geoms", [cut]), key=lambda g: g.distance(line.interpolate(1.0, normalized=True)))
+        # lignes de la matière vers la poche ; morceau côté poche (la ligne finit 0,05 mm dans la poche) : la paroi doublée, jusqu'à la fente
+        assert pieces[0].length >= lw - 0.02 and pieces[0].length == pytest.approx(o, abs=0.05)
     (pl,) = slice_layers(plain.result, [(pbay.z0 + pbay.z1) / 2], cfg.validation.tessellation_tol)
     assert any(p.contains(Point(pbay.x0 - pbay.rf_offset - 0.42, pbay.y_floor + 1.0)) for p in pl.polygons)
 

@@ -186,14 +186,25 @@ def servo_bay(name: str, solid: Solid, bb, mid: MidSurface, cfg: Config, bores: 
             rings.append((b.x, b.y, ring, *meet))
     bay = replace(bay, rings=tuple(rings))
     if rf_offset > 0:
-        bay = _bridges(bay, bores, mid, max(BRIDGE_MIN, 2 * cfg.preset.line_width))
+        bay = _bridges(bay, bores, mid, max(BRIDGE_MIN, 2 * cfg.preset.line_width), cfg.preset.layer_height)
     return bay
 
 
-def _bridges(bay: ServoBay, bores: Sequence[Bore], mid: MidSurface, length: float) -> ServoBay:
+def _bridges(
+    bay: ServoBay, bores: Sequence[Bore], mid: MidSurface, length: float, layer_height: float | None = None
+) -> ServoBay:
     """Ponts de la fente de renfort par tranche de z (voir l'en-tête du module), bornés à [x0 − reach, x1 + reach] ;
-    tranches où un trou supprime une branche entière (`rf_lost`, signalées par `reinforce_warnings`)."""
+    tranches où un trou supprime une branche entière (`rf_lost`, signalées par `reinforce_warnings`).
+
+    `layer_height` : bornes des tranches calées sur zmin + k·hauteur de couche, à mi-chemin entre deux couches
+    (`layer_heights`) : aucune couche ne tombe sur une borne, l'aperçu et la génération prennent la même tranche.
+    """
     side, x0, x1, reach = bay.side, bay.x0, bay.x1, bay.reach
+
+    def snap(z: float) -> float:
+        if not layer_height:
+            return z
+        return bay.zmin + round((z - bay.zmin) / layer_height) * layer_height
     xs_ = np.linspace(x0, x1, 8 * _SAMPLES)
 
     def high_x(z: float) -> float:
@@ -212,18 +223,18 @@ def _bridges(bay: ServoBay, bores: Sequence[Bore], mid: MidSurface, length: floa
         lo, hi = bore_extent(b, bay.zmin, bay.zmax)
         meet = hole_meets_pocket(bay, b.x, b.y, b.radius, lo, hi, tol=reach + length, grow=reach)
         if meet is not None:
-            holes.append((*meet, b.x - b.radius - length, b.x + b.radius + length))
+            holes.append((snap(meet[0]), snap(meet[1]), b.x - b.radius - length, b.x + b.radius + length))
         # fente du trou vers la peau d'ouverture : elle traverse la paroi doublée (fond, ou rampe dans les couches
         # de rampe) sur toute l'étendue du trou (même effet qu'un trou)
         if b.side == side and x0 - reach < b.x < x1 + reach:
-            holes.append((lo, hi, b.x - b.slit / 2 - length, b.x + b.slit / 2 + length))
+            holes.append((snap(lo), snap(hi), b.x - b.slit / 2 - length, b.x + b.slit / 2 + length))
     cuts = {lo_all, hi_all}
     if lo_all < bay.z0:
         cuts |= set(np.arange(bay.z0, lo_all, -BRIDGE_STEP).tolist())
     if bay.z1 < hi_all:
         cuts |= set(np.arange(bay.z1, hi_all, BRIDGE_STEP).tolist())
     cuts |= {min(max(z, lo_all), hi_all) for h in holes for z in h[:2]}
-    zs = sorted(cuts)
+    zs = sorted({snap(z) for z in cuts})
     bands: list[list[float]] = []
     lost: list[list[float]] = []
     for za, zb in zip(zs[:-1], zs[1:]):

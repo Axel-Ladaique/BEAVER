@@ -442,3 +442,28 @@ def test_servo_fixture_end_to_end():
     (bay,) = body.bays
     assert bay.name == "SERVO_1" and bay.side == 1 and bay.rf_offset > 0
     print(format_bays(body.bays), body.plates, body.report.stats, body.warnings)
+
+
+def test_bridge_bands_snap_between_layers():
+    """Bornes des tranches de ponts calées sur zmin + k·hauteur de couche (mi-chemin entre deux couches) : aucune
+    couche ne tombe sur une borne, l'aperçu et la génération choisissent la même tranche (une seule par couche)."""
+    from aerorib.features.bores import Bore
+    from aerorib.slicing import layer_heights
+
+    lh = 0.3
+    cfg = load_config(overrides={**OVER, "material_settings": {"layer_height": lh}})
+    skin, servos = _oriented(servo_wing_bodies("extrados"), cfg)
+    mid = MidSurface.from_skin(skin, *cfg.split.grid)
+    (bay,) = servo_bays(servos, skin, mid, cfg)
+    xm = (bay.x0 + bay.x1) / 2
+    hole = Bore("SBAR_CABLE_x", xm, bay.y_floor - 2.0, 1.5, 0.5, 0.42, 1, True, 0.0, 57.37, 0.15, 0.15, cable=True)
+    (bay,) = servo_bays(servos, skin, mid, cfg, [hole])
+    assert len(bay.rf_gaps) > 3
+    for za, zb, _, _ in bay.rf_gaps:
+        for z in (za, zb):
+            k = (z - bay.zmin) / lh
+            assert k == pytest.approx(round(k), abs=1e-6), z
+    lo, hi = bay.rf_gaps[0][0], bay.rf_gaps[-1][1]
+    for z in layer_heights(bay.zmin, bay.zmax, lh):
+        if lo < z < hi:
+            assert sum(za <= z <= zb for za, zb, _, _ in bay.rf_gaps) == 1, z

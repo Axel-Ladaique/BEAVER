@@ -681,3 +681,41 @@ def test_fixture_layers_by_the_cable_bridge_are_printable():
             end = Point(xa, bay.y_floor - bay.reach)
             feet = unary_union([f.polygon for f in view.footprints]).intersection(unary_union(view.skin))
             assert feet.distance(end) >= BRIDGE_STRIP - 0.05
+
+
+def test_bridge_zones_are_bounded():
+    """Zone sans nervure sous un pont : tranche de z du pont ± slit·|d0|/2 (demi-épaisseur de plaque vue en z),
+    étendue en x du pont ± BRIDGE_STRIP, sans déborder en x de la zone de la poche."""
+    from dataclasses import replace
+
+    from aerorib.features.servo import BRIDGE_STRIP
+
+    cfg = load_config(overrides=OVER)
+    (bay,), skin, _ = _bays(servo_wing_bodies("extrados"), cfg)
+    zmin = skin.bounding_box().min.Z
+    slit, strip = 1.0, 0.5  # fente épaisse : la marge en z se lit nettement
+    zm, xm = (bay.z0 + bay.z1) / 2, (bay.x0 + bay.x1) / 2
+
+    def zones(angle, za, zb, xa, xb):
+        d0, d1 = math.sin(math.radians(angle)), math.cos(math.radians(angle))
+        s_mid = (zm - zmin) / d1
+        c = xm - s_mid * d0
+        one = replace(bay, rf_gaps=((za, zb, xa, xb),), rings=())
+        pocket, *bridges = pocket_zones_2d(one, c, d0, d1, zmin, zmin + 200, strip=strip, slit=slit)
+        (bridge,) = bridges
+        return bridge, c, d0, d1
+
+    # plaque à 10° de l'envergure : la tranche de z borne la zone (l'étendue en x, vue sur la plaque, est longue)
+    za, zb = zm - 1.0, zm + 1.0
+    bridge, c, d0, d1 = zones(10, za, zb, xm - 3, xm + 3)
+    pad = slit * abs(d0) / 2  # ≠ slit / (2·d1) hors 45°
+    lo, hi = zmin + bridge.bounds[0] * d1, zmin + bridge.bounds[2] * d1
+    assert lo == pytest.approx(za - pad, abs=1e-6) and hi == pytest.approx(zb + pad, abs=1e-6)
+    # plaque à 80° : l'étendue en x borne la zone — pont ± BRIDGE_STRIP
+    bridge, c, d0, d1 = zones(80, bay.z0 + 1, bay.z1 - 1, xm - 1, xm + 1)
+    xs = sorted(c + s * d0 for s in (bridge.bounds[0], bridge.bounds[2]))
+    assert xs == pytest.approx([xm - 1 - BRIDGE_STRIP, xm + 1 + BRIDGE_STRIP], abs=1e-6)
+    # pont au bord de la boîte : plafonné à la zone de la poche (x1 + bande + demi-plaque + renfort)
+    bridge, c, d0, d1 = zones(80, bay.z0 + 1, bay.z1 - 1, bay.x1 - 1, bay.x1)
+    xs = sorted(c + s * d0 for s in (bridge.bounds[0], bridge.bounds[2]))
+    assert xs == pytest.approx([bay.x1 - 1 - BRIDGE_STRIP, bay.x1 + strip + slit / 2 + bay.reach], abs=1e-6)

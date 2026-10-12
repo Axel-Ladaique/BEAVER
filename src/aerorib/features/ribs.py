@@ -29,6 +29,17 @@ _MIN_BAND_TOL = 0.005  # mm : plancher de band_tol (gap = largeur de ligne) — 
 # est relâchée (doublée) jusqu'à tenir sous ce plafond
 _MAX_BAND_VERTICES = 64
 _SAME_LINE = 1e-6  # mm : deux plaques de même famille et même c sont confondues
+# mm : écart minimal entre deux sommets du bord intérieur d'une plaque. Deux sommets plus proches (sommet de la
+# grille régulière tombé à côté d'un sommet de bande) ne donnent qu'une arête microscopique, que le booléen
+# reporte dans la pièce et que le maillage rend invalide.
+_MIN_VERTEX_GAP = 0.05
+# Bouts de la pièce (plans z = zmin et z = zmax). Le motif losange y fait se croiser deux plaques de familles
+# opposées (toujours en zmin, en zmax dès que l'envergure est un multiple de la demi-période) : leurs bandes de
+# séparation y coupent le plan de bout presque au même endroit, d'où des arêtes de 10 nm à 50 µm sur la face de
+# bout. On fait coïncider exactement ces traces : sur une fenêtre ±h autour du bout, le bord intérieur n'a que
+# trois sommets (bout − h, bout, bout + h), lus exactement sur la surface médiane, qui ne dépend plus de z au-delà
+# de ses rangées extrêmes (`MidSurface.at` borne z) ; fenêtre = cette part de la marge entre bout et rangée.
+_END_CLAMP_SHARE = 0.8
 
 
 # Parois raides (bords d'attaque / de fuite épais, profil « boîte arrondie »). En tranche, une fente est une bande
@@ -168,8 +179,79 @@ def _partial_edge_vertices(s_run, y_run, free, grid_edge) -> np.ndarray:
     return np.unique(np.asarray(keep, dtype=float))
 
 
+def _merge_close(s, keep=(), min_gap: float = _MIN_VERTEX_GAP) -> np.ndarray:
+    """Abscisses `s` (∪ `keep`) triées, sans sommet à moins de `min_gap` d'un autre : les sommets de `keep` (bornes,
+    sommets de bande) restent tous ; un autre sommet trop proche d'un sommet gardé est retiré."""
+    keep = np.unique(np.asarray(keep, dtype=float))
+    out = list(keep)
+    last = -np.inf
+    for v in np.unique(np.asarray(s, dtype=float)):
+        if v - last < min_gap or (len(keep) and np.min(np.abs(keep - v)) < min_gap):
+            continue
+        out.append(v)
+        last = v
+    return np.unique(np.asarray(out, dtype=float))
+
+
+def _shrink_off(runs, windows) -> list[tuple[float, float]]:
+    """Tronçons dont aucune borne ne tombe dans un intervalle ouvert de `windows` : la borne est ramenée hors de
+    l'intervalle, côté intérieur du tronçon (le tronçon raccourcit, jamais ne s'allonge)."""
+    out = []
+    for lo, hi in runs:
+        for w0, w1 in windows:
+            if w0 < lo < w1:
+                lo = w1
+            if w0 < hi < w1:
+                hi = w0
+        if hi > lo:
+            out.append((lo, hi))
+    return out
+
+
+def _end_vertices(s_edge: np.ndarray, lo: float, hi: float, ends, min_gap: float = _MIN_VERTEX_GAP) -> np.ndarray:
+    """Sommets du bord sur [lo, hi] : dans chaque fenêtre de bout (a ± h, élargie de `min_gap`), seulement
+    a − h, a et a + h — mêmes sommets, en x, pour les deux familles qui se croisent au bout."""
+    s = np.asarray(s_edge, dtype=float)
+    for a, h in ends:
+        inside = (s > a - h - min_gap) & (s < a + h + min_gap) & (s != lo) & (s != hi)
+        anchors = np.array([a - h, a, a + h])
+        s = np.concatenate([s[~inside], anchors[(anchors > lo) & (anchors < hi)]])
+    return np.unique(s)
+
+
+def _in_windows(s: float, windows) -> bool:
+    return any(a - h - 1e-9 <= s <= a + h + 1e-9 for a, h in windows)
+
+
+def _simplify_ring(coords, tol: float, windows) -> list:
+    """Anneau simplifié à `tol` près, sommets des fenêtres de bout intacts (simplification par morceaux entre eux)."""
+    pts = list(coords)[:-1]
+    fixed = [i for i, p in enumerate(pts) if _in_windows(p[0], windows)]
+    if not fixed:
+        return list(LineString(list(coords)).simplify(tol).coords)
+    pts = pts[fixed[0]:] + pts[:fixed[0]]
+    fixed = [i - fixed[0] for i in fixed] + [len(pts)]
+    pts.append(pts[0])
+    out = []
+    for i0, i1 in zip(fixed, fixed[1:]):
+        chain = pts[i0:i1 + 1]
+        out += list(LineString(chain).simplify(tol).coords)[:-1] if len(chain) > 2 else chain[:-1]
+    return out + [out[0]]
+
+
+def _simplify_keeping(poly: Polygon, tol: float, windows) -> Polygon:
+    """`poly.simplify(tol)` sans toucher aux sommets des fenêtres de bout (a ± h) ; simplification ordinaire si le
+    résultat par morceaux n'est pas valide."""
+    if not windows:
+        return poly.simplify(tol)
+    out = Polygon(_simplify_ring(poly.exterior.coords, tol, windows),
+                  [_simplify_ring(r.coords, tol, windows) for r in poly.interiors])
+    return out if out.is_valid and not out.is_empty else poly.simplify(tol)
+
+
 def _band_vertices(ss, ym, lo: float, hi: float, s_edge: np.ndarray, tol: float) -> np.ndarray:
-    """`s_edge` complété des sommets de ym simplifiée à `tol` près sur [lo, hi] (bornes interpolées)."""
+    """`s_edge` complété des sommets de ym simplifiée à `tol` près sur [lo, hi] (bornes interpolées) ; un sommet
+    de `s_edge` à moins de `_MIN_VERTEX_GAP` d'un sommet de bande est retiré (pas de micro-arête)."""
     inner = (ss > lo) & (ss < hi)
     s_run = np.concatenate([[lo], ss[inner], [hi]])
     y_run = np.interp(s_run, ss, ym)
@@ -178,12 +260,13 @@ def _band_vertices(ss, ym, lo: float, hi: float, s_edge: np.ndarray, tol: float)
     while len(kept) > _MAX_BAND_VERTICES:  # plafond : tolérance relâchée plutôt qu'un bord trop coûteux
         tol *= 2
         kept = [p[0] for p in line.simplify(tol).coords]
-    return np.unique(np.concatenate([s_edge, kept]))
+    return _merge_close(s_edge, keep=kept)
 
 
 def plate_profiles_2d(
     ss, ym, th, zones, *, gap, min_depth, ytop, ybot, edge_vertices: int | None = None,
     depth: float | None = None, steep: np.ndarray | None = None, band_tol: float | None = None,
+    ends: Sequence[tuple[float, float]] = (),
 ) -> list[tuple[bool, Polygon]]:
     """Profils 2D des plaques haute et basse.
 
@@ -204,12 +287,17 @@ def plate_profiles_2d(
     complétés de ceux de ym simplifiée (Douglas-Peucker), mêmes sommets en haut et en bas. Sans cela, là où ym est
     coudée (bord épais dissymétrique), les cordes des deux familles s'écartent différemment de ym et, au croisement
     de deux plaques, leurs bandes se décalent jusqu'à pincer la matière qui les relie.
+
+    `ends` : fenêtres de bout (a, h) — abscisse s du plan de bout de la pièce et demi-largeur. Les abscisses
+    a − h, a, a + h doivent être dans `ss` (valeurs exactes). Aucune borne de tronçon dans une fenêtre, et seulement
+    ces trois sommets dedans (voir `_END_CLAMP_SHARE`), conservés par la simplification finale.
     """
     ss, ym, th = (np.asarray(a, dtype=float) for a in (ss, ym, th))
     deep = th > gap + 2 * min_depth
     if steep is not None:
         deep &= ~np.asarray(steep, dtype=bool)
-    runs = _deep_runs(ss, deep)
+    g = _MIN_VERTEX_GAP
+    runs = _shrink_off(_deep_runs(ss, deep), [(a - h - g, a + h + g) for a, h in ends])
     if not runs:
         return []
     simplify = depth is not None and edge_vertices is not None
@@ -226,16 +314,15 @@ def plate_profiles_2d(
             s_edge = np.concatenate([[lo], coarse[(coarse > lo) & (coarse < hi)], [hi]])
             if band_tol is not None and edge_vertices is not None:
                 s_edge = _band_vertices(ss, ym, lo, hi, s_edge, band_tol)
-            if depth is None:
-                y_edge = np.interp(s_edge, ss, inner)
-            else:
-                # bord lu sur les seuls échantillons profonds du tronçon : aux bornes (entre deux échantillons),
-                # pas de mélange avec l'épaisseur d'un échantillon trop mince (marche, pas de rampe)
-                run = deep & (ss >= lo) & (ss <= hi)
-                if simplify:
-                    free = th[run] / 2 - depth > gap / 2 + _PARTIAL_EDGE_TOL
-                    s_edge = _partial_edge_vertices(ss[run], inner[run], free, s_edge)
-                y_edge = np.interp(s_edge, ss[run], inner[run])
+            # bord d'une plaque peu profonde lu sur les seuls échantillons profonds du tronçon : aux bornes (entre
+            # deux échantillons), pas de mélange avec l'épaisseur d'un échantillon trop mince (marche, pas de rampe)
+            run = np.ones(len(ss), dtype=bool) if depth is None else deep & (ss >= lo) & (ss <= hi)
+            if simplify:
+                free = th[run] / 2 - depth > gap / 2 + _PARTIAL_EDGE_TOL
+                s_edge = _merge_close(_partial_edge_vertices(ss[run], inner[run], free, s_edge), keep=[lo, hi])
+            if ends:
+                s_edge = _end_vertices(s_edge, lo, hi, ends)
+            y_edge = np.interp(s_edge, ss[run], inner[run])
             pieces.append(Polygon(list(zip(s_edge, y_edge)) + [(hi, far), (lo, far)]).buffer(0))
         poly = unary_union(pieces)
         if zones:
@@ -245,7 +332,7 @@ def plate_profiles_2d(
             poly = poly.difference(shadow)
         for part in getattr(poly, "geoms", [poly]):
             if isinstance(part, Polygon) and not part.is_empty and part.area > 1e-3:
-                out.append((top, part.simplify(0.01)))
+                out.append((top, _simplify_keeping(part, 0.01, ends)))
     return out
 
 
@@ -290,6 +377,16 @@ class PlateProfile:
     polygon: Polygon
 
 
+def _end_windows(mid: MidSurface, zmin: float, zmax: float, d1: float) -> list[tuple[float, float]]:
+    """Fenêtres de bout (a, h) en abscisse s d'une plaque (z = zmin + s·d1) : plans z = zmin et z = zmax, demi-largeur
+    h telle que la fenêtre reste dans la zone où la surface médiane ne dépend plus de z (au-delà des rangées
+    extrêmes de la grille). Aucune fenêtre si la grille touche le bout."""
+    dz = _END_CLAMP_SHARE * min(mid.zs[0] - zmin, zmax - mid.zs[-1])
+    if dz <= _MIN_VERTEX_GAP:
+        return []
+    return [(0.0, dz / d1), ((zmax - zmin) / d1, dz / d1)]
+
+
 def diamond_profiles(
     bb, mid: MidSurface, bores: list[Bore], layer: RibLayer, *, angle_deg: float, gap: float, slit: float,
     min_depth: float, line_width: float, max_mouth: float, exclude: Sequence[tuple[int, float]] = (),
@@ -312,6 +409,8 @@ def diamond_profiles(
     length = _plate_length(bb, angle_deg)
     # échantillonnage fin (≈ 0,5 mm) pour situer les transitions d'épaisseur ; bord à `samples` sommets
     ss = np.linspace(-5, length, max(layer.samples, math.ceil((length + 5) / _DEPTH_STEP) + 1))
+    ends = _end_windows(mid, zmin, zmax, math.cos(ang))
+    ss = np.unique(np.concatenate([ss, [a + k * h for a, h in ends for k in (-1, 0, 1)]]))
     out: list[PlateProfile] = []
     for sign, c in plate_lines(bb, layer, angle_deg):
         if any(es == sign and abs(ec - c) < _SAME_LINE for es, ec in exclude):
@@ -329,7 +428,7 @@ def diamond_profiles(
         ]
         for top, poly in plate_profiles_2d(
             ss, ym, th, zones, gap=gap, min_depth=min_depth, ytop=ytop, ybot=ybot, edge_vertices=layer.samples,
-            depth=None if layer.depth == "full" else layer.depth, steep=steep, band_tol=band_tol,
+            depth=None if layer.depth == "full" else layer.depth, steep=steep, band_tol=band_tol, ends=ends,
         ):
             out.append(PlateProfile(sign, c, d0, d1, top, poly))
     return out

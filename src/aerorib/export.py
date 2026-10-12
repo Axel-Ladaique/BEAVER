@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from build123d import export_stl
+from OCP.BRepTools import BRepTools
 
 from aerorib.bambu import BambuError, Template, write_project
 from aerorib.io_step import NamedBody, write_step
@@ -26,6 +27,13 @@ def _pieces(b) -> list[tuple[str, object]]:
     return [(f"{b.name}_t{i}", s) for i, s in enumerate(segs, 1)]
 
 
+def drop_mesh(solid) -> None:
+    """Retire la triangulation laissée sur la forme par le maillage (STL, 3MF). Sur une pièce à très petites
+    arêtes, le polygone-sur-triangulation peut ne plus coller à l'arête et BRepCheck déclare alors la forme
+    invalide : la pièce rendue à l'appelant doit avoir la même validité qu'avant l'export."""
+    BRepTools.Clean_s(solid.wrapped)
+
+
 def export_results(
     run: RunResult, out_dir: Path, stem: str, formats: list[str], template: Template | None = None
 ) -> list[Path]:
@@ -36,6 +44,16 @@ def export_results(
     single = len(run.bodies) == 1
     written: list[Path] = []
     pieces = {b.name: _pieces(b) for b in run.bodies}
+    try:
+        _write_all(run, out_dir, stem, formats, template, single, pieces, written)
+    finally:
+        for b in run.bodies:
+            for _, solid in pieces[b.name]:
+                drop_mesh(solid)
+    return written
+
+
+def _write_all(run, out_dir, stem, formats, template, single, pieces, written) -> None:
     if "step" in formats:
         written.append(
             write_step(out_dir / f"{stem}.step", [NamedBody((n,), s) for b in run.bodies for n, s in pieces[b.name]])
@@ -52,4 +70,3 @@ def export_results(
     if "3mf" in formats:
         objs = [(n, to_mesh(s, 0.02)) for b in run.bodies for n, s in pieces[b.name]]
         written.append(write_project(template, objs, out_dir / f"{stem}.3mf"))
-    return written

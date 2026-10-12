@@ -33,6 +33,26 @@ function lireNombre(texte, n, nullable) {
   return controleNombre(v, n);
 }
 
+const RACINES = {
+  auto: "auto (bout de la gaine de câble, sinon plus grande section)",
+  debut: "début (coordonnée min. le long de l'axe)",
+  fin: "fin (coordonnée max. le long de l'axe)",
+};
+
+/** Orientation lue dans la config : axe imposé (ou null) et emplanture (« auto » par défaut). */
+export function lireOrientation(valeur) {
+  if (!valeur || typeof valeur !== "object") return { axe: null, racine: "auto" };
+  return { axe: Array.isArray(valeur.axis) ? valeur.axis : null, racine: valeur.root || "auto" };
+}
+
+/** Valeur minimale de `orientation` : « auto », sinon seulement les clés qui s'écartent du défaut. */
+export function valeurOrientation(axe, racine) {
+  const v = {};
+  if (axe) v.axis = axe;
+  if (racine && racine !== "auto") v.root = racine;
+  return Object.keys(v).length ? v : "auto";
+}
+
 function texteNombre(v) {
   return v === null || v === undefined ? "" : String(v);
 }
@@ -223,7 +243,8 @@ export class Formulaire {
 
   groupe(chemin, nat) {
     const titre = chemin[0] === "spars" && chemin.length === 2
-      ? (chemin[1] === "default" ? "Tous les longerons (par défaut)" : `Longeron ${chemin[1]}`)
+      ? (chemin[1] === "default" ? "Tous les longerons (par défaut)"
+        : chemin[1] === "cable" ? "Gaines de câble (SBAR…CABLE…)" : `Longeron ${chemin[1]}`)
       : libelle(chemin);
     const fs = el("fieldset", { dataset: { groupe: cleChemin(chemin) } }, [el("legend", { texte: titre })]);
     for (const k of this.clesGroupe(chemin, nat)) fs.append(this.ligneOuGroupe([...chemin, k]));
@@ -449,23 +470,27 @@ export class Formulaire {
   }
 
   widgetOrientation(chemin, valeur, inactif, id) {
-    const auto = !valeur || valeur === "auto";
-    const s = this.select(id, ["auto", "__axe"], auto ? "auto" : "__axe", inactif,
-      (v) => (v === "auto" ? "automatique" : "axe d'envergure imposé (x, y, z)"));
-    const axe = (valeur && valeur.axis) || [0, 0, 1];
+    const { axe, racine } = lireOrientation(valeur);
+    const s = this.select(id, ["auto", "__axe"], axe ? "__axe" : "auto", inactif,
+      (v) => (v === "auto" ? "axe automatique" : "axe d'envergure imposé (x, y, z)"));
     const champs = [0, 1, 2].map((k) => {
       const i = el("input", { type: "number", step: "any", disabled: inactif, "aria-label": `axe ${"xyz"[k]}` });
-      i.value = texteNombre(axe[k]);
-      i.hidden = auto;
+      i.value = texteNombre((axe || [0, 0, 1])[k]);
+      i.hidden = !axe;
       return i;
     });
-    const lecture = () => (s.value === "auto" ? "auto" : { axis: champs.map((i) => lireNombre(i.value, null, false)) });
+    const emplanture = this.select(`${id}-racine`, ["auto", "debut", "fin"], racine, inactif, (v) => RACINES[v] || v);
+    const lecture = () => valeurOrientation(
+      s.value === "auto" ? null : champs.map((i) => lireNombre(i.value, null, false)), emplanture.value);
     s.addEventListener("change", () => {
       champs.forEach((i) => { i.hidden = s.value === "auto"; });
       this.saisir(chemin, lecture);
     });
     champs.forEach((i) => i.addEventListener("input", () => this.saisir(chemin, lecture)));
-    return el("span", { classe: "valeur" }, [s, ...champs]);
+    emplanture.addEventListener("change", () => this.saisir(chemin, lecture));
+    return el("span", { classe: "valeur" }, [
+      s, ...champs, el("label", { for: `${id}-racine`, texte: " Emplanture " }), emplanture,
+    ]);
   }
 
   widgetListeObjets(chemin, nat, valeur, inactif, id) {

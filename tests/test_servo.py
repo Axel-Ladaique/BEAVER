@@ -467,3 +467,62 @@ def test_bridge_bands_snap_between_layers():
     for z in layer_heights(bay.zmin, bay.zmax, lh):
         if lo < z < hi:
             assert sum(za <= z <= zb for za, zb, _, _ in bay.rf_gaps) == 1, z
+
+
+def test_planform_lists_bays(run_of):
+    """Vue de dessus : baie (boîte utile, ouverture rampes comprises, côté, renfort), sérialisée ; avertissements
+    du renfort dans ceux de la vue."""
+    from dataclasses import replace
+
+    cfg = load_config(overrides=OVER)
+    step, _ = run_of("extrados")
+    preview.clear_cache()
+    prep = preview.prepare(step, cfg)
+    plates = preview.plates_2d(prep, cfg)
+    (bay,) = prep.bays
+    d = preview.planform(prep, plates, cfg).to_dict()
+    (b,) = d["baies"]
+    lo, hi = bay.opening
+    assert b["nom"] == "SERVO_1" and b["cote"] == "extrados" and b["renfort"] is True
+    assert (b["x0"], b["x1"], b["z0"], b["z1"]) == pytest.approx((bay.x0, bay.x1, bay.z0, bay.z1), abs=1e-3)
+    assert b["ouverture"] == pytest.approx([lo, hi], abs=1e-3) and lo < b["z0"] < b["z1"] < hi
+    assert b["profondeur"] == pytest.approx(bay.depth, abs=1e-3) and b["renfort_partiel"] is False
+    import json
+
+    json.dumps(d)
+    lost = replace(bay, rf_lost=((40.0, 45.0),))
+    view = preview.planform(replace(prep, bays=(lost,)), plates, cfg)
+    assert any(w.startswith("SERVO_1 : renfort incomplet") for w in view.warnings)
+    assert view.to_dict()["baies"][0]["renfort_partiel"] is True
+    plain = preview.planform(replace(prep, bays=(replace(bay, rf_offset=0.0, rf_width=0.0),)), plates, cfg)
+    assert plain.to_dict()["baies"][0]["renfort"] is False
+
+
+def test_section_draws_the_reinforcement_slit(run_of):
+    """Coupe d'aperçu à mi-baie : la fente de renfort (même code que la génération) est retirée de la matière, sauf
+    au pont."""
+    from shapely.geometry import LineString
+
+    cfg = load_config(overrides=OVER)
+    step, run = run_of("extrados")
+    preview.clear_cache()
+    prep = preview.prepare(step, cfg)
+    plates = preview.plates_2d(prep, cfg)
+    (bay,) = prep.bays
+    z = (bay.z0 + bay.z1) / 2
+    view = preview.section(prep, plates, cfg, z)
+    y = bay.y_floor - bay.rf_offset - bay.rf_width / 2
+    line = LineString([(bay.x0, y), (bay.x1, y)])
+    solid = sum(line.intersection(p).length for p in view.polygons)
+    (gap,) = [g for g in bay.rf_gaps if g[0] <= z <= g[1]]
+    assert solid == pytest.approx(gap[3] - gap[2], abs=0.2)  # seule matière sur la ligne de la fente : le pont
+
+
+def test_html_report_lists_bays_and_conduits(run_of, tmp_path):
+    from aerorib.export import export_results
+
+    _, run = run_of("gaine")
+    (path,) = [p for p in export_results(run, tmp_path, "aile", []) if p.suffix == ".html"]
+    html = path.read_text(encoding="utf-8")
+    assert "SBAR_CABLE_SERVO (gaine, Ø" in html
+    assert "baies : SERVO_1 (baie extrados" in html and "renfort)" in html

@@ -11,7 +11,7 @@ from OCP.BRepTools import BRepTools
 from aerorib.bambu import BambuError, Template, write_project
 from aerorib.io_step import NamedBody, write_step
 from aerorib.pipeline import RunResult
-from aerorib.report import write_html
+from aerorib.report import format_bays, format_bores, write_html
 from aerorib.slicing import to_mesh
 
 
@@ -66,7 +66,8 @@ def _write_all(run, out_dir, stem, formats, template, single, pieces, written) -
                 path = out_dir / (f"{base}-t{k}.stl" if multi else f"{base}.stl")
                 export_stl(solid, str(path), tolerance=0.02, angular_tolerance=0.3)
                 written.append(path)
-        written.append(write_html(b.report, out_dir / f"{base}-rapport.html", title=b.name))
+        details = [format_bores(b.bores, b.filled)] + ([format_bays(b.bays)] if b.bays else [])
+        written.append(write_html(b.report, out_dir / f"{base}-rapport.html", title=b.name, details=details))
     if "3mf" in formats:
         objs = [(n, to_mesh(s, 0.02)) for b in run.bodies for n, s in pieces[b.name]]
         written.append(write_project(template, objs, out_dir / f"{stem}.3mf"))

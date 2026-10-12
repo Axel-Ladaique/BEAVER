@@ -33,6 +33,7 @@ export const PLAN = [
   { cle: "split" },
   { cle: "spars" },
   { cle: "passages" },
+  { cle: "servo" },
   { cle: "segment" },
   { titre: "Orientation et rôles des corps", cles: ["orientation", "roles"] },
   { cle: "naming" },

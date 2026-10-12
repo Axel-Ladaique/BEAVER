@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 from collections import defaultdict
+from collections.abc import Sequence
 from pathlib import Path
 
 from shapely.geometry import Polygon
@@ -42,6 +43,32 @@ def format_text(report: Report, title: str = "") -> str:
         f"trajet : {s['path_length_m']:.1f} m · masse ≈ {s['mass_g']:.1f} g"
     )
     return "\n".join(lines)
+
+
+def format_bores(bores, filled=()) -> str:
+    """Trous traités (décisions autonomes rendues visibles), repère d'impression, 1 décimale."""
+    items = []
+    for b in bores:
+        if not b.cut_hole:
+            items.append(f"{b.name} (Ø{2 * b.radius:.1f}, x={b.x:.1f}, y={b.y:.1f})")
+        elif b.cable:
+            items.append(f"{b.name} (gaine, Ø{2 * b.radius:.1f})")
+        elif b.anchor_gap > 0:  # l'attache est du côté opposé à la fente
+            items.append(f"{b.name} (longeron, Ø{2 * b.radius:.1f}, attache {'intrados' if b.side > 0 else 'extrados'})")
+        else:
+            items.append(f"{b.name} (longeron, Ø{2 * b.radius:.1f})")
+    groups: dict[str, list] = {}
+    for f in filled:
+        groups.setdefault(f"{2 * f.r:.1f}", []).append(f)
+    if groups:
+        items.append(
+            "rebouchés : "
+            + " ; ".join(
+                f"{len(fs)} × Ø{d} (" + " / ".join(f"x={f.x:.1f}, y={f.y:.1f}" for f in fs) + ")"
+                for d, fs in groups.items()
+            )
+        )
+    return "  trous : " + (" ; ".join(items) if items else "aucun")
 
 
 def format_bays(bays) -> str:
@@ -101,7 +128,8 @@ svg { width:100%; height:auto; max-height:420px; }
 """
 
 
-def write_html(report: Report, path: Path, title: str = "AeroRib") -> Path:
+def write_html(report: Report, path: Path, title: str = "AeroRib", details: Sequence[str] = ()) -> Path:
+    """Rapport HTML ; `details` : lignes ajoutées sous le résumé (trous et gaines, baies de servo)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     figures = []
@@ -113,8 +141,10 @@ def write_html(report: Report, path: Path, title: str = "AeroRib") -> Path:
         figures.append(
             f"<figure><figcaption>z = {z:.2f} mm</figcaption>{_svg(polys, issues)}<ul>{items}</ul></figure>"
         )
+    items = "".join(f"<li>{html.escape(d.strip())}</li>" for d in details)
+    extra = f"<ul class='details'>{items}</ul>" if items else ""
     body = (
-        f"<main><h1>{html.escape(title)}</h1><pre>{html.escape(format_text(report))}</pre>"
+        f"<main><h1>{html.escape(title)}</h1><pre>{html.escape(format_text(report))}</pre>{extra}"
         f"{''.join(figures)}</main>"
     )
     path.write_text(

@@ -142,7 +142,7 @@ def _run_job(step: str, config_path: str, out_dir: str, queue) -> None:
 
         from aerorib.bambu import BambuError, read_template
         from aerorib.classify import ClassifyError, classify
-        from aerorib.cli import format_bores
+        from aerorib.report import format_bays, format_bores
         from aerorib.config import ConfigError, load_config, material_label, resolve_template
         from aerorib.export import export_results
         from aerorib.io_step import StepReadError, read_step
@@ -180,6 +180,7 @@ def _run_job(step: str, config_path: str, out_dir: str, queue) -> None:
                 "masse": round(s["mass_g"], 2), "trajet": round(s["path_length_m"], 2),
                 "couches": int(s["layers"]), "hauteur": round(s["height_mm"], 2),
                 "trous": format_bores(b.bores, b.filled).strip().removeprefix("trous : "),
+                "baies": format_bays(b.bays).strip().removeprefix("baies : "),
             })
         rapports = sorted(p.name for p in out.glob("*-rapport.html"))
         finish(

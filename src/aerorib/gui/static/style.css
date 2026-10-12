@@ -23,6 +23,7 @@
   --peau-trait: #8c959f;
   --bande: #8250df;
   --trou: #0a7a6b;
+  --baie: #bc4c00;
   --rayon: 6px;
   --police: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -52,6 +53,7 @@
     --peau-trait: #6e7886;
     --bande: #b392f0;
     --trou: #39c5b0;
+    --baie: #f0883e;
   }
 }
 
@@ -218,6 +220,10 @@ svg .contour-aile { fill: none; stroke: var(--peau-trait); }
 svg .trou-dessus .trou { fill: var(--trou); fill-opacity: .25; stroke: var(--trou); }
 svg .trou-dessus .trou.rebouche { fill: none; stroke-dasharray: 2 2; }
 svg .trou-dessus .gaine { fill: none; stroke: var(--trou); stroke-dasharray: 4 3; stroke-opacity: .8; }
+svg .baie-dessus .baie-ouverture { fill: var(--baie); fill-opacity: .3; stroke: none; }
+svg .baie-dessus .baie-rampe { fill: var(--baie); fill-opacity: .12; stroke: var(--baie); stroke-dasharray: 3 2; stroke-opacity: .7; }
+svg .baie-dessus .baie-boite { fill: none; stroke: var(--baie); }
+.legende .pastille-baie { background: color-mix(in srgb, var(--baie) 30%, transparent); border: 2px solid var(--baie); }
 .legende .pastille-trou { background: color-mix(in srgb, var(--trou) 25%, transparent); border: 2px solid var(--trou); }
 svg .coupe-troncon { stroke: var(--texte); stroke-dasharray: 8 5; }
 svg .niveau-z { stroke: var(--attention); stroke-dasharray: 3 3; }

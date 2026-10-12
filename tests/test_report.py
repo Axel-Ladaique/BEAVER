@@ -51,3 +51,11 @@ def test_text_lists_warnings():
     text = format_text(Report(issues, STATS, {}))
     assert text.splitlines()[0] == "✔ imprimable en vase mode"
     assert "  ⚠ fente trop fine : 1 couche(s) (avertissement)" in text
+
+
+def test_html_lists_details_escaped(tmp_path: Path):
+    out = write_html(Report((), STATS, {}), tmp_path / "r.html", title="aile",
+                     details=["  trous : SBAR_CABLE_1 (gaine, Ø6.0)", "  baies : SERVO<1> (baie extrados, …)"])
+    html = out.read_text(encoding="utf-8")
+    assert "<li>trous : SBAR_CABLE_1 (gaine, Ø6.0)</li>" in html
+    assert "SERVO&lt;1&gt; (baie extrados" in html

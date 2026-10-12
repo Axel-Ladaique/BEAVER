@@ -112,3 +112,82 @@ return [
 ];
 """)
     assert out == [True, True, False, False]
+
+
+_DOM = r"""
+class N {
+  constructor(tag) { this.tag = tag; this.attrs = {}; this.enfants = []; this.textContent = ""; }
+  setAttribute(k, v) { this.attrs[k] = v; }
+  append(...e) { this.enfants.push(...e); }
+  addEventListener() {}
+}
+globalThis.Node = N;
+globalThis.window = { location: { search: "?token=t" } };
+globalThis.sessionStorage = { setItem() {}, getItem() { return ""; } };
+globalThis.document = { createElementNS: (ns, t) => new N(t), createElement: (t) => new N(t),
+                        createTextNode: (t) => Object.assign(new N("#text"), { textContent: t }) };
+"""
+
+
+def test_vue_de_dessus_dessine_les_baies():
+    """Baie de servo : rampes (claires) + ouverture + boîte utile, titre en textContent (nom non interprété)."""
+    out = _node(_DOM + r"""
+const { dessinDessus } = await js("onglets/apercu.js");
+const plan = { aile: [0, 0, 100, 120], segments: [], coupes: [], trous: [
+  { nom: "SBAR_CABLE_1", type: "gaine", x: 30, r: 3, gaine: 3.5, z0: 0, z1: 50 },
+], baies: [
+  { nom: "SERVO<1>", cote: "extrados", x0: 22, x1: 42, z0: 40, z1: 75, ouverture: [30, 85], profondeur: 7,
+    renfort: true, renfort_partiel: false },
+] };
+const s = dessinDessus(plan, 40);
+const g = s.enfants.filter((n) => n.tag === "g");
+const baie = g.find((n) => n.attrs.class === "baie-dessus");
+return {
+  gaine: g.find((n) => n.enfants.some((e) => e.tag === "title" && e.textContent.startsWith("gaine"))).attrs.class,
+  titre: baie.enfants.find((n) => n.tag === "title").textContent,
+  rects: baie.enfants.filter((n) => n.tag === "rect").map((r) => [r.attrs.class, +r.attrs.x, +r.attrs.y, +r.attrs.width, +r.attrs.height]),
+};
+""")
+    assert out["gaine"] == "trou-dessus longeron"
+    assert out["titre"].startswith("baie de servo « SERVO<1> » (extrados)") and "renfort" in out["titre"]
+    assert "30" in out["titre"] and "85" in out["titre"]
+    assert out["rects"] == [
+        ["baie-rampe", 30, -42, 10, 20], ["baie-rampe", 75, -42, 10, 20],
+        ["baie-ouverture", 40, -42, 35, 20], ["baie-boite", 40, -42, 35, 20],
+    ]
+
+
+def test_orientation_minimale_avec_emplanture():
+    out = _node("""
+const { lireOrientation, valeurOrientation } = await js("formulaire.js");
+return [
+  valeurOrientation(null, "auto"), valeurOrientation(null, "fin"), valeurOrientation([1, 0, 0], "auto"),
+  valeurOrientation([1, 0, 0], "debut"),
+  lireOrientation("auto"), lireOrientation({ root: "fin" }), lireOrientation({ axis: [0, 1, 0], root: "debut" }),
+];
+""")
+    assert out == [
+        "auto", {"root": "fin"}, {"axis": [1, 0, 0]}, {"axis": [1, 0, 0], "root": "debut"},
+        {"axe": None, "racine": "auto"}, {"axe": None, "racine": "fin"}, {"axe": [0, 1, 0], "racine": "debut"},
+    ]
+
+
+def test_libelles_servo_gaines_emplanture():
+    out = _node("""
+const { aide, libelle, CHOIX } = await js("libelles.js");
+const { PLAN } = await js("schema.js");
+const chemins = [["servo"], ["servo", "strip"], ["servo", "min_floor_gap"], ["servo", "reinforce"],
+  ["servo", "reinforce_offset"], ["servo", "slit_width"], ["naming", "servo"], ["naming", "cable_markers"],
+  ["orientation", "root"], ["spars", "cable", "sleeve"], ["roles"]];
+return { libelles: chemins.map(libelle), aideRoles: aide(["roles"]), aideCable: aide(["spars", "cable", "sleeve"]),
+         choix: [CHOIX.servo, CHOIX.debut, CHOIX.fin], plan: PLAN.some((b) => b.cle === "servo") };
+""")
+    lib = out["libelles"]
+    assert lib == [
+        "Baies de servo", "Bande sans nervure autour de la poche (mm)", "Fond ↔ peau opposée min. (mm)",
+        "Renfort (paroi doublée)", "Épaisseur de la paroi doublée (mm)", "Largeur de la fente de renfort (mm)",
+        "Baie de servo", "Marqueurs de gaine de câble", "Emplanture", "Manchon (mm)", "Rôles imposés (repli)",
+    ]
+    assert "parent" in out["aideRoles"] and "préfixe" in out["aideRoles"]
+    assert "1,2" in out["aideCable"]
+    assert out["choix"] == ["baie de servo", "début (coordonnée min.)", "fin (coordonnée max.)"] and out["plan"]

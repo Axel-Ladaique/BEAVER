@@ -63,8 +63,10 @@ export function carteEssai(projet, essai, r) {
     ]));
   }
   if (r.corps && r.corps.length) {
+    const avecBaies = r.corps.some((c) => c.baies && c.baies !== "aucune");
     carte.append(el("table", {}, [
-      el("thead", {}, [el("tr", {}, ["Corps", "Imprimable", "Nervures", "Tronçons", "Couches", "Hauteur", "Masse", "Trajet", "Trous"]
+      el("thead", {}, [el("tr", {}, ["Corps", "Imprimable", "Nervures", "Tronçons", "Couches", "Hauteur", "Masse", "Trajet", "Trous",
+        ...(avecBaies ? ["Baies de servo"] : [])]
         .map((t) => el("th", { texte: t })))]),
       el("tbody", {}, r.corps.map((c) => el("tr", {}, [
         el("td", { texte: c.nom }), el("td", { texte: c.ok ? "oui" : "non" }),
@@ -72,6 +74,7 @@ export function carteEssai(projet, essai, r) {
         el("td", { classe: "nombre", texte: String(c.couches) }), el("td", { classe: "nombre", texte: `${nombre(c.hauteur, 1)} mm` }),
         el("td", { classe: "nombre", texte: `${nombre(c.masse, 1)} g` }), el("td", { classe: "nombre", texte: `${nombre(c.trajet, 1)} m` }),
         el("td", { texte: c.trous || "" }),
+        avecBaies ? el("td", { texte: c.baies || "" }) : null,
       ]))),
     ]));
   }

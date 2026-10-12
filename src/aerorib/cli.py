@@ -17,7 +17,7 @@ from aerorib.export import export_results
 from aerorib.io_step import StepReadError, read_step
 from aerorib.orient import orient
 from aerorib.pipeline import PipelineError, run_model
-from aerorib.report import format_bays, format_text, write_html
+from aerorib.report import format_bays, format_bores, format_text, write_html
 from aerorib.validate import validate
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, pretty_exceptions_show_locals=False)
@@ -178,32 +178,6 @@ def profils(
         if template:
             label = Path(template).name + ("" if Path(template).is_file() else " (introuvable)")
         typer.echo(f"  {info.name:<12} {info.origin:<11} gabarit Bambu : {label}   ({info.path})")
-
-
-def format_bores(bores, filled=()) -> str:
-    """Trous traités (décisions autonomes rendues visibles), repère d'impression, 1 décimale."""
-    items = []
-    for b in bores:
-        if not b.cut_hole:
-            items.append(f"{b.name} (Ø{2 * b.radius:.1f}, x={b.x:.1f}, y={b.y:.1f})")
-        elif b.cable:
-            items.append(f"{b.name} (gaine, Ø{2 * b.radius:.1f})")
-        elif b.anchor_gap > 0:  # l'attache est du côté opposé à la fente
-            items.append(f"{b.name} (longeron, Ø{2 * b.radius:.1f}, attache {'intrados' if b.side > 0 else 'extrados'})")
-        else:
-            items.append(f"{b.name} (longeron, Ø{2 * b.radius:.1f})")
-    groups: dict[str, list] = {}
-    for f in filled:
-        groups.setdefault(f"{2 * f.r:.1f}", []).append(f)
-    if groups:
-        items.append(
-            "rebouchés : "
-            + " ; ".join(
-                f"{len(fs)} × Ø{d} (" + " / ".join(f"x={f.x:.1f}, y={f.y:.1f}" for f in fs) + ")"
-                for d, fs in groups.items()
-            )
-        )
-    return "  trous : " + (" ; ".join(items) if items else "aucun")
 
 
 def _format_segments(segments, first_plate: int | None) -> str:

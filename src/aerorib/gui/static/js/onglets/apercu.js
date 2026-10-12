@@ -225,6 +225,7 @@ export function dessinDessus(plan, zCourant) {
     }));
     s.append(g);
   }
+  for (const b of plan.baies || []) s.append(dessinBaie(b));
   for (const c of plan.coupes || []) {
     s.append(svg("line", { x1: c, y1: -xmax - b.h, x2: c, y2: -xmin + b.h, classe: "coupe-troncon", "stroke-width": 1.5, ...TRAIT }, [
       svg("title", { texte: `Coupe de tronçon à z = ${nombre(c, 1)} mm` }),
@@ -240,6 +241,26 @@ export function dessinDessus(plan, zCourant) {
     choisirZ(Math.min(Math.max(p.x, zmin), zmax));
   });
   return s;
+}
+
+/** Baie de servo vue de dessus : ouverture dans la peau (rampes plus claires) et boîte utile en trait plein. */
+export function dessinBaie(b) {
+  const [o0, o1] = b.ouverture;
+  const renfort = b.renfort ? (b.renfort_partiel ? ", renfort partiel" : ", renfort") : "";
+  const titre = `baie de servo « ${b.nom} » (${b.cote}) : utile ${nombre(b.x1 - b.x0, 1)} × ${nombre(b.z1 - b.z0, 1)} mm, `
+    + `ouverture z = ${nombre(o0, 1)} – ${nombre(o1, 1)} mm (rampes comprises), profondeur ${nombre(b.profondeur, 1)} mm${renfort}`;
+  const bande = (za, zb, classe) => svg("rect", {
+    x: za, y: -b.x1, width: Math.max(zb - za, 0), height: b.x1 - b.x0, classe, "stroke-width": 1, ...TRAIT,
+  });
+  return svg("g", { classe: "baie-dessus" }, [
+    svg("title", { texte: titre }),
+    bande(o0, b.z0, "baie-rampe"),
+    bande(b.z1, o1, "baie-rampe"),
+    bande(b.z0, b.z1, "baie-ouverture"),
+    svg("rect", {
+      x: b.z0, y: -b.x1, width: b.z1 - b.z0, height: b.x1 - b.x0, classe: "baie-boite", "stroke-width": 2, ...TRAIT,
+    }),
+  ]);
 }
 
 function tuile(valeur, etiquette, titre) {
@@ -444,7 +465,8 @@ function construire() {
           el("div", { classe: "legende" }, [
             el("span", {}, [el("span", { classe: "pastille", style: "background: var(--reseau-a)" }), "réseau +angle"]),
             el("span", {}, [el("span", { classe: "pastille", style: "background: var(--reseau-b)" }), "réseau −angle"]),
-            el("span", {}, [el("span", { classe: "pastille pastille-trou" }), "longeron / passage (gaine en pointillés)"]),
+            el("span", {}, [el("span", { classe: "pastille pastille-trou" }), "longeron / passage / gaine de câble (manchon en pointillés)"]),
+            el("span", {}, [el("span", { classe: "pastille pastille-baie" }), "baie de servo (rampes plus claires)"]),
             el("span", {}, [el("span", { classe: "pastille", style: "border-top: 2px dashed var(--texte)" }), "coupe de tronçon"]),
             el("span", {}, [el("span", { classe: "pastille", style: "border-top: 2px dashed var(--attention)" }), "coupe affichée"]),
           ]),

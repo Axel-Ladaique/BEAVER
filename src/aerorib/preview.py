@@ -479,6 +479,9 @@ class PlanformView:
     warnings: list[str] = field(default_factory=list)
     # trous vus de dessus, repère orienté : {nom, type, x, r, gaine, z0, z1} (étendue z × diamètre)
     bores: list[dict] = field(default_factory=list)
+    # baies de servo vues de dessus : {nom, cote, x0, x1, z0, z1 (boîte utile), ouverture [z, z] (rampes
+    # comprises), profondeur, renfort, renfort_partiel}
+    bays: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -489,7 +492,21 @@ class PlanformView:
             "coupes": [_round(c) for c in self.cuts],
             "avertissements": self.warnings,
             "trous": self.bores,
+            "baies": self.bays,
         }
+
+
+def _plan_bays(prep: Prepared) -> list[dict]:
+    """Baies de servo vues de dessus : boîte utile et ouverture dans la peau (rampes comprises)."""
+    out = []
+    for b in prep.bays:
+        lo, hi = b.opening
+        out.append({
+            "nom": b.name, "cote": b.side_name, "x0": _round(b.x0), "x1": _round(b.x1), "z0": _round(b.z0),
+            "z1": _round(b.z1), "ouverture": [_round(lo), _round(hi)], "profondeur": _round(b.depth),
+            "renfort": b.rf_offset > 0, "renfort_partiel": bool(b.rf_offset > 0 and b.rf_lost),
+        })
+    return out
 
 
 def _plan_bores(prep: Prepared) -> list[dict]:
@@ -524,7 +541,8 @@ def _cuts(prep: Prepared, cfg: Config) -> tuple[list[float], list[str]]:
 
 
 def planform(prep: Prepared, plates: list[Plate2D], cfg: Config | None = None) -> PlanformView:
-    """Vue de dessus (x, z) : parties coupées de chaque plaque, contour de l'aile, trous, coupes de tronçons."""
+    """Vue de dessus (x, z) : parties coupées de chaque plaque, contour de l'aile, trous, baies de servo, coupes de
+    tronçons."""
     bb = prep.bb
     zmin, zmax = bb.min.Z, bb.max.Z
     segs = []
@@ -535,8 +553,9 @@ def planform(prep: Prepared, plates: list[Plate2D], cfg: Config | None = None) -
             continue
         segs.append(PlanSegment(p.c + lo * p.d0, zmin + lo * p.d1, p.c + hi * p.d0, zmin + hi * p.d1, p.layer, p.family))
     cuts, warns = _cuts(prep, cfg) if cfg is not None else ([], [])
+    warns = [*reinforce_warnings(prep.bays), *warns]
     return PlanformView(segs, (bb.min.X, zmin, bb.max.X, zmax), [prep.zrange[0] + c for c in cuts], warns,
-                        _plan_bores(prep))
+                        _plan_bores(prep), _plan_bays(prep))
 
 
 # --- chiffres estimés ---------------------------------------------------------------------------------------

@@ -18,7 +18,12 @@ const LIBELLES = {
   split: "Séparation haut / bas",
   norib: "Sans nervure",
   cut: "Découpe",
-  roles: "Rôles imposés",
+  roles: "Rôles imposés (repli)",
+  servo: "Baies de servo",
+  min_floor_gap: "Fond ↔ peau opposée min. (mm)",
+  reinforce: "Renfort (paroi doublée)",
+  reinforce_offset: "Épaisseur de la paroi doublée (mm)",
+  cable_markers: "Marqueurs de gaine de câble",
   validation: "Validation",
   tessellation_tol: "Tolérance de maillage (mm)",
   skin_tolerance: "Tolérance de peau (mm)",
@@ -65,6 +70,11 @@ const LIBELLES_CHEMIN = {
   "passages.sleeve": "Manchon (mm)",
   "segment.mode": "Découpe en tronçons",
   "passages.mode": "Traitement des passages",
+  "servo.strip": "Bande sans nervure autour de la poche (mm)",
+  "servo.slit_width": "Largeur de la fente de renfort (mm)",
+  "naming.servo": "Baie de servo",
+  "orientation": "Orientation et emplanture",
+  "orientation.root": "Emplanture",
 };
 const AIDES = {
   "slit_width": "épaisseur des plaques coupées dans la pièce",
@@ -73,12 +83,22 @@ const AIDES = {
   "segment.cuts_at": "altitudes séparées par « ; »",
   "naming.*": "préfixes séparés par des virgules",
   "split.gap": "≥ largeur de ligne",
+  "naming.cable_markers": "un longeron dont le nom contient l'un de ces marqueurs est une gaine de câble (séparés par des virgules)",
+  "roles": "repli pour les corps sans préfixe reconnu : un rôle posé sur un niveau parent ne remplace pas le préfixe propre d'un corps",
+  "servo.reinforce": "deux fentes en J parallèles à la poche, reliées par un pont",
+  "servo.reinforce_offset": "vide = 1,2 × largeur de ligne (≥ largeur de ligne)",
+  "servo.min_floor_gap": "matière minimale sous le fond de la baie (renfort en plus)",
+  "servo.strip": "zone sans nervure autour de la poche et de son renfort",
+  "spars.cable.sleeve": "gaine : défaut 1,2 × largeur de ligne (≈ 0,5 mm)",
+  "spars.cable.strip": "gaine : défaut = largeur de ligne",
+  "spars.cable.anchor": "gaine : sans attache par défaut",
 };
 export const CHOIX = {
   fill: "reboucher", link: "relier à la peau", off: "aucun", auto: "automatique",
   top: "dessus (extrados)", bottom: "dessous (intrados)",
   skin: "peau", spar: "longeron", split: "séparation", norib: "sans nervure", cut: "découpe", ignore: "ignorer",
-  diamond: "losange", full: "jusqu'à la bande",
+  diamond: "losange", full: "jusqu'à la bande", servo: "baie de servo",
+  debut: "début (coordonnée min.)", fin: "fin (coordonnée max.)",
 };
 
 function generique(chemin) {

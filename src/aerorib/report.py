@@ -52,7 +52,7 @@ def format_bays(bays) -> str:
         lo, hi = b.opening
         items.append(
             f"{b.name} (baie {b.side_name}, {b.x1 - b.x0:.1f} × {b.z1 - b.z0:.1f} mm utiles, "
-            f"ouverture {hi - lo:.1f} mm, profondeur {b.depth:.1f} mm)"
+            f"ouverture {hi - lo:.1f} mm, profondeur {b.depth:.1f} mm" + (", renfort)" if b.rf_offset > 0 else ")")
         )
     return "  baies : " + (" ; ".join(items) if items else "aucune")
 

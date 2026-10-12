@@ -27,6 +27,7 @@ from aerorib.testing.synthetic import servo_wing_bodies
 
 FIXTURES = Path(__file__).parent / "fixtures"
 OVER = {"material_settings": {"layer_height": 1.0}, "rib_layers": [{"spacing": 20}], "passages": {"mode": "link"}}
+PLAIN = {**OVER, "servo": {"reinforce": False}}  # sans renfort : comportement de la tâche 4
 
 
 def _oriented(bodies, cfg):
@@ -77,7 +78,7 @@ def test_pocket_profile_ramps_follow_max_overhang():
 
 
 def test_pocket_zones_cover_the_pocket_with_strip():
-    cfg = load_config(overrides=OVER)
+    cfg = load_config(overrides=PLAIN)
     (bay,), skin, _ = _bays(servo_wing_bodies("extrados"), cfg)
     zmin = skin.bounding_box().min.Z
     d0, d1 = math.sin(math.radians(45)), math.cos(math.radians(45))
@@ -92,10 +93,16 @@ def test_pocket_zones_cover_the_pocket_with_strip():
     assert not zone.contains(Point(s_mid, bay.y_floor - 2.2))
     # plaque qui passe loin de la boîte : aucune zone
     assert pocket_zones_2d(bay, c + 200, d0, d1, zmin, zmin + 120, strip=2.0, slit=0.1) == []
+    # avec renfort : la zone couvre aussi la fente (décalée de la largeur de ligne) + la bande
+    (rbay,), _, _ = _bays(servo_wing_bodies("extrados"), load_config(overrides=OVER))
+    (rzone,) = pocket_zones_2d(rbay, c, d0, d1, zmin, zmin + 120, strip=2.0, slit=0.1)
+    edge = rbay.y_floor - rbay.reach
+    assert rbay.reach == pytest.approx(0.42 + 0.15 / 2)
+    assert rzone.contains(Point(s_mid, edge - 1.9)) and not rzone.contains(Point(s_mid, edge - 2.2))
 
 
 def test_pocket_zones_stop_just_beyond_the_skin():
-    cfg = load_config(overrides=OVER)
+    cfg = load_config(overrides=PLAIN)
     (bay,), skin, mid = _bays(servo_wing_bodies("extrados"), cfg)
     zmin = skin.bounding_box().min.Z
     d0, d1 = math.sin(math.radians(45)), math.cos(math.radians(45))
@@ -151,6 +158,17 @@ def test_bay_error_reaches_pipeline_in_french():
         run_model(classify(servo_wing_bodies(box=(22.0, 42.0, 2.0, 6.0, 40.0, 75.0)), cfg), cfg)
 
 
+def test_reinforce_settings():
+    cfg = load_config()
+    assert cfg.servo.reinforce and cfg.reinforce_offset() == cfg.preset.line_width
+    assert load_config(overrides={"servo": {"reinforce_offset": 0.6}}).reinforce_offset() == 0.6
+    with pytest.raises(ValueError, match="servo : reinforce_offset 0.3 mm < largeur de ligne"):
+        load_config(overrides={"servo": {"reinforce_offset": 0.3}})
+    with pytest.raises(ValueError, match="servo : fente .*slicer la refermerait"):
+        load_config(overrides={"servo": {"slit_width": 0.1}})
+    load_config(overrides={"servo": {"reinforce": False, "slit_width": 0.1}})  # sans renfort : fente inutilisée
+
+
 def test_min_floor_gap_setting():
     cfg = load_config(overrides={**OVER, "servo": {"min_floor_gap": 7.0}})
     with pytest.raises(ServoError, match=r"servo\.min_floor_gap = 7"):
@@ -170,8 +188,11 @@ def run_of(tmp_path_factory):
 
     def get(side):
         if side not in _RUNS:
-            cfg = load_config(overrides=OVER)
-            bodies = servo_wing_bodies("extrados", cable=True) if side == "gaine" else servo_wing_bodies(side)
+            cfg = load_config(overrides=PLAIN if side == "sans_renfort" else OVER)
+            if side == "gaine":
+                bodies = servo_wing_bodies("extrados", cable=True)
+            else:
+                bodies = servo_wing_bodies("extrados" if side == "sans_renfort" else side)
             step = write_step(root / f"servo_{side}.step", bodies)
             _RUNS[side] = step, run_model(classify(read_step(step), cfg), cfg)
         return _RUNS[side]
@@ -191,6 +212,13 @@ def test_cable_entering_bay_is_printable(run_of):
     _, run = run_of("gaine")
     (body,) = run.bodies
     assert [b.cable for b in body.bores] == [True] and len(body.bays) == 1
+    # anneau sans nervure autour de la gaine là où elle débouche dans la poche ; pont de la fente de renfort autour
+    (bay,) = body.bays
+    (b,) = body.bores
+    ((x, y, ring, za, zb),) = bay.rings
+    assert (x, y) == (b.x, b.y) and ring == pytest.approx(b.radius + 2 * 0.42) and za < bay.z0 < zb
+    ((ga, gb),) = bay.rf_gaps
+    assert ga <= b.x - b.radius - 1.0 and gb >= b.x + b.radius + 1.0
     assert body.report.ok, [(i.z, i.message, i.bounds) for i in body.report.errors][:5]
 
 
@@ -227,7 +255,53 @@ def test_servo_wing_is_printable(servo_run):
     inner = box(bay.x0 + 0.5, min(bay.y_floor, bay.y_box) + 0.5, bay.x1 - 0.5, max(bay.y_floor, bay.y_box) - 0.5)
     assert sum(p.intersection(inner).area for p in layer.polygons) < 0.5
     text = format_bays(body.bays)
-    assert f"SERVO_1 (baie {side}, 20.0 × 35.0 mm utiles, ouverture" in text
+    assert f"SERVO_1 (baie {side}, 20.0 × 35.0 mm utiles, ouverture" in text and text.endswith(", renfort)")
+
+
+def _opening_mouths(body, bay, cfg) -> int:
+    """Bouches sur la peau d'ouverture, à mi-baie, dans la largeur de la baie (renfort et bande compris)."""
+    from shapely.geometry import box
+    from shapely.ops import unary_union
+
+    from aerorib.slicing import slice_layers
+
+    z = (bay.z0 + bay.z1) / 2
+    (orig,), (res,) = (slice_layers(s, [z], cfg.validation.tessellation_tol) for s in (body.original, body.result))
+    window = box(bay.x0 - bay.reach - 1.0, -1e3, bay.x1 + bay.reach + 1.0, 1e3)
+    skin = unary_union([p.exterior for p in orig.polygons]).intersection(window)
+    kept = unary_union([p.boundary for p in res.polygons]).buffer(cfg.validation.skin_tolerance)
+    missing = skin.difference(kept)
+    return len([g for g in getattr(missing, "geoms", [missing]) if g.length > 0.05])
+
+
+def test_reinforcement_doubles_the_pocket_walls(run_of):
+    cfg = load_config(overrides=OVER)
+    (body,) = run_of("extrados")[1].bodies
+    (plain,) = run_of("sans_renfort")[1].bodies
+    (bay,), (pbay,) = body.bays, plain.bays
+    assert pbay.rf_offset == 0 and pbay.rf_gaps == () and bay.rf_offset == pytest.approx(cfg.preset.line_width)
+    assert plain.report.ok and format_bays(plain.bays).endswith("mm)")  # pas de « renfort »
+    # 2 bouches de plus sur la peau d'ouverture : les deux branches de la fente
+    assert _opening_mouths(body, bay, cfg) == _opening_mouths(plain, pbay, cfg) + 2
+    # paroi supplémentaire parallèle à chaque paroi latérale : matière | fente | matière, puis la poche
+    from shapely.geometry import Point
+
+    from aerorib.slicing import slice_layers
+
+    (layer,) = slice_layers(body.result, [(bay.z0 + bay.z1) / 2], cfg.validation.tessellation_tol)
+    y = bay.y_floor + 1.0
+    o, w = bay.rf_offset, bay.rf_width
+
+    def solid(x):
+        return any(p.contains(Point(x, y)) for p in layer.polygons)
+
+    for wall, out in ((bay.x0, -1), (bay.x1, 1)):
+        assert not solid(wall - out * 0.1)  # poche
+        assert solid(wall + out * (o - w / 2) / 2)  # paroi doublée (entre poche et fente)
+        assert not solid(wall + out * o)  # fente
+        assert solid(wall + out * (o + w / 2 + 0.15))  # matière au-delà
+    (pl,) = slice_layers(plain.result, [(pbay.z0 + pbay.z1) / 2], cfg.validation.tessellation_tol)
+    assert any(p.contains(Point(pbay.x0 - pbay.rf_offset - 0.42, pbay.y_floor + 1.0)) for p in pl.polygons)
 
 
 def test_ramps_have_no_overhang_beyond_limit(servo_run):
@@ -290,5 +364,5 @@ def test_servo_fixture_end_to_end():
     (body,) = run.bodies
     assert body.report.ok, [(i.z, i.message, i.bounds) for i in body.report.errors][:10]
     (bay,) = body.bays
-    assert bay.name == "SERVO_1" and bay.side == 1
+    assert bay.name == "SERVO_1" and bay.side == 1 and bay.rf_offset > 0
     print(format_bays(body.bays), body.plates, body.report.stats, body.warnings)

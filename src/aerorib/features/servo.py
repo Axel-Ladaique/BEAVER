@@ -10,14 +10,15 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
-from build123d import Face, GeomType, Solid, Vector, Wire, extrude
+from build123d import Align, Box, Face, GeomType, Location, Solid, Vector, Wire, extrude
 from shapely import affinity
-from shapely.geometry import LineString, Polygon, box
+from shapely.geometry import LineString, Point, Polygon, box
 
 from aerorib.config import Config
+from aerorib.features.bores import Bore, bore_extent
 from aerorib.midsurface import MidSurface
 
 ALIGN_TOL_DEG = 2.0  # écart max des faces de la boîte aux axes orientés
@@ -25,6 +26,14 @@ OUTSIDE = 5.0  # mm : la poche dépasse la boîte englobante de la pièce de cet
 _SAMPLES = 9  # échantillons par direction (x, z) pour situer la boîte par rapport aux peaux
 SKIN_MARGIN = 0.5  # mm : la zone sans nervure s'arrête à cette distance au-delà de la peau d'ouverture
 HOLE_TOL = 1.0  # mm : marge en envergure de la partie d'un trou retirée de la référence de validation
+# Renfort : la bande de matière entre la poche et la fente (paroi doublée) serait un îlot si la fente en U était
+# continue d'un bord de l'ouverture à l'autre. Elle est interrompue par un pont (un seul intervalle de x, sur toute
+# l'envergure : deux branches en J, chacune ouverte sur la peau), qui couvre :
+# - là où la peau d'ouverture est la plus éloignée du fond, près de chaque bout : dans les couches où la rampe sort
+#   de la peau, la bande ne subsiste qu'autour de ce point (peau unimodale le long de la corde, cas d'un profil) ;
+# - de part et d'autre de chaque trou qui débouche dans la poche ou dans la fente (le trou couperait la bande).
+RING_LINES = 2.0  # largeurs de ligne de matière gardées sans nervure autour d'un trou qui débouche dans la poche
+BRIDGE_MIN = 1.0  # mm : longueur minimale d'un pont (au moins 2 largeurs de ligne)
 _FAR = 1e4
 
 
@@ -51,6 +60,18 @@ class ServoBay:
     # peau d'ouverture la plus extérieure autour de la poche (corde ± bande, rampes ± bande) : les zones sans
     # nervure s'arrêtent juste au-delà (plus loin, une plaque ne coupe que de l'air)
     y_skin: float
+    rf_offset: float = 0.0  # renfort : paroi de poche → axe de la fente (0 : pas de renfort)
+    rf_width: float = 0.0  # largeur de la fente de renfort
+    rf_gaps: tuple[tuple[float, float], ...] = ()  # intervalles de x sans fente (ponts)
+    # trous qui débouchent dans la poche : (x, y, rayon de l'anneau sans nervure, z début, z fin). Là où le trou
+    # rejoint la poche, il fait partie de l'extérieur et son manchon devient le seul passage de la matière autour
+    # de lui : un manchon de gaine (≈ 1,2 ligne) moins la demi-épaisseur d'une plaque voisine serait trop fin.
+    rings: tuple[tuple[float, float, float, float, float], ...] = ()
+
+    @property
+    def reach(self) -> float:
+        """Distance de la paroi de poche au bord extérieur de la fente de renfort (0 sans renfort)."""
+        return self.rf_offset + self.rf_width / 2 if self.rf_offset > 0 else 0.0
 
     @property
     def side_name(self) -> str:
@@ -80,7 +101,7 @@ def _skins(mid: MidSurface, x, z) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return ym + th / 2, ym - th / 2, th
 
 
-def servo_bay(name: str, solid: Solid, bb, mid: MidSurface, cfg: Config) -> ServoBay:
+def servo_bay(name: str, solid: Solid, bb, mid: MidSurface, cfg: Config, bores: Sequence[Bore] = ()) -> ServoBay:
     x0, x1, y0, y1, z0, z1 = _aligned_box(name, solid)
     xs, zs = np.meshgrid(np.linspace(x0, x1, _SAMPLES), np.linspace(z0, z1, _SAMPLES))
     top, bot, th = _skins(mid, xs.ravel(), zs.ravel())
@@ -131,19 +152,66 @@ def servo_bay(name: str, solid: Solid, bb, mid: MidSurface, cfg: Config) -> Serv
     if along is not None:
         depth = max(depth, side * (along - floor))
     ramp = depth * run
-    grow = cfg.servo.strip + cfg.slit_width / 2
+    rf_offset = cfg.reinforce_offset() if cfg.servo.reinforce else 0.0
+    rf_width = cfg.servo.slit_width if cfg.servo.reinforce else 0.0
+    reach = rf_offset + rf_width / 2 if rf_offset > 0 else 0.0
+    grow = cfg.servo.strip + cfg.slit_width / 2 + reach
     around = outer_skin(x0 - grow, x1 + grow, [(z0 - ramp - grow, z1 + ramp + grow)])
     y_skin = around if around is not None else floor + side * depth
     y_out = bb.max.Y + OUTSIDE if side > 0 else bb.min.Y - OUTSIDE
-    return ServoBay(
-        name, side, x0, x1, floor, outer, z0, z1, depth, ramp, run, y_out, zmin, zmax, y_skin
+    bay = ServoBay(
+        name, side, x0, x1, floor, outer, z0, z1, depth, ramp, run, y_out, zmin, zmax, y_skin, rf_offset, rf_width
     )
+    rings = []
+    for b in bores:
+        if not b.cut_hole:
+            continue
+        lo, hi = bore_extent(b, zmin, zmax)
+        ring = b.radius + RING_LINES * cfg.preset.line_width
+        meet = hole_meets_pocket(bay, b.x, b.y, b.radius, lo, hi, tol=ring)
+        if meet is not None:
+            rings.append((b.x, b.y, ring, *meet))
+    bay = replace(bay, rings=tuple(rings))
+    if rf_offset > 0:
+        # abscisse de la peau d'ouverture la plus éloignée du fond, près de chaque bout de l'ouverture
+        xs_ = np.linspace(x0, x1, 8 * _SAMPLES)
+        deepest = []
+        for z in (max(z0 - ramp / 2, zmin), min(z1 + ramp / 2, zmax)):
+            t, b_, th_ = _skins(mid, xs_, np.full(len(xs_), z))
+            sk = np.where(th_ > 0, side * (t if side > 0 else b_), -np.inf)
+            deepest.append(float(xs_[int(np.argmax(sk))]))
+        length = max(BRIDGE_MIN, 2 * cfg.preset.line_width)
+        bay = replace(bay, rf_gaps=_bridges(bay, bores, length, deepest))
+    return bay
 
 
-def servo_bays(servos: Sequence[tuple[str, Solid]], skin: Solid, mid: MidSurface, cfg: Config) -> list[ServoBay]:
-    """Baies des corps servo orientés (nom, solide) ; ServoError (français) si une boîte n'est pas prise en charge."""
+def _bridges(
+    bay: ServoBay, bores: Sequence[Bore], length: float, deepest: Sequence[float]
+) -> tuple[tuple[float, float], ...]:
+    """Intervalle de x où la fente de renfort est interrompue (pont) : il couvre les abscisses `deepest` (± length/2,
+    bornées à la boîte) et chaque trou qui touche la poche ou la fente (± `length`)."""
+    gaps = []
+    for x in deepest:
+        xc = min(max(x, bay.x0 + length / 2), bay.x1 - length / 2)
+        gaps.append((xc - length / 2, xc + length / 2))
+    for b in bores:
+        if not b.cut_hole:
+            continue
+        lo, hi = bore_extent(b, bay.zmin, bay.zmax)
+        if hole_meets_pocket(bay, b.x, b.y, b.radius, lo, hi, grow=bay.reach) is not None:
+            gaps.append((b.x - b.radius - length, b.x + b.radius + length))
+    # un seul pont continu : seules les deux branches latérales de la fente débouchent sur la peau ; un tronçon de
+    # fond entre deux ponts serait une fente fermée (trou isolé)
+    return ((min(a for a, _ in gaps), max(b_ for _, b_ in gaps)),)
+
+
+def servo_bays(
+    servos: Sequence[tuple[str, Solid]], skin: Solid, mid: MidSurface, cfg: Config, bores: Sequence[Bore] = ()
+) -> list[ServoBay]:
+    """Baies des corps servo orientés (nom, solide) ; ServoError (français) si une boîte n'est pas prise en charge.
+    `bores` : trous de la pièce, pour placer les ponts de la fente de renfort."""
     bb = skin.bounding_box()
-    return [servo_bay(name, solid, bb, mid, cfg) for name, solid in servos]
+    return [servo_bay(name, solid, bb, mid, cfg, bores) for name, solid in servos]
 
 
 def pocket_profile(bay: ServoBay) -> Polygon:
@@ -155,10 +223,61 @@ def pocket_profile(bay: ServoBay) -> Polygon:
     )
 
 
+def _prism(profile: Polygon, xa: float, xb: float) -> Solid:
+    ring = [Vector(xa, y, z) for z, y in list(profile.exterior.coords)[:-1]]
+    return extrude(Face(Wire.make_polygon(ring, close=True)), amount=xb - xa, dir=Vector(1, 0, 0))
+
+
 def pocket_solid(bay: ServoBay) -> Solid:
     """Outil de coupe de la poche : profil (z, y) extrudé le long de X sur [x0, x1]."""
-    ring = [Vector(bay.x0, y, z) for z, y in list(pocket_profile(bay).exterior.coords)[:-1]]
-    return extrude(Face(Wire.make_polygon(ring, close=True)), amount=bay.x1 - bay.x0, dir=Vector(1, 0, 0))
+    return _prism(pocket_profile(bay), bay.x0, bay.x1)
+
+
+def _grown(bay: ServoBay, d: float) -> tuple[Polygon, float, float]:
+    """Poche décalée de d vers l'intérieur de l'aile : profil (z, y) et étendue en x."""
+    prof = pocket_profile(bay)
+    return (prof.buffer(d, join_style="mitre") if d > 0 else prof), bay.x0 - d, bay.x1 + d
+
+
+def reinforce_solids(bay: ServoBay) -> list[Solid]:
+    """Fente de renfort : poche décalée de `rf_offset + w/2` moins poche décalée de `rf_offset − w/2` (U parallèle
+    aux parois, au fond et aux rampes, ouvert vers l'extérieur), interrompue aux ponts `rf_gaps`. Vide sans renfort.
+    """
+    if bay.rf_offset <= 0:
+        return []
+    outer = _prism(*_grown(bay, bay.rf_offset + bay.rf_width / 2))
+    inner = _prism(*_grown(bay, bay.rf_offset - bay.rf_width / 2))
+    za, ya, zb, yb = _grown(bay, bay.reach)[0].bounds
+    cuts = [
+        Box(b - a, yb - ya + 2, zb - za + 2, align=(Align.MIN, Align.MIN, Align.MIN)).moved(Location((a, ya - 1, za - 1)))
+        for a, b in bay.rf_gaps
+    ]
+    return list(outer.cut(inner, *cuts).solids())
+
+
+def _y_range(prof: Polygon, z: float) -> tuple[float, float] | None:
+    cut = prof.intersection(LineString([(z, -_FAR), (z, _FAR)]))
+    if cut.is_empty or cut.length <= 0:
+        return None
+    return cut.bounds[1], cut.bounds[3]
+
+
+def reinforce_section(bay: ServoBay, z: float) -> list[Polygon]:
+    """Coupe de la fente de renfort par le plan horizontal z, en (x, y) (aperçu)."""
+    if bay.rf_offset <= 0:
+        return []
+    prof, xa, xb = _grown(bay, bay.rf_offset + bay.rf_width / 2)
+    ys = _y_range(prof, z)
+    if ys is None:
+        return []
+    geom = box(xa, ys[0], xb, ys[1])
+    prof, xa, xb = _grown(bay, bay.rf_offset - bay.rf_width / 2)
+    ys = _y_range(prof, z)
+    if ys is not None:
+        geom = geom.difference(box(xa, ys[0], xb, ys[1]))
+    for a, b in bay.rf_gaps:
+        geom = geom.difference(box(a, -_FAR, b, _FAR))
+    return [g for g in getattr(geom, "geoms", [geom]) if isinstance(g, Polygon) and not g.is_empty]
 
 
 def pocket_section(bay: ServoBay, z: float) -> Polygon | None:
@@ -185,7 +304,7 @@ def pocket_zones_2d(
     Poche agrandie de `strip` + slit/2 (demi-épaisseur de plaque) en x, z et y, puis coupée par le plan de la
     plaque : profil (z, y) ramené en s, limité aux s où la plaque traverse l'étendue en corde de la boîte.
     """
-    grow = strip + slit / 2
+    grow = strip + slit / 2 + bay.reach  # renfort compris
     # au-delà de la peau d'ouverture, une plaque ne coupe que de l'air : la zone s'arrête juste après la peau
     # (sinon, prolongée jusqu'à y_out, son ombre retirerait des nervures loin au-delà de l'ouverture)
     cap = bay.y_skin + bay.side * SKIN_MARGIN
@@ -194,23 +313,33 @@ def pocket_zones_2d(
     mapped = affinity.affine_transform(prof, [1 / d1, 0, 0, 1, -zmin / d1, 0])
     sa, sb = sorted(((bay.x0 - grow - c) / d0, (bay.x1 + grow - c) / d0))
     zone = mapped.intersection(box(sa, -_FAR, sb, _FAR))
-    return [zone] if isinstance(zone, Polygon) and not zone.is_empty and zone.area > 0 else []
+    out = [zone] if isinstance(zone, Polygon) and not zone.is_empty and zone.area > 0 else []
+    for x, y, ring, za, zb in bay.rings:  # anneau autour des trous qui débouchent dans la poche (cf. `rings`)
+        r = ring + slit / 2
+        s0 = (x - c) / d0
+        ell = affinity.scale(Point(s0, y).buffer(1.0, quad_segs=16), r / abs(d0), r, origin=(s0, y))
+        part = ell.intersection(box((za - zmin) / d1 - slit / (2 * abs(d0)), -_FAR, (zb - zmin) / d1 + slit / (2 * abs(d0)), _FAR))
+        if isinstance(part, Polygon) and not part.is_empty and part.area > 0:
+            out.append(part)
+    return out
 
 
 def hole_meets_pocket(
-    bay: ServoBay, x: float, y: float, r: float, lo: float, hi: float, tol: float = HOLE_TOL
+    bay: ServoBay, x: float, y: float, r: float, lo: float, hi: float, tol: float = HOLE_TOL, grow: float = 0.0
 ) -> tuple[float, float] | None:
     """Étendue en envergure où un trou (axe (x, y), rayon r, de lo à hi en z) débouche dans la poche, ± tol,
     bornée au trou ; None s'il ne la rencontre pas.
 
     Point du cercle le plus avancé vers l'ouverture sur l'étendue en corde de la boîte, comparé au profil réel de la
-    poche (fond et rampes) : la poche est convexe et s'évase vers l'extérieur.
+    poche (fond et rampes) : la poche est convexe et s'évase vers l'extérieur. `grow` : poche décalée de grow
+    (fente de renfort comprise).
     """
-    d = max(bay.x0 - x, x - bay.x1, 0.0)
+    prof, xa, xb = _grown(bay, grow)
+    d = max(xa - x, x - xb, 0.0)
     if d >= r:
         return None
     y_t = y + bay.side * math.sqrt(r * r - d * d)
-    cut = pocket_profile(bay).intersection(LineString([(lo, y_t), (hi, y_t)]))
+    cut = prof.intersection(LineString([(lo, y_t), (hi, y_t)]))
     if cut.is_empty or cut.length <= 0:
         return None
     za, _, zb, _ = cut.bounds

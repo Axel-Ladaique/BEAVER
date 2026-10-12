@@ -147,7 +147,14 @@ class ServoSettings(_Strict):
 
     strip: float = Field(default=2.0, gt=0)  # mm : bande sans nervure autour de la poche
     min_floor_gap: float = Field(default=1.0, gt=0)  # mm : écart minimal entre le fond de la baie et la peau opposée
-    # (renfort de la poche par fente parallèle : tâche 5)
+    # renfort : fente parallèle aux parois, au fond et aux rampes de la poche, débouchant sur la peau aux deux bords
+    # de l'ouverture ⇒ paroi doublée
+    reinforce: bool = True
+    # mm, de la paroi de la poche à l'axe de la fente ; None = largeur de ligne du preset (≥ largeur de ligne)
+    reinforce_offset: float | None = Field(default=None, gt=0)
+    # mm : fente verticale, vue telle quelle en tranche (≥ 1,1 × min_slit_width) ; le slit_width global des nervures
+    # (0,1) n'y suffit pas : il n'est assez large qu'incliné
+    slit_width: float = Field(default=0.15, gt=0)
 
 
 class OutputSettings(_Strict):
@@ -283,12 +290,19 @@ class Config(_Strict):
                 )
         slits = [(w, st.slit_width) for w, st in self._spar_entries()]
         slits.append(("passages", self.passages.slit_width))
+        if self.servo.reinforce:
+            slits.append(("servo", self.servo.slit_width))
         for where, width in slits:
             if width < need - 1e-9:
                 raise ValueError(
                     f"{where} : fente (slit_width) {width} mm < {need:.3f} mm (1,1 × min_slit_width) — "
                     "le slicer la refermerait"
                 )
+        if self.servo.reinforce_offset is not None and self.servo.reinforce_offset < lw - 1e-9:
+            raise ValueError(
+                f"servo : reinforce_offset {self.servo.reinforce_offset} mm < largeur de ligne {lw} mm — "
+                "la paroi entre la poche et la fente de renfort ne serait pas imprimable"
+            )
         for layer in self.rib_layers:
             if layer.depth != "full" and layer.depth < 2 * lw - 1e-9:
                 raise ValueError(
@@ -312,6 +326,11 @@ class Config(_Strict):
 
     def rib_angle(self, layer: RibLayer) -> float:
         return layer.angle if layer.angle is not None else min(45.0, self.preset.max_overhang_deg)
+
+    def reinforce_offset(self) -> float:
+        """Décalage paroi de poche → axe de la fente de renfort (mm) : réglé, sinon largeur de ligne du preset."""
+        off = self.servo.reinforce_offset
+        return off if off is not None else self.preset.line_width
 
     def spar_settings(self, name: str, cable: bool = False) -> BoreSettings:
         """Réglages d'un longeron. Précédence : défauts du code < `spars.default` < (gaine) `spars.cable`

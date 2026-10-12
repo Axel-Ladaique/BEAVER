@@ -41,7 +41,7 @@ from aerorib.features.bores import (
     spar_bores,
 )
 from aerorib.features.ribs import diamond_profiles, plate_solid
-from aerorib.features.servo import ServoBay, ServoError, pocket_section, servo_bays
+from aerorib.features.servo import ServoBay, ServoError, pocket_section, reinforce_section, servo_bays
 from aerorib.io_step import StepReadError, read_step
 from aerorib.midsurface import MidSurface
 from aerorib.orient import Orientation, orient
@@ -275,7 +275,7 @@ def _prepare(path: Path, cfg: Config, key: tuple[str, str]) -> Prepared:
         to_fill = passages_to_fill(skin, cfg, exclude=bores, found=found)
         bores += passage_bores(skin, cfg, exclude=bores, found=found)
         check_fill(skin, to_fill, tol)
-        bays = tuple(servo_bays(servos, skin, mid, cfg))
+        bays = tuple(servo_bays(servos, skin, mid, cfg, bores))
         anchors = tuple(tuple(anchor_profiles_2d(b, mid, bb)) if b.anchor_gap > 0 else () for b in bores)
         mesh = to_mesh(skin, tol)
         obb = skin.bounding_box(optimal=True)
@@ -428,6 +428,7 @@ def _bore_tools(prep: Prepared, z: float) -> list[Polygon]:
         pocket = pocket_section(bay, z)
         if pocket is not None:
             tools.append(pocket)
+        tools += reinforce_section(bay, z)
     return tools
 
 

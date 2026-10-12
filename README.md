@@ -154,9 +154,11 @@ uv run aerorib profils                    # liste les profils (origine, fichiers
 uv run aerorib profils --copier asa_aero  # copie le profil embarqué dans ./profiles/ pour l'éditer
 ```
 
-L'**ASA Aero n'a pas encore de gabarit Bambu** : enregistrer un projet ASA Aero dans Bambu Studio
-(imprimante, filament ASA, vase mode), puis renseigner `bambu.template` dans `./profiles/asa_aero.yaml`
-(`aerorib profils --copier asa_aero`). Sans cela, `--3mf` s'arrête avec un message explicite.
+L'**ASA Aero** a son gabarit Bambu embarqué (`p1s_asa_aero.3mf`, P1S, filament Bambu ASA-Aero). Ce gabarit
+n'est pas en vase mode : à l'écriture du `.3mf`, AeroRib **impose les réglages vase mode** (`spiral_mode`,
+`wall_loops`, `top_shell_layers`, densités de remplissage…) et affiche un avertissement ; les réglages filament
+et imprimante restent ceux de l'ASA. Pour un gabarit déjà en vase mode (PLA Aero), le fichier est recopié à
+l'identique.
 
 ## Interface graphique
 
@@ -201,7 +203,6 @@ Limites connues :
 - l'estimation de durée (0,3 s par plaque) est calée sur une aile simple, machine libre : elle sous-estime avec des doubles nervures ou une machine chargée ;
 - la vue 3D montre les plaques **non découpées** : elles dépassent de la peau ;
 - une seule génération à la fois ;
-- l'ASA Aero n'a pas encore de gabarit Bambu : pas de `.3mf`, un avertissement s'affiche (voir « Profils matière »).
 
 ## Nommage dans la CAO
 

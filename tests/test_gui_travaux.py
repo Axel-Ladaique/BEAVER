@@ -27,7 +27,7 @@ from aerorib.testing.synthetic import wing_x_bodies
 TOKEN = "jeton-test"
 H = {"X-AeroRib-Token": TOKEN}
 FAST = "material_settings: {layer_height: 1.0}\nrib_layers: [{spacing: 20}]\npassages: {mode: link}\n"
-FAST_ASA = "material: asa_aero\nmaterial_settings: {layer_height: 1.0}\nrib_layers: [{spacing: 25}]\npassages: {mode: link}\n"
+FAST_ASA = "material: asa_aero\nbambu: {template: null}\nmaterial_settings: {layer_height: 1.0}\nrib_layers: [{spacing: 25}]\npassages: {mode: link}\n"
 
 
 @pytest.fixture(scope="module")

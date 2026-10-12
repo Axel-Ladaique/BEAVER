@@ -44,6 +44,4 @@ passages:
   max_tilt_deg: 5.0
 
 bambu:
-  # Pas encore de gabarit ASA : enregistrer un projet ASA Aero dans Bambu Studio,
-  # puis indiquer ici son chemin (relatif à ce fichier), ex. ./asa_aero.3mf
-  template: null
+  template: ../templates/p1s_asa_aero.3mf   # relatif à ce fichier ; réglages vase mode imposés à l'écriture du 3MF

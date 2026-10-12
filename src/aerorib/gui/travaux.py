@@ -140,7 +140,7 @@ def _run_job(step: str, config_path: str, out_dir: str, queue) -> None:
         if delai > 0:
             time.sleep(delai)
 
-        from aerorib.bambu import BambuError, read_template
+        from aerorib.bambu import BambuError, read_template, vase_warning
         from aerorib.classify import ClassifyError, classify
         from aerorib.report import format_bays, format_bores, segment_heights
         from aerorib.config import ConfigError, load_config, material_label, resolve_template
@@ -155,6 +155,8 @@ def _run_job(step: str, config_path: str, out_dir: str, queue) -> None:
             template = None
             try:
                 template = read_template(resolve_template(cfg))
+                if (warn := vase_warning(template)) is not None:
+                    avertissements.append(scrub_paths(warn))
             except (ConfigError, BambuError) as exc:
                 formats.remove("3mf")
                 avertissements.append(

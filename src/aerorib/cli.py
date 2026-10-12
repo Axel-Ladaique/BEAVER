@@ -10,7 +10,7 @@ import typer
 
 from aerorib import __version__
 from aerorib.classify import ClassifyError, cable_marker, classify
-from aerorib.bambu import BambuError, open_in_bambu, read_template
+from aerorib.bambu import BambuError, open_in_bambu, read_template, vase_warning
 from aerorib.config import Config, ConfigError, load_config, resolve_template
 from aerorib.material_profiles import ProfileError, copy_profile, find_profiles, load_profile
 from aerorib.export import export_results
@@ -212,6 +212,8 @@ def run(
             template = read_template(resolve_template(cfg))
         except (ConfigError, BambuError) as exc:
             _fail(str(exc))
+        if (warn := vase_warning(template)) is not None:
+            typer.echo(f"  ⚠ {warn}")
     model = _classify(file, cfg)
     try:
         result = run_model(model, cfg, progress=lambda m: typer.echo(f"… {m}"))

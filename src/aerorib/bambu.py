@@ -26,6 +26,20 @@ _IDENTITY = "1 0 0 0 1 0 0 0 1"
 _GAP = 1.2  # espacement inter-plateaux de Bambu Studio (PartPlate)
 
 
+# Réglages vase mode imposés à l'écriture (valeurs du gabarit PLA Aero, qui est en vase mode).
+# Jamais de clé filament / matière ni imprimante : elles restent celles du gabarit.
+VASE_SETTINGS = {
+    "spiral_mode": "1",
+    "spiral_mode_smooth": "0",
+    "wall_loops": "1",
+    "top_shell_layers": "0",
+    "bottom_shell_layers": "3",
+    "sparse_infill_density": "0%",
+    "skeleton_infill_density": "0%",
+    "skin_infill_density": "0%",
+}
+
+
 class BambuError(ValueError):
     """Gabarit Bambu invalide ou projet impossible à écrire."""
 
@@ -58,6 +72,32 @@ def read_template(path: Path) -> Template:
             f"« {path} » : réglages Bambu illisibles (printable_area / printable_height)."
         ) from exc
     return Template(path=path, settings=settings, bed=bed, height=height)
+
+
+def _vase_keys(settings: dict) -> list[str]:
+    """Clés de VASE_SETTINGS dont la valeur du gabarit diffère (ou qui manquent)."""
+    return [k for k, v in VASE_SETTINGS.items() if settings.get(k) != v]
+
+
+def vase_warning(template: Template) -> str | None:
+    """Avertissement français si write_project doit imposer le vase mode à ce gabarit, sinon None."""
+    keys = _vase_keys(template.settings)
+    if not keys:
+        return None
+    return f"gabarit {template.path.name} : réglages vase mode imposés ({', '.join(keys)})"
+
+
+def _force_vase(raw: bytes) -> bytes:
+    """project_settings.config avec VASE_SETTINGS imposés ; octets inchangés si déjà conformes."""
+    try:
+        settings = json.loads(raw)
+    except ValueError as exc:
+        raise BambuError("project_settings.config illisible dans le gabarit.") from exc
+    if not _vase_keys(settings):
+        return raw
+    settings.update(VASE_SETTINGS)
+    out = json.dumps(settings, indent=4, ensure_ascii=False)
+    return (out + ("\n" if raw.endswith(b"\n") else "")).encode("utf-8")
 
 
 def plate_origin(i: int, n: int, bed: tuple[float, float]) -> tuple[float, float]:
@@ -230,6 +270,8 @@ def write_project(
             z.writestr(f"3D/Objects/object_{k}.model", _object_file(k, mesh, version))
         z.writestr("Metadata/model_settings.config", cfg)
         for name, data in copied.items():
+            if name == "Metadata/project_settings.config":
+                data = _force_vase(data)
             if name != "[Content_Types].xml":
                 z.writestr(name, data)
     return path

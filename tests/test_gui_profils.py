@@ -38,7 +38,7 @@ def test_liste(client):
     assert par_nom["pla_aero"]["origine"] == "embarqué"
     assert par_nom["pla_aero"]["gabarit"] == {"chemin_nom": "p1s_pla_aero.3mf", "existe": True}
     assert par_nom["pla_aero"]["existe"] is True
-    assert par_nom["asa_aero"]["gabarit"] == {"chemin_nom": None, "existe": False}
+    assert par_nom["asa_aero"]["gabarit"] == {"chemin_nom": "p1s_asa_aero.3mf", "existe": True}
 
 
 def test_lecture_valeurs_et_provenance(client, udir):
@@ -57,9 +57,9 @@ def test_lecture_valeurs_et_provenance(client, udir):
     assert prov[("material_settings", "layer_height")] == "embarqué"
 
 
-def test_asa_sans_gabarit_signale(client):
+def test_asa_gabarit_embarque(client):
     d = client.get("/api/profils/asa_aero", headers=H).json()
-    assert d["gabarit"] == {"chemin_nom": None, "existe": False}
+    assert d["gabarit"] == {"chemin_nom": "p1s_asa_aero.3mf", "existe": True}
 
 
 def test_gabarit_utilisateur_inexistant(client, udir):

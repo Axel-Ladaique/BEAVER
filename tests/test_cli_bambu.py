@@ -88,7 +88,7 @@ def test_invalid_template(tmp_path):
 def test_no_template_for_asa(tmp_path):
     src = write_step(tmp_path / "aile.step", wing_x_bodies())
     cfg = tmp_path / "c.yaml"
-    cfg.write_text("material: asa_aero\n", encoding="utf-8")
+    cfg.write_text("material: asa_aero\nbambu: {template: null}\n", encoding="utf-8")
     r = runner.invoke(app, ["run", str(src), "-c", str(cfg), "--3mf"])
     assert r.exit_code == 1 and "pas de gabarit Bambu" in r.output
     assert "…" not in r.output  # échec avant le pipeline

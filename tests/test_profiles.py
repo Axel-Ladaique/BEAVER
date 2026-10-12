@@ -32,16 +32,18 @@ def test_pla_profile_values():
     assert resolve_template(cfg).name == "p1s_pla_aero.3mf"
 
 
-def test_asa_profile_overhang_and_no_template():
+def test_asa_profile_overhang_and_template():
     cfg = load_config(overrides={"material": "asa_aero"})
     assert cfg.preset.max_overhang_deg == 40
     assert cfg.rib_angle(cfg.rib_layers[0]) == 40
-    assert cfg.bambu.template is None
+    assert resolve_template(cfg).name == "p1s_asa_aero.3mf"
 
 
-def test_asa_without_template_refused_clearly():
+def test_asa_without_template_refused_clearly(tmp_path):
+    c = tmp_path / "c.yaml"
+    c.write_text("material: asa_aero\nbambu: {template: null}\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="pas de gabarit Bambu pour asa_aero : enregistrer un projet ASA Aero"):
-        resolve_template(load_config(overrides={"material": "asa_aero"}))
+        resolve_template(load_config(c))
 
 
 def test_material_from_project_yaml_and_template_in_project(tmp_path):
@@ -162,7 +164,7 @@ def test_cli_profils_lists_both():
     r = runner.invoke(app, ["profils"])
     assert r.exit_code == 0
     assert "pla_aero" in r.output and "asa_aero" in r.output
-    assert "embarqué" in r.output and "aucun" in r.output and "p1s_pla_aero.3mf" in r.output
+    assert "embarqué" in r.output and "p1s_asa_aero.3mf" in r.output and "p1s_pla_aero.3mf" in r.output
 
 
 def test_cli_profils_copier(tmp_path):

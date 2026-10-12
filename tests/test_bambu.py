@@ -164,3 +164,64 @@ def test_write_project_template_without_settings_is_error(tmp_path):
     broken = _template_variant(tmp_path, drop=("Metadata/project_settings.config",))
     with pytest.raises(BambuError, match="project_settings"):
         write_project(replace(t, path=broken), [_box()], tmp_path / "o.3mf")
+
+
+# --- réglages vase mode imposés -------------------------------------------------------------------
+ASA = Path(__file__).parents[1] / "src" / "aerorib" / "templates" / "p1s_asa_aero.3mf"
+PLA = Path(__file__).parents[1] / "src" / "aerorib" / "templates" / "p1s_pla_aero.3mf"
+
+
+def _settings_bytes(path: Path) -> bytes:
+    with zipfile.ZipFile(path) as z:
+        return z.read("Metadata/project_settings.config")
+
+
+def test_pla_settings_byte_identical(tmp_path):
+    from aerorib.bambu import vase_warning
+
+    t = read_template(PLA)
+    assert vase_warning(t) is None
+    out = write_project(t, [_box()], tmp_path / "o.3mf")
+    assert _settings_bytes(out) == _settings_bytes(PLA)
+
+
+def test_asa_vase_forced_keeps_filament(tmp_path):
+    import json
+
+    from aerorib.bambu import VASE_SETTINGS, vase_warning
+
+    t = read_template(ASA)
+    assert t.settings["spiral_mode"] == "0"  # read_template lit le fichier d'origine
+    w = vase_warning(t)
+    assert w.startswith("gabarit p1s_asa_aero.3mf : réglages vase mode imposés (spiral_mode")
+    out = write_project(t, [_box()], tmp_path / "o.3mf")
+    new, old = json.loads(_settings_bytes(out)), json.loads(_settings_bytes(ASA))
+    assert all(new[k] == v for k, v in VASE_SETTINGS.items())
+    assert new["spiral_mode"] == "1" and new["wall_loops"] == "1" and new["top_shell_layers"] == "0"
+    changed = {k for k in new if new[k] != old.get(k)}
+    assert changed <= set(VASE_SETTINGS) and "spiral_mode" in changed
+    assert new["filament_settings_id"] == ["Bambu ASA-Aero @BBL X1C"]
+    assert new["filament_type"] == ["ASA-AERO"] and new["nozzle_temperature"] == ["270"]
+    assert _settings_bytes(out).endswith(b"\n")
+
+
+def test_asa_template_resolves_and_run_writes_3mf(tmp_path):
+    from typer.testing import CliRunner
+
+    from aerorib.cli import app
+    from aerorib.config import load_config, resolve_template
+    from aerorib.io_step import write_step
+    from aerorib.testing.synthetic import wing_x_bodies
+
+    assert resolve_template(load_config(overrides={"material": "asa_aero"})).name == "p1s_asa_aero.3mf"
+    src = write_step(tmp_path / "aile.step", wing_x_bodies())
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(
+        "material: asa_aero\nmaterial_settings: {layer_height: 1.0}\nrib_layers: [{spacing: 20}]\n"
+        "passages: {mode: link}\nsegment: {max_height: 30}\n", encoding="utf-8")
+    r = CliRunner().invoke(app, ["run", str(src), "-c", str(cfg), "--out", str(tmp_path / "res"), "--3mf"])
+    # code 1 toléré : la pièce synthétique reste « non imprimable » avec le surplomb ASA (40°), mais les
+    # fichiers sont écrits pour inspection ; seul l'écriture du 3MF est testée ici.
+    assert r.exit_code in (0, 1) and "erreur" not in r.output.lower(), r.output
+    assert "gabarit p1s_asa_aero.3mf : réglages vase mode imposés" in r.output
+    assert b'"spiral_mode": "1"' in _settings_bytes(tmp_path / "res" / "aile.3mf")

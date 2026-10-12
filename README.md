@@ -52,7 +52,8 @@ Limites de la phase P1 :
   à l'emplanture ou au saumon s'il y arrive) ; après la coupe, l'outil vérifie que le longeron ne
   traverse pas la matière.
 
-- L'orientation suit l'axe du premier longeron détecté (`orientation: auto`), ou un axe imposé par la config.
+- L'orientation suit l'axe du premier longeron détecté (`orientation: auto`), ou un axe imposé par la config ;
+  l'emplanture se règle avec `orientation.root` (voir « Baies de servo et gaines de câble »).
 - `check --orient` sert à vérifier un fichier CAO brut (ex. l'export d'origine) : il l'oriente d'abord selon le longeron.
   Le `.step` généré est déjà orienté : le vérifier avec `check` simple.
 - Les alésages existants qui ne logent pas un longeron sont rebouchés (`passages: {mode: fill}`, défaut) ;
@@ -211,8 +212,55 @@ Limites connues :
 | `SPLIT` | surface de séparation manuelle |
 | `NORIB` | zone sans nervures |
 | `CUT` | plan de découpe forcé |
+| `SERVO` | baie de servo (boîte alignée = espace utile) |
+| `SBAR…CABLE…` | gaine de câble : longeron dont le nom propre contient `CABLE` (`naming.cable_markers`) |
 
-Insensible à la casse. Repli possible dans la config : `roles: {Body3: spar}`.
+Insensible à la casse. Repli possible dans la config : `roles: {Body3: spar}`. `roles:` est un **repli** :
+le nom propre du corps est examiné d'abord, puis ses composants parents ; un rôle posé sur un composant parent
+(ex. `roles: {Aile_v2: skin}`) ne remplace donc pas le préfixe propre d'un corps qu'il contient (`SERVO_1`
+reste une baie). Pour forcer le rôle d'un corps précis, utiliser son propre nom.
+
+## Baies de servo et gaines de câble
+
+Nommer dans la CAO :
+
+- **`SERVO…`** : une boîte (6 faces planes) **alignée** sur la corde et l'envergure, qui représente l'espace
+  utile du servo (jeu compris) et dépasse de la peau du côté de l'ouverture ;
+- **`SBAR…CABLE…`** (ex. `SBAR_CABLE_SERVO`) : un cylindre parallèle à l'envergure pour le passage des
+  câbles ; il peut déboucher dans la baie.
+
+Comportement :
+
+- **Côté d'ouverture automatique** : extrados si la boîte dépasse en +Y, intrados en −Y. Erreur en français si
+  la boîte ne traverse aucune peau, traverse les deux, ou si son fond laisse moins de `servo.min_floor_gap`
+  (1,0 mm) avant la peau opposée (renfort en plus).
+- **Ouverture allongée par deux rampes** : aux deux bouts de la boîte en envergure, le fond remonte vers la peau
+  avec une pente égale au surplomb max de la matière (45° PLA Aero, 40° ASA Aero) : rien n'est imprimé dans le
+  vide. L'ouverture dans la peau est donc plus longue que la boîte de 2 × profondeur / tan(surplomb)
+  (`baies : SERVO_1 (baie extrados, … × … mm utiles, ouverture …, profondeur …, renfort)`).
+- **Renfort** (`servo.reinforce: true`, défaut) : une fente de 0,15 mm parallèle aux parois, au fond et aux
+  rampes de la poche double la paroi (`servo.reinforce_offset`, défaut 1,2 × largeur de ligne). Elle est
+  coupée en **deux fentes en J reliées par un pont** : un U ouvert sur la peau aux deux bords isolerait la paroi
+  doublée du reste de la pièce (deux contours dans la couche, interdit en vase mode). Le pont suit le point haut de
+  la peau dans les rampes et contourne les trous qui traversent la paroi ; si un trou supprime une branche, un
+  avertissement le signale (« renfort incomplet »).
+- Les nervures s'arrêtent à `servo.strip` (2 mm) de la poche et de son renfort ; longerons et gaines qui
+  entrent dans la boîte sont simplement découpés par la poche.
+- **Emplanture** : `orientation.root: auto` (défaut) place l'emplanture au bout de l'aile que touche une gaine
+  de câble (sinon : plus grande section, comme avant) ; `debut` / `fin` l'imposent (coordonnée min. / max. le
+  long de l'axe d'envergure, repère d'origine). Dans la config : `orientation: {root: fin}` (avec ou sans `axis`).
+- **Gaine allégée** : trou + jeu, fente vers la peau, **sans attache**, manchon réduit à 1,2 × largeur de ligne
+  (≈ 0,5 mm ; 0 serait refusé par la validation), bande sans nervure = largeur de ligne ; réglages communs
+  dans `spars: {cable: {…}}`.
+- L'aperçu de l'interface montre la poche et le renfort dans la coupe, et dans la vue de dessus l'ouverture
+  (rampes plus claires) et la boîte utile ; le rapport HTML et l'essai listent baies et gaines.
+
+Limites :
+
+- boîte **alignée** sur la corde et l'envergure (2° de tolérance) ; une baie inclinée est refusée ;
+- la profondeur et le pont supposent une peau d'ouverture avec **un seul point haut** le long de la corde (cas
+  d'un profil d'aile) ;
+- pas de fixation du servo (pattes, inserts, trappe) pour l'instant.
 
 ## Tests
 

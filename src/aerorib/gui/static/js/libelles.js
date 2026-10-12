@@ -84,7 +84,7 @@ const AIDES = {
   "naming.*": "préfixes séparés par des virgules",
   "split.gap": "≥ largeur de ligne",
   "naming.cable_markers": "un longeron dont le nom contient l'un de ces marqueurs est une gaine de câble (séparés par des virgules)",
-  "roles": "repli pour les corps sans préfixe reconnu : un rôle posé sur un niveau parent ne remplace pas le préfixe propre d'un corps",
+  "roles": "repli, nom de corps ou de composant → rôle : le nom propre du corps prime ; un rôle posé sur un composant parent ne remplace pas le préfixe propre d'un corps",
   "servo.reinforce": "deux fentes en J parallèles à la poche, reliées par un pont",
   "servo.reinforce_offset": "vide = 1,2 × largeur de ligne (≥ largeur de ligne)",
   "servo.min_floor_gap": "matière minimale sous le fond de la baie (renfort en plus)",

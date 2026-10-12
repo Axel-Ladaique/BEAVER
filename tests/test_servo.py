@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from shapely.geometry import LineString
 
 from aerorib import preview
 from aerorib.classify import classify
@@ -95,7 +96,9 @@ def test_pocket_zones_cover_the_pocket_with_strip():
     assert pocket_zones_2d(bay, c + 200, d0, d1, zmin, zmin + 120, strip=2.0, slit=0.1) == []
     # avec renfort : la zone couvre aussi la fente (décalée de la largeur de ligne) + la bande
     (rbay,), _, _ = _bays(servo_wing_bodies("extrados"), load_config(overrides=OVER))
-    (rzone,) = pocket_zones_2d(rbay, c, d0, d1, zmin, zmin + 120, strip=2.0, slit=0.1)
+    # zone de la poche d'abord, puis celles des ponts que la plaque traverse (bande BRIDGE_STRIP)
+    rzone, *bridges = pocket_zones_2d(rbay, c, d0, d1, zmin, zmin + 120, strip=2.0, slit=0.1)
+    assert bridges
     edge = rbay.y_floor - rbay.reach
     assert rbay.reach == pytest.approx(1.2 * 0.42 + 0.15)  # paroi doublée (1,2 ligne) + fente
     assert rzone.contains(Point(s_mid, edge - 1.9)) and not rzone.contains(Point(s_mid, edge - 2.2))
@@ -177,6 +180,40 @@ def test_min_floor_gap_counts_the_reinforcement():
     _bays(servo_wing_bodies(box=box), load_config(overrides={**PLAIN, "servo": {"reinforce": False, "min_floor_gap": 1.0}}))
 
 
+def test_strip_defaults_to_welded_ribs():
+    cfg = load_config()
+    lw = cfg.preset.line_width
+    assert cfg.servo.strip is None and cfg.servo_strip() == pytest.approx(1.2 * lw)
+    assert load_config(overrides={"servo": {"strip": 2.0}}).servo_strip() == 2.0
+    with pytest.raises(ValueError, match="servo : strip 0.3 mm < largeur de ligne"):
+        load_config(overrides={"servo": {"strip": 0.3}})
+
+
+def test_pocket_zones_follow_the_local_skin_at_the_ramps():
+    """Le long d'une plaque, la zone s'arrête là où la rampe (agrandie) sort de la peau à cet endroit, pas de la
+    peau la plus haute autour de la baie : une peau plus basse que `y_skin` raccourcit la zone en envergure."""
+    cfg = load_config(overrides=PLAIN)
+    (bay,), skin, mid = _bays(servo_wing_bodies("extrados"), cfg)
+    zmin = skin.bounding_box().min.Z
+    # plaque presque parallèle à l'envergure (10°) : elle reste dans l'étendue en corde de la boîte sur les deux rampes
+    d0, d1 = math.sin(math.radians(10)), math.cos(math.radians(10))
+    s_mid = ((bay.z0 + bay.z1) / 2 - zmin) / d1
+    c = (bay.x0 + bay.x1) / 2 - s_mid * d0
+    ss = np.linspace(-5, 300, 3000)
+    (wide,) = pocket_zones_2d(bay, c, d0, d1, zmin, zmin + 120, strip=0.5, slit=0.1)
+    low = bay.y_skin - 3.0  # peau 3 mm sous la plus haute
+    (local,) = pocket_zones_2d(bay, c, d0, d1, zmin, zmin + 120, strip=0.5, slit=0.1, skin=(ss, np.full(len(ss), low)))
+    # rampe (dz/dy = run) : 3 mm plus bas ⇒ ≈ 3·run de moins en z à chaque bout (s = z / d1), à la bande près
+    # (0,55 mm : coin en onglet de la zone écrêtée à y_skin, contre la rampe agrandie coupée à la peau locale)
+    for a, b in ((local.bounds[0], wide.bounds[0]), (wide.bounds[2], local.bounds[2])):
+        assert (a - b) * d1 == pytest.approx(3.0 * bay.run, abs=0.75)
+    # la zone descend encore jusqu'à la peau locale (+ marge) au bout de la plaque
+    y_at_end = local.intersection(LineString([(local.bounds[2] - 1e-6, -1e3), (local.bounds[2] - 1e-6, 1e3)])).bounds
+    assert y_at_end[1] <= low + SKIN_MARGIN + 1e-6
+    # hors matière (NaN) : aucune zone
+    assert pocket_zones_2d(bay, c, d0, d1, zmin, zmin + 120, strip=0.5, slit=0.1, skin=(ss, np.full(len(ss), np.nan))) == []
+
+
 def test_min_floor_gap_setting():
     cfg = load_config(overrides={**OVER, "servo": {"min_floor_gap": 7.0}})
     with pytest.raises(ServoError, match=r"servo\.min_floor_gap = 7"):
@@ -224,7 +261,8 @@ def test_cable_entering_bay_is_printable(run_of):
     (bay,) = body.bays
     (b,) = body.bores
     ((x, y, ring, za, zb),) = bay.rings
-    assert (x, y) == (b.x, b.y) and ring == pytest.approx(b.radius + 2 * 0.42) and za < bay.z0 < zb
+    # anneau = servo.strip (défaut 1,2 ligne) : les nervures se soudent au trou comme à la baie
+    assert (x, y) == (b.x, b.y) and ring == pytest.approx(b.radius + 1.2 * 0.42) and za < bay.z0 < zb
     assert body.report.ok, [(i.z, i.message, i.bounds) for i in body.report.errors][:5]
     # ponts par tranche : autour de la gaine là où elle rejoint la baie, pont minimal ailleurs
     z_hole, z_free = (bay.z0 + b.z1) / 2, (b.z1 + bay.z1) / 2 + 5  # dans la bande de la gaine / au-delà de son bout
@@ -584,3 +622,62 @@ def test_bay_at_root_ramp_leaves_through_root_face(tmp_path):
     preview.clear_cache()
     prep = preview.prepare(step, cfg)
     assert prep.bays == body.bays and len(preview.plates_2d(prep, cfg)) == body.plates
+
+
+def _rib_gaps(step, cfg, zs):
+    """Distance minimale, sur les coupes d'aperçu aux hauteurs zs, entre les fentes de nervure (dans la peau) et la
+    fente de renfort / la poche."""
+    from shapely.ops import unary_union
+
+    from aerorib.features.servo import reinforce_section
+
+    prep = preview.prepare(step, cfg)
+    plates = preview.plates_2d(prep, cfg)
+    (bay,) = prep.bays
+    best = math.inf
+    for z in zs:
+        view = preview.section(prep, plates, cfg, z)
+        feet = unary_union([f.polygon for f in view.footprints]).intersection(unary_union(view.skin))
+        slit = unary_union(reinforce_section(bay, z))
+        if not feet.is_empty and not slit.is_empty:
+            best = min(best, feet.distance(slit))
+    return best, bay
+
+
+def test_ribs_are_welded_to_the_bay_at_mid_bay(run_of):
+    """Défaut : entre le bout d'une fente de nervure et le bord extérieur de la fente de renfort, une matière de
+    1 à 1,6 largeur de ligne — gardée par le slicer, et assez fine pour souder la nervure à la paroi doublée."""
+    cfg = load_config(overrides=OVER)
+    lw = cfg.preset.line_width
+    step, run = run_of("extrados")
+    (bay,) = run.bodies[0].bays
+    zs = np.arange(bay.z0 + 0.5, bay.z1 - 0.5, 0.05)  # fin : chaque nervure rencontre la paroi à une hauteur précise
+    gap, _ = _rib_gaps(step, cfg, zs)
+    assert lw <= gap <= 1.6 * lw, gap
+    assert run.bodies[0].report.ok
+
+
+def test_fixture_layers_by_the_cable_bridge_are_printable():
+    """Fixture servo, couches z = 163,5 et 166,5 (bande réduite à 0,6 / 1 mm avant correctif : « matière trop
+    fine »). Une nervure basse coupée par l'anneau de la gaine finissait en pointe oblique à ≈ 1 mm sous le bout
+    de la branche en J (pont autour de la gaine) : l'érosion d'une demi-ligne (onglets) y séparait le contour.
+    Les nervures gardent BRIDGE_STRIP autour des ponts."""
+    from aerorib.features.servo import BRIDGE_STRIP
+
+    step = FIXTURES / "aile_4412_servo_extrados.step"
+    for strip in (None, 0.6, 1.0):
+        cfg = load_config(overrides={"servo": {"strip": strip}} if strip else {})
+        prep = preview.prepare(step, cfg)
+        plates = preview.plates_2d(prep, cfg)
+        (bay,) = prep.bays
+        for z in (163.5, 166.5):
+            view = preview.section(prep, plates, cfg, z)
+            assert not [d for d in view.defects if d.severity == "error"], (strip, z, view.defects)
+            # bout de la branche en J côté emplanture du pont de la gaine : aucune nervure à moins de BRIDGE_STRIP
+            ((xa, _),) = [g[2:] for g in bay.rf_gaps if g[0] <= z <= g[1]]
+            from shapely.geometry import Point
+            from shapely.ops import unary_union
+
+            end = Point(xa, bay.y_floor - bay.reach)
+            feet = unary_union([f.polygon for f in view.footprints]).intersection(unary_union(view.skin))
+            assert feet.distance(end) >= BRIDGE_STRIP - 0.05

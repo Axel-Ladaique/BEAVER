@@ -149,7 +149,7 @@ def rib_options(cfg: Config, bb, i: int, bays: Sequence[ServoBay] = ()) -> dict:
     return dict(
         angle_deg=cfg.rib_angle(layer), gap=cfg.split.gap, slit=cfg.slit_width, min_depth=cfg.split.min_rib_depth,
         line_width=cfg.preset.line_width, max_mouth=cfg.validation.max_mouth_width, exclude=deeper_lines(cfg, bb, i),
-        bays=tuple(bays), pocket_strip=cfg.servo.strip,
+        bays=tuple(bays), pocket_strip=cfg.servo_strip(),
     )
 
 

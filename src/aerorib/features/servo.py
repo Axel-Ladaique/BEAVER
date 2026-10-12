@@ -36,7 +36,11 @@ HOLE_TOL = 1.0  # mm : marge en envergure de la partie d'un trou retirée de la 
 #   traverse la paroi doublée : pont autour du trou / de sa fente (ils couperaient la bande), réuni au
 #   pont de rampe dans les couches de rampe ; entre z0 et z1, le fond est sur toute la corde : le pont du trou suffit ;
 # - ailleurs : pont minimal au point haut de la peau.
-RING_LINES = 2.0  # largeurs de ligne de matière gardées sans nervure autour d'un trou qui débouche dans la poche
+# Nervures soudées à la baie : leurs fentes s'arrêtent à `servo.strip` (≈ 1,2 ligne) de la fente de renfort et des
+# trous qui débouchent dans la poche. Exception, les ponts : seul passage de la paroi doublée vers le reste de la
+# couche, ils gardent une bande plus large (BRIDGE_STRIP) entre eux et les nervures — un bout de fente de nervure
+# oblique (coupé par l'anneau d'un trou) juste sous le bout d'une branche en J pincerait le passage.
+BRIDGE_STRIP = 2.0  # mm
 BRIDGE_MIN = 1.0  # mm : longueur minimale d'un pont (au moins 2 largeurs de ligne)
 BRIDGE_STEP = 1.0  # mm : pas des tranches de z dans les couches de rampe
 _FAR = 1e4
@@ -69,9 +73,9 @@ class ServoBay:
     rf_width: float = 0.0  # largeur de la fente de renfort
     rf_gaps: tuple[tuple[float, float, float, float], ...] = ()  # ponts : (z début, z fin, x début, x fin)
     rf_lost: tuple[tuple[float, float], ...] = ()  # tranches de z où un trou supprime une branche de la fente
-    # trous qui débouchent dans la poche : (x, y, rayon de l'anneau sans nervure, z début, z fin). Là où le trou
-    # rejoint la poche, il fait partie de l'extérieur et son manchon devient le seul passage de la matière autour
-    # de lui : un manchon de gaine (≈ 1,2 ligne) moins la demi-épaisseur d'une plaque voisine serait trop fin.
+    # trous qui débouchent dans la poche : (x, y, rayon de l'anneau sans nervure = rayon + servo.strip, z début,
+    # z fin). Là où le trou rejoint la poche, il fait partie de l'extérieur : les nervures s'y soudent comme à la
+    # baie, à servo.strip du trou (et non à son manchon, réglé pour un trou fermé).
     rings: tuple[tuple[float, float, float, float, float], ...] = ()
 
     @property
@@ -167,7 +171,8 @@ def servo_bay(name: str, solid: Solid, bb, mid: MidSurface, cfg: Config, bores: 
     if along is not None:
         depth = max(depth, side * (along - floor))
     ramp = depth * run
-    grow = cfg.servo.strip + cfg.slit_width / 2 + reach
+    strip = cfg.servo_strip()
+    grow = strip + cfg.slit_width / 2 + reach
     around = outer_skin(x0 - grow, x1 + grow, [(z0 - ramp - grow, z1 + ramp + grow)])
     y_skin = around if around is not None else floor + side * depth
     y_out = bb.max.Y + OUTSIDE if side > 0 else bb.min.Y - OUTSIDE
@@ -179,7 +184,7 @@ def servo_bay(name: str, solid: Solid, bb, mid: MidSurface, cfg: Config, bores: 
         if not b.cut_hole:
             continue
         lo, hi = bore_extent(b, zmin, zmax)
-        ring = b.radius + RING_LINES * cfg.preset.line_width
+        ring = b.radius + strip
         # trou qui rejoint la poche ou la fente de renfort : extérieur dans ces couches
         meet = hole_meets_pocket(bay, b.x, b.y, b.radius, lo, hi, tol=ring, grow=bay.reach)
         if meet is not None:
@@ -380,23 +385,60 @@ def pocket_section(bay: ServoBay, z: float) -> Polygon | None:
 
 
 def pocket_zones_2d(
-    bay: ServoBay, c: float, d0: float, d1: float, zmin: float, zmax: float, *, strip: float, slit: float
+    bay: ServoBay, c: float, d0: float, d1: float, zmin: float, zmax: float, *, strip: float, slit: float,
+    skin: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> list[Polygon]:
-    """Zone sans nervure de la poche dans le repère (s, y) de la plaque (x = c + s·d0, z = zmin + s·d1).
+    """Zones sans nervure de la poche dans le repère (s, y) de la plaque (x = c + s·d0, z = zmin + s·d1).
 
-    Poche agrandie de `strip` + slit/2 (demi-épaisseur de plaque) en x, z et y, puis coupée par le plan de la
-    plaque : profil (z, y) ramené en s, limité aux s où la plaque traverse l'étendue en corde de la boîte.
+    Poche agrandie de `strip` + slit/2 (demi-épaisseur de plaque) + renfort en x, z et y, puis coupée par le plan
+    de la plaque : profil (z, y) ramené en s, limité aux s où la plaque traverse l'étendue en corde de la boîte.
+    Ponts de la fente de renfort : poche agrandie de BRIDGE_STRIP au lieu de `strip`, sur la tranche de z et
+    l'étendue en x du pont (± BRIDGE_STRIP), sans déborder en x de la zone de la poche. Anneaux des trous qui
+    débouchent dans la poche (`rings`).
+
+    `skin` : (s, y) de la peau d'ouverture le long de la plaque (NaN hors matière). Les zones de poche et de pont
+    sont alors limitées aux s où elles descendent sous cette peau + SKIN_MARGIN : au bout d'une rampe, la plaque
+    reprend dès que la rampe (agrandie) est sortie de la peau à cet endroit, et non de la peau la plus haute
+    autour de la baie (`y_skin`).
     """
     grow = strip + slit / 2 + bay.reach  # renfort compris
     # au-delà de la peau d'ouverture, une plaque ne coupe que de l'air : la zone s'arrête juste après la peau
     # (sinon, prolongée jusqu'à y_out, son ombre retirerait des nervures loin au-delà de l'ouverture)
     cap = bay.y_skin + bay.side * SKIN_MARGIN
     ya, yb = sorted((bay.y_floor - bay.side * _FAR, cap))
-    prof = pocket_profile(bay).intersection(box(-_FAR, ya, _FAR, yb)).buffer(grow, join_style="mitre")
-    mapped = affinity.affine_transform(prof, [1 / d1, 0, 0, 1, -zmin / d1, 0])
-    sa, sb = sorted(((bay.x0 - grow - c) / d0, (bay.x1 + grow - c) / d0))
-    zone = mapped.intersection(box(sa, -_FAR, sb, _FAR))
-    out = [zone] if isinstance(zone, Polygon) and not zone.is_empty and zone.area > 0 else []
+    capped = pocket_profile(bay).intersection(box(-_FAR, ya, _FAR, yb))
+    to_s = [1 / d1, 0, 0, 1, -zmin / d1, 0]
+    under = None
+    if skin is not None:
+        ss, ys = (np.asarray(v, dtype=float) for v in skin)
+        far = bay.y_floor - bay.side * _FAR / 2  # hors matière : aucune zone utile
+        line = np.where(np.isfinite(ys), ys + bay.side * SKIN_MARGIN, far)
+        base = bay.y_floor - bay.side * _FAR
+        under = Polygon([*zip(ss, line), (ss[-1], base), (ss[0], base)]).buffer(0)
+
+    def zone_of(g: float, xa: float, xb: float, za: float = -_FAR, zb: float = _FAR) -> Polygon | None:
+        prof = capped.buffer(g, join_style="mitre").intersection(box(za, -_FAR, zb, _FAR))
+        mapped = affinity.affine_transform(prof, to_s)
+        sa, sb = sorted(((xa - c) / d0, (xb - c) / d0))
+        zone = mapped.intersection(box(sa, -_FAR, sb, _FAR))
+        if under is not None and not zone.is_empty:
+            inside = zone.intersection(under)
+            if inside.is_empty:
+                return None
+            lo, _, hi, _ = inside.bounds
+            zone = zone.intersection(box(lo, -_FAR, hi, _FAR))
+        return zone if isinstance(zone, Polygon) and not zone.is_empty and zone.area > 0 else None
+
+    out = [z for z in [zone_of(grow, bay.x0 - grow, bay.x1 + grow)] if z is not None]
+    # ponts : bande plus large, limitée à la tranche du pont, élargie de la demi-épaisseur de la plaque vue en z
+    # (dans une couche, la plaque couvre les points de son plan médian à ± slit·|d0|/2 en z)
+    pad = slit * abs(d0) / 2
+    bgrow = BRIDGE_STRIP + slit / 2 + bay.reach
+    for za, zb, ga, gb in bay.rf_gaps:
+        xa, xb = max(ga - BRIDGE_STRIP, bay.x0 - grow), min(gb + BRIDGE_STRIP, bay.x1 + grow)
+        zone = zone_of(bgrow, xa, xb, za - pad, zb + pad)
+        if zone is not None:
+            out.append(zone)
     for x, y, ring, za, zb in bay.rings:  # anneau autour des trous qui débouchent dans la poche (cf. `rings`)
         r = ring + slit / 2
         s0 = (x - c) / d0

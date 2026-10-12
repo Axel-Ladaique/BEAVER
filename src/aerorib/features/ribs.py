@@ -397,7 +397,8 @@ def diamond_profiles(
     `exclude` : plans (famille, c) déjà coupés par un niveau plus profond. `line_width`, `max_mouth` : largeur
     de ligne et bouche max de la validation, d'où l'arrêt des plaques avant les parois raides (`wall_limits`) ;
     `walls=False` : sans cet arrêt (pour vérifier qu'il ne vide pas un niveau, voir `emptied_by_walls`).
-    `bays` : baies de servo, zones interdites (poche + `pocket_strip`) avec la même ombre que les trous.
+    `bays` : baies de servo, zones interdites (poche + `pocket_strip`, ponts, anneaux des trous qui y débouchent)
+    avec la même ombre que les trous, limitées à la peau d'ouverture le long de la plaque.
     """
     max_slope, margin = wall_limits(slit=slit, angle_deg=angle_deg, line_width=line_width, max_mouth=max_mouth)
     # deux bandes qui se croisent, chacune à band_tol de ym ± gap/2, se recouvrent d'au moins gap − 2·band_tol :
@@ -423,9 +424,9 @@ def diamond_profiles(
         if walls and cand.any():
             steep[cand] = steep_samples(mid, x[cand], z[cand], max_slope=max_slope, margin=margin)
         zones = [z for b in bores for z in bore_zones_2d(b, c, d0, d1, zmin, zmax, slit=slit)]
-        zones += [
-            z for bay in bays for z in pocket_zones_2d(bay, c, d0, d1, zmin, zmax, strip=pocket_strip, slit=slit)
-        ]
+        for bay in bays:
+            open_skin = np.where(th > 0, ym + bay.side * th / 2, np.nan)  # peau d'ouverture le long de la plaque
+            zones += pocket_zones_2d(bay, c, d0, d1, zmin, zmax, strip=pocket_strip, slit=slit, skin=(ss, open_skin))
         for top, poly in plate_profiles_2d(
             ss, ym, th, zones, gap=gap, min_depth=min_depth, ytop=ytop, ybot=ybot, edge_vertices=layer.samples,
             depth=None if layer.depth == "full" else layer.depth, steep=steep, band_tol=band_tol, ends=ends,

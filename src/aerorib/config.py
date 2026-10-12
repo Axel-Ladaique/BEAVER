@@ -116,6 +116,9 @@ class RibLayer(_Strict):
 
 CABLE_KEY = "cable"  # spars.cable : réglages communs des gaines de câble
 REINFORCE_LINES = 1.2  # paroi doublée d'une baie de servo par défaut, en largeurs de ligne
+# matière entre le bout des fentes de nervure et la baie (fente de renfort, ou paroi de poche sans renfort), en
+# largeurs de ligne : ≥ 1 ligne pour que le slicer la garde, ≈ 1 à 1,5 ligne pour souder la nervure à la baie
+WELD_LINES = 1.2
 CABLE_SLEEVE_LINES = 1.2  # manchon d'une gaine, en largeurs de ligne (0 ou 1 ligne : matière trop fine)
 
 
@@ -146,7 +149,10 @@ class PassageSettings(_Strict):
 class ServoSettings(_Strict):
     """Baies de servo (corps SERVO…) : poche ouverte sur une peau, rampes aux deux bouts."""
 
-    strip: float = Field(default=2.0, gt=0)  # mm : bande sans nervure autour de la poche
+    # mm : matière laissée entre le bout des fentes de nervure et la baie — bord extérieur de la fente de renfort
+    # (paroi de poche sans renfort) — et autour des trous qui débouchent dans la poche ; ≥ largeur de ligne ;
+    # None = 1,2 × largeur de ligne du preset (nervures soudées à la baie)
+    strip: float | None = Field(default=None, gt=0)
     min_floor_gap: float = Field(default=1.0, gt=0)  # mm : écart minimal entre le fond de la baie et la peau opposée
     # renfort : fente parallèle aux parois, au fond et aux rampes de la poche, débouchant sur la peau aux deux bords
     # de l'ouverture ⇒ paroi doublée
@@ -305,6 +311,11 @@ class Config(_Strict):
                 f"servo : reinforce_offset {self.servo.reinforce_offset} mm < largeur de ligne {lw} mm — "
                 "la paroi entre la poche et la fente de renfort ne serait pas imprimable"
             )
+        if self.servo.strip is not None and self.servo.strip < lw - 1e-9:
+            raise ValueError(
+                f"servo : strip {self.servo.strip} mm < largeur de ligne {lw} mm — la matière entre les nervures "
+                "et la baie ne serait pas imprimable"
+            )
         for layer in self.rib_layers:
             if layer.depth != "full" and layer.depth < 2 * lw - 1e-9:
                 raise ValueError(
@@ -334,6 +345,12 @@ class Config(_Strict):
         1,2 × largeur de ligne du preset."""
         off = self.servo.reinforce_offset
         return off if off is not None else REINFORCE_LINES * self.preset.line_width
+
+    def servo_strip(self) -> float:
+        """Matière entre le bout des fentes de nervure et la baie de servo (mm) : réglée, sinon 1,2 × largeur de
+        ligne du preset — assez pour que le slicer la garde, assez peu pour souder la nervure à la baie."""
+        strip = self.servo.strip
+        return strip if strip is not None else WELD_LINES * self.preset.line_width
 
     def spar_settings(self, name: str, cable: bool = False) -> BoreSettings:
         """Réglages d'un longeron. Précédence : défauts du code < `spars.default` < (gaine) `spars.cable`

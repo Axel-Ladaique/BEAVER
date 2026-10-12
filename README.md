@@ -246,7 +246,11 @@ Comportement :
   contours dans la couche, interdit en vase mode). Le pont suit le point haut de la peau dans les rampes et
   contourne les trous qui traversent la paroi ; si un trou supprime une branche, un avertissement le signale
   (« renfort incomplet »). Quand la pièce est découpée, le rapport indique le ou les tronçons de chaque baie.
-- Les nervures s'arrêtent à `servo.strip` (2 mm) de la poche et de son renfort ; longerons et gaines qui
+- **Nervures soudées à la baie** : `servo.strip` est la matière laissée entre le bout d'une fente de nervure et
+  la baie (bord extérieur de la fente de renfort, ou paroi de la poche sans renfort, et trous qui débouchent
+  dans la poche) ; défaut 1,2 × largeur de ligne (≈ 0,5 mm, ≥ largeur de ligne exigée) : le slicer garde ce col
+  et la paroi de la nervure se soude à la baie. Au bout des rampes, les nervures reprennent dès que la rampe sort
+  de la peau ; autour des ponts du renfort, elles gardent 2 mm. Longerons et gaines qui
   entrent dans la boîte sont simplement découpés par la poche.
 - **Emplanture** : `orientation.root: auto` (défaut) place l'emplanture au bout de l'aile que touche une gaine
   de câble (sinon : plus grande section, comme avant) ; `debut` / `fin` l'imposent (coordonnée min. / max. le

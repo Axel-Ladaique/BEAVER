@@ -184,7 +184,7 @@ return { libelles: chemins.map(libelle), aideRoles: aide(["roles"]), aideCable: 
 """)
     lib = out["libelles"]
     assert lib == [
-        "Baies de servo", "Bande sans nervure autour de la poche (mm)", "Fond ↔ peau opposée min. (mm)",
+        "Baies de servo", "Matière entre nervures et baie (mm)", "Fond ↔ peau opposée min. (mm)",
         "Renfort (paroi doublée)", "Épaisseur de la paroi doublée (mm)", "Largeur de la fente de renfort (mm)",
         "Baie de servo", "Marqueurs de gaine de câble", "Emplanture", "Manchon (mm)", "Rôles imposés (repli)",
     ]

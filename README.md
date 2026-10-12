@@ -238,17 +238,18 @@ Comportement :
   avec une pente égale au surplomb max de la matière (45° PLA Aero, 40° ASA Aero) : rien n'est imprimé dans le
   vide. L'ouverture dans la peau est donc plus longue que la boîte de 2 × profondeur / tan(surplomb)
   (`baies : SERVO_1 (baie extrados, … × … mm utiles, ouverture …, profondeur …, renfort)`).
-- **Renfort** (`servo.reinforce: true`, défaut) : une fente de 0,15 mm parallèle aux parois, au fond et aux
-  rampes de la poche double la paroi (`servo.reinforce_offset`, défaut 1,2 × largeur de ligne). Elle est
-  coupée en **deux fentes en J reliées par un pont** : un U ouvert sur la peau aux deux bords isolerait la paroi
-  doublée du reste de la pièce (deux contours dans la couche, interdit en vase mode). Le pont suit le point haut de
-  la peau dans les rampes et contourne les trous qui traversent la paroi ; si un trou supprime une branche, un
-  avertissement le signale (« renfort incomplet »).
+- **Renfort** (`servo.reinforce: true`, défaut) : une fente de 0,15 mm (`servo.slit_width`) parallèle aux
+  parois, au fond et aux rampes de la poche double la paroi (`servo.reinforce_offset` = épaisseur de la paroi
+  doublée, défaut 1,2 × largeur de ligne). Dans chaque couche, elle forme **deux fentes en J séparées par un pont
+  de matière** : un U ouvert sur la peau aux deux bords isolerait la paroi doublée du reste de la pièce (deux
+  contours dans la couche, interdit en vase mode). Le pont suit le point haut de la peau dans les rampes et
+  contourne les trous qui traversent la paroi ; si un trou supprime une branche, un avertissement le signale
+  (« renfort incomplet »). Quand la pièce est découpée, le rapport indique le ou les tronçons de chaque baie.
 - Les nervures s'arrêtent à `servo.strip` (2 mm) de la poche et de son renfort ; longerons et gaines qui
   entrent dans la boîte sont simplement découpés par la poche.
 - **Emplanture** : `orientation.root: auto` (défaut) place l'emplanture au bout de l'aile que touche une gaine
   de câble (sinon : plus grande section, comme avant) ; `debut` / `fin` l'imposent (coordonnée min. / max. le
-  long de l'axe d'envergure, repère d'origine). Dans la config : `orientation: {root: fin}` (avec ou sans `axis`).
+  long de l'axe d'envergure dans le repère d'origine, quel que soit le sens donné à `axis`). Dans la config : `orientation: {root: fin}` (avec ou sans `axis`).
 - **Gaine allégée** : trou + jeu, fente vers la peau, **sans attache**, manchon réduit à 1,2 × largeur de ligne
   (≈ 0,5 mm ; 0 serait refusé par la validation), bande sans nervure = largeur de ligne ; réglages communs
   dans `spars: {cable: {…}}`.

@@ -25,7 +25,7 @@
 - Gaine : un `spar` dont le nom contient `CABLE` (insensible à la casse ; liste configurable `naming.cable_markers`) est une **gaine**.
 
 ### 2. Emplanture
-- `orientation.root: auto | debut | fin` (`debut` = extrémité de coordonnée minimale le long de l'axe d'envergure du modèle d'origine).
+- `orientation.root: auto | debut | fin` (`debut` = extrémité de coordonnée minimale le long de l'axe d'envergure du modèle d'origine, quel que soit le sens de l'axe : sens fixé par sa composante dominante).
 - `auto` : s'il existe une gaine qui touche une extrémité de l'envergure (à la tolérance près), cette extrémité est l'emplanture ; sinon règle actuelle (plus grande section). La source est rapportée (`orientation : … emplanture côté gaine SBAR_CABLES_SERVO`).
 
 ### 3. Gaine allégée
@@ -35,10 +35,13 @@
 - **Côté d'ouverture** : la face de peau que la boîte traverse (extrados si la boîte dépasse en +Y, intrados en −Y). Erreur française si la boîte ne traverse aucune peau, traverse les deux, ou si son fond laisse moins de `servo.min_floor_gap` (défaut 1,0 mm) avant la peau opposée.
 - **Poche** = boîte prolongée vers l'extérieur au‑delà de la peau, et dans l'envergure par deux **rampes** : le fond remonte vers la peau avec une pente telle que l'angle de surplomb ≤ `max_overhang_deg` de la matière ; longueur d'une rampe Δ = profondeur / tan(max_overhang) où profondeur = écart maximal entre le fond et la peau d'ouverture sur l'étendue en corde de la boîte. Les parois latérales (en corde) restent parallèles à l'envergure.
 - Dans chaque couche, la poche est une **encoche** du contour : un seul contour, valide en vase mode.
-- **Renfort** (`servo.reinforce: true`) : une fente de largeur `slit_width` parallèle aux parois et au fond de la poche (rampes comprises), décalée de `servo.reinforce_offset` (défaut = largeur de ligne) vers l'intérieur, débouchant sur la peau aux deux bords de l'ouverture ⇒ paroi doublée.
+- **Renfort** (`servo.reinforce: true`, défaut) : une fente de largeur `servo.slit_width` (défaut 0,15 mm : fente verticale, vue telle quelle en tranche) parallèle aux parois et au fond de la poche (rampes comprises), à `servo.reinforce_offset` de la poche ⇒ paroi doublée. `reinforce_offset` = épaisseur de la paroi doublée (face de poche → bord proche de la fente), défaut 1,2 × largeur de ligne, refusé si < largeur de ligne ; `min_floor_gap` compte en plus la paroi + la fente sous le fond.
+  - Dans chaque couche, la fente forme **deux J** ouverts sur la peau, séparés par **un pont** de matière (un U débouchant aux deux bords isolerait la paroi doublée ; deux ponts laisseraient un tronçon de fente fermé). Le pont est choisi **par tranche de z** : dans les rampes, autour du point haut de la peau d'ouverture (peau unimodale le long de la corde) ; là où un trou rencontre la poche ou la fente, ou là où la fente d'un trou traverse la paroi doublée, autour du trou / de sa fente ; ailleurs, pont minimal (max(1 mm, 2 largeurs de ligne)) au point haut. Ponts bornés à la boîte ± renfort ; si un trou supprime une branche entière, avertissement « renfort incomplet ».
+  - Bornes des tranches calées sur zmin + k·hauteur de couche (mi-chemin entre deux couches) ; étendues des trous arrondies vers l'extérieur.
+- **Trous qui débouchent dans la poche** : là où ils la rejoignent, un anneau sans nervure de rayon r + 2 largeurs de ligne les entoure (le manchon y est le seul passage de la matière autour du trou) ; leur rencontre avec la poche est retirée de la référence « peau entamée » de la validation.
 - **Nervures** : la poche (et son renfort) + bande `servo.strip` (défaut 2,0 mm) est une zone interdite pour les plaques, avec la même « ombre » vers la bande centrale que les alésages (pas de fragment isolé).
 - Les gaines et longerons qui entrent dans la boîte sont simplement découpés par la poche.
-- Le rapport liste les baies (nom, côté, dimensions utiles, longueur d'ouverture).
+- Le rapport liste les baies (nom, côté, dimensions utiles, longueur d'ouverture, profondeur, renfort, tronçon(s) si la pièce est découpée).
 
 ### 5. Aperçu et GUI
 - `aerorib.preview` : la poche (section de la boîte avec rampes, renfort) entre dans la coupe et dans les zones des plaques ⇒ **comptes de plaques identiques** à la génération ; vue de dessus : rectangle d'ouverture + rampes ; gaines dessinées comme les trous.

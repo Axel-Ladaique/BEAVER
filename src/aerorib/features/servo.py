@@ -198,13 +198,18 @@ def _bridges(
 
     `layer_height` : bornes des tranches calées sur zmin + k·hauteur de couche, à mi-chemin entre deux couches
     (`layer_heights`) : aucune couche ne tombe sur une borne, l'aperçu et la génération prennent la même tranche.
+    Les étendues de trous (et l'étendue totale) sont arrondies vers l'extérieur : elles ne perdent aucune couche,
+    même sur une autre grille (tronçon découpé, que le slicer tranche depuis son propre bas).
     """
     side, x0, x1, reach = bay.side, bay.x0, bay.x1, bay.reach
 
-    def snap(z: float) -> float:
+    def snap(z: float, how=round) -> float:
         if not layer_height:
             return z
-        return bay.zmin + round((z - bay.zmin) / layer_height) * layer_height
+        k = (z - bay.zmin) / layer_height
+        if how is not round:  # floor / ceil : tolérance au bruit numérique d'une valeur déjà sur la grille
+            k = round(k) if abs(k - round(k)) < 1e-9 else k
+        return bay.zmin + how(k) * layer_height
     xs_ = np.linspace(x0, x1, 8 * _SAMPLES)
 
     def high_x(z: float) -> float:
@@ -215,7 +220,8 @@ def _bridges(
 
     # étendue en z où la fente coupe la peau : rampe décalée de reach (≤ reach·√(1 + run²) en z), jusqu'à la peau
     ext = abs(bay.y_skin - bay.y_floor) * bay.run + 2 * reach * math.sqrt(1 + bay.run**2) + 1.0
-    lo_all, hi_all = max(bay.z0 - ext, bay.zmin - 1.0), min(bay.z1 + ext, bay.zmax + 1.0)
+    lo_all = snap(max(bay.z0 - ext, bay.zmin - 1.0), math.floor)
+    hi_all = snap(min(bay.z1 + ext, bay.zmax + 1.0), math.ceil)
     holes = []  # (z début, z fin, x début, x fin)
     for b in bores:
         if not b.cut_hole:
@@ -223,11 +229,11 @@ def _bridges(
         lo, hi = bore_extent(b, bay.zmin, bay.zmax)
         meet = hole_meets_pocket(bay, b.x, b.y, b.radius, lo, hi, tol=reach + length, grow=reach)
         if meet is not None:
-            holes.append((snap(meet[0]), snap(meet[1]), b.x - b.radius - length, b.x + b.radius + length))
+            holes.append((snap(meet[0], math.floor), snap(meet[1], math.ceil), b.x - b.radius - length, b.x + b.radius + length))
         # fente du trou vers la peau d'ouverture : elle traverse la paroi doublée (fond, ou rampe dans les couches
         # de rampe) sur toute l'étendue du trou (même effet qu'un trou)
         if b.side == side and x0 - reach < b.x < x1 + reach:
-            holes.append((snap(lo), snap(hi), b.x - b.slit / 2 - length, b.x + b.slit / 2 + length))
+            holes.append((snap(lo, math.floor), snap(hi, math.ceil), b.x - b.slit / 2 - length, b.x + b.slit / 2 + length))
     cuts = {lo_all, hi_all}
     if lo_all < bay.z0:
         cuts |= set(np.arange(bay.z0, lo_all, -BRIDGE_STEP).tolist())

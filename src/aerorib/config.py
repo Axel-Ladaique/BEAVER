@@ -62,7 +62,7 @@ class OrientationAxis(_Strict):
     """Orientation explicite : axe d'envergure imposé (facultatif) et/ou choix de l'emplanture.
 
     `root` : `auto` (bout des gaines de câble, sinon plus grande section), `debut` (coordonnée minimale
-    le long de l'axe d'envergure, repère d'origine) ou `fin` (coordonnée maximale).
+    le long de l'axe d'envergure, repère d'origine, quel que soit le sens de l'axe) ou `fin` (coordonnée maximale).
     """
 
     axis: tuple[float, float, float] | None = None

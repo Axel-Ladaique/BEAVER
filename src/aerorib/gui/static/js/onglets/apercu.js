@@ -210,13 +210,13 @@ export function dessinDessus(plan, zCourant) {
     }));
   }
   for (const t of plan.trous || []) {
-    // trou vu de dessus : étendue z × diamètre (x ± r) ; gaine (trou + manchon) en pointillés
+    // trou vu de dessus : étendue z × diamètre (x ± r) ; manchon (trou + manchon) en pointillés
     const titre = `${t.type} « ${t.nom} » : x = ${nombre(t.x, 1)} mm, Ø ${nombre(2 * t.r, 1)} mm, `
       + `z = ${nombre(t.z0, 1)} – ${nombre(t.z1, 1)} mm`;
     const g = svg("g", { classe: t.type === "longeron" || t.type === "gaine" ? "trou-dessus longeron" : "trou-dessus passage" }, [svg("title", { texte: titre })]);
-    if (t.gaine > t.r) {
+    if (t.manchon > t.r) {
       g.append(svg("rect", {
-        x: t.z0, y: -(t.x + t.gaine), width: t.z1 - t.z0, height: 2 * t.gaine, classe: "gaine", "stroke-width": 1, ...TRAIT,
+        x: t.z0, y: -(t.x + t.manchon), width: t.z1 - t.z0, height: 2 * t.manchon, classe: "manchon", "stroke-width": 1, ...TRAIT,
       }));
     }
     g.append(svg("rect", {

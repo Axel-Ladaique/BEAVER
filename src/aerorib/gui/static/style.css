@@ -219,7 +219,7 @@ svg .reseau-b { stroke: var(--reseau-b); }
 svg .contour-aile { fill: none; stroke: var(--peau-trait); }
 svg .trou-dessus .trou { fill: var(--trou); fill-opacity: .25; stroke: var(--trou); }
 svg .trou-dessus .trou.rebouche { fill: none; stroke-dasharray: 2 2; }
-svg .trou-dessus .gaine { fill: none; stroke: var(--trou); stroke-dasharray: 4 3; stroke-opacity: .8; }
+svg .trou-dessus .manchon { fill: none; stroke: var(--trou); stroke-dasharray: 4 3; stroke-opacity: .8; }
 svg .baie-dessus .baie-ouverture { fill: var(--baie); fill-opacity: .3; stroke: none; }
 svg .baie-dessus .baie-rampe { fill: var(--baie); fill-opacity: .12; stroke: var(--baie); stroke-dasharray: 3 2; stroke-opacity: .7; }
 svg .baie-dessus .baie-boite { fill: none; stroke: var(--baie); }

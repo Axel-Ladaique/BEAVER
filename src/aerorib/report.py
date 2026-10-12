@@ -71,17 +71,43 @@ def format_bores(bores, filled=()) -> str:
     return "  trous : " + (" ; ".join(items) if items else "aucun")
 
 
-def format_bays(bays) -> str:
+def segment_heights(segments) -> list[float]:
+    """Hauteurs des tronçons (solides posés à z = 0), de l'emplanture au saumon."""
+    out = []
+    for s in segments:
+        bb = s.bounding_box()
+        out.append(bb.max.Z - bb.min.Z)
+    return out
+
+
+def _bay_segments(bay, heights: Sequence[float]) -> list[int]:
+    """Numéros (1…) des tronçons que l'ouverture de la baie (rampes comprises) traverse."""
+    lo, hi = (z - bay.zmin for z in bay.opening)
+    out, z = [], 0.0
+    for k, h in enumerate(heights, 1):
+        if lo < z + h and hi > z:
+            out.append(k)
+        z += h
+    return out
+
+
+def format_bays(bays, heights: Sequence[float] = ()) -> str:
     """Baies de servo : côté d'ouverture, dimensions utiles (corde × envergure), longueur d'ouverture (rampes
-    comprises)."""
+    comprises) ; `heights` (hauteurs des tronçons) : tronçon(s) de chaque baie quand la pièce est découpée."""
     items = []
     for b in bays:
         lo, hi = b.opening
+        where = ""
+        if len(heights) > 1:
+            ks = _bay_segments(b, heights)
+            if ks:
+                names = ", ".join(map(str, ks[:-1])) + f" et {ks[-1]}" if len(ks) > 1 else str(ks[0])
+                where = f", tronçon{'s' if len(ks) > 1 else ''} {names}"
         items.append(
             f"{b.name} (baie {b.side_name}, {b.x1 - b.x0:.1f} × {b.z1 - b.z0:.1f} mm utiles, "
-            f"ouverture {hi - lo:.1f} mm, profondeur {b.depth:.1f} mm" + (
-                (", renfort partiel)" if b.rf_lost else ", renfort)") if b.rf_offset > 0 else ")"
-            )
+            f"ouverture {hi - lo:.1f} mm, profondeur {b.depth:.1f} mm"
+            + ((", renfort partiel" if b.rf_lost else ", renfort") if b.rf_offset > 0 else "")
+            + where + ")"
         )
     return "  baies : " + (" ; ".join(items) if items else "aucune")
 

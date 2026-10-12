@@ -154,8 +154,14 @@ def prepare_key(cfg: Config) -> str:
     data = cfg.model_dump(mode="json", include=set(_PREP_FIELDS))
     data["split"] = {"grid": data["split"]["grid"]}
     data["tessellation_tol"] = cfg.validation.tessellation_tol
-    # matière : manchon des gaines (largeur de ligne), rampes des baies de servo (surplomb max)
-    data["preset"] = {"line_width": cfg.preset.line_width, "max_overhang_deg": cfg.preset.max_overhang_deg}
+    # matière : manchon des gaines (largeur de ligne), rampes des baies de servo (surplomb max), calage des ponts
+    # de renfort sur les couches (hauteur de couche) ; épaisseur des nervures : peau d'ouverture `y_skin` des baies
+    data["preset"] = {
+        "line_width": cfg.preset.line_width,
+        "max_overhang_deg": cfg.preset.max_overhang_deg,
+        "layer_height": cfg.preset.layer_height,
+    }
+    data["slit_width"] = cfg.slit_width
     return json.dumps(data, sort_keys=True, separators=(",", ":"))
 
 
@@ -477,7 +483,7 @@ class PlanformView:
     wing: tuple[float, float, float, float]  # xmin, zmin, xmax, zmax
     cuts: list[float]  # altitudes absolues des coupes de tronçons
     warnings: list[str] = field(default_factory=list)
-    # trous vus de dessus, repère orienté : {nom, type, x, r, gaine, z0, z1} (étendue z × diamètre)
+    # trous vus de dessus, repère orienté : {nom, type, x, r, manchon (rayon trou + manchon), z0, z1}
     bores: list[dict] = field(default_factory=list)
     # baies de servo vues de dessus : {nom, cote, x0, x1, z0, z1 (boîte utile), ouverture [z, z] (rampes
     # comprises), profondeur, renfort, renfort_partiel}
@@ -518,11 +524,11 @@ def _plan_bores(prep: Prepared) -> list[dict]:
         lo, hi = max(lo, zmin), min(hi, zmax)  # débouchant : l'outil dépasse la pièce
         out.append({
             "nom": b.name, "type": "gaine" if b.cable else "longeron" if b.cut_hole else "passage relié", "x": _round(b.x),
-            "r": _round(b.radius), "gaine": _round(b.radius + b.sleeve), "z0": _round(lo), "z1": _round(hi),
+            "r": _round(b.radius), "manchon": _round(b.radius + b.sleeve), "z0": _round(lo), "z1": _round(hi),
         })
     for name, f in prep.filled:
         out.append({
-            "nom": name, "type": "passage rebouché", "x": _round(f.x), "r": _round(f.r), "gaine": _round(f.r),
+            "nom": name, "type": "passage rebouché", "x": _round(f.x), "r": _round(f.r), "manchon": _round(f.r),
             "z0": _round(max(f.z0, zmin)), "z1": _round(min(f.z1, zmax)),
         })
     return out
@@ -553,7 +559,6 @@ def planform(prep: Prepared, plates: list[Plate2D], cfg: Config | None = None) -
             continue
         segs.append(PlanSegment(p.c + lo * p.d0, zmin + lo * p.d1, p.c + hi * p.d0, zmin + hi * p.d1, p.layer, p.family))
     cuts, warns = _cuts(prep, cfg) if cfg is not None else ([], [])
-    warns = [*reinforce_warnings(prep.bays), *warns]
     return PlanformView(segs, (bb.min.X, zmin, bb.max.X, zmax), [prep.zrange[0] + c for c in cuts], warns,
                         _plan_bores(prep), _plan_bays(prep))
 

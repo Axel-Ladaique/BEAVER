@@ -186,3 +186,17 @@ def test_simple_sbar_v2_orientation_unchanged():
     assert o.source == "longeron SBAR_14mm_1"
     bb = model.of("skin")[0].body.solid.moved(o.location).bounding_box()
     assert bb.min.Z == pytest.approx(0.0, abs=1e-3)
+
+
+@pytest.mark.parametrize("root", ["debut", "fin"])
+def test_forced_root_ignores_axis_sign(root):
+    """`debut` = coordonnée min. du repère d'origine le long de l'axe d'envergure, quel que soit le sens donné à
+    l'axe (axe imposé négatif, ou sens arbitraire du cylindre détecté)."""
+    model, _ = _wing_with_conduits("hi")
+    ends = []
+    for axis in ((1, 0, 0), (-1, 0, 0)):
+        cfg = load_config(overrides={"naming": {"cable_markers": ["CABLES"]}, "orientation": {"axis": axis, "root": root}})
+        o = orient(model, cfg)
+        ends.append(_cable_z(model, o, "SBAR_CABLES_hi")[1])
+    assert ends[0] == pytest.approx(ends[1], abs=0.6)
+    assert ends[0] == pytest.approx(80.0 if root == "debut" else 20.0, abs=0.6)

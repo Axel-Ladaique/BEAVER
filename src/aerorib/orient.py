@@ -59,10 +59,12 @@ def _span_range(solid: Solid, axis: np.ndarray) -> tuple[float, float]:
 def choose_root(model: Model, cfg: Config, axis: np.ndarray) -> tuple[bool | None, str]:
     """(`root_is_lo` imposé ou None = règle des sections, complément de `source`)."""
     mode = cfg.orientation.root if isinstance(cfg.orientation, OrientationAxis) else "auto"
-    if mode == "debut":
-        return True, "emplanture imposée (debut)"
-    if mode == "fin":
-        return False, "emplanture imposée (fin)"
+    if mode in ("debut", "fin"):
+        # debut = coordonnée min. du repère d'origine le long de l'axe, quel que soit son sens (axe imposé négatif,
+        # sens arbitraire du cylindre détecté) : sens fixé par la composante dominante de l'axe
+        a = np.asarray(axis, dtype=float)
+        positive = bool(a[int(np.argmax(np.abs(a)))] > 0)
+        return (mode == "debut") == positive, f"emplanture imposée ({mode})"
     cables = model.cables
     if not cables:
         return None, ""

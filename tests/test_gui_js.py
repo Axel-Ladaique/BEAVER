@@ -68,7 +68,7 @@ return [
 
 
 def test_vue_de_dessus_dessine_les_trous():
-    """Vue de dessus : un rectangle (étendue z × diamètre) par trou, gaine du longeron, titre en textContent."""
+    """Vue de dessus : un rectangle (étendue z × diamètre) par trou, manchon du longeron, titre en textContent."""
     out = _node(r"""
 class N {
   constructor(tag) { this.tag = tag; this.attrs = {}; this.enfants = []; this.textContent = ""; }
@@ -83,8 +83,8 @@ globalThis.document = { createElementNS: (ns, t) => new N(t), createElement: (t)
                         createTextNode: (t) => Object.assign(new N("#text"), { textContent: t }) };
 const { dessinDessus } = await js("onglets/apercu.js");
 const plan = { aile: [0, 0, 100, 80], segments: [], coupes: [], trous: [
-  { nom: "Longeron", type: "longeron", x: 30, r: 3.1, gaine: 4.0, z0: 0, z1: 80 },
-  { nom: "P<1>", type: "passage relié", x: 70, r: 1.2, gaine: 1.6, z0: 10, z1: 60 },
+  { nom: "Longeron", type: "longeron", x: 30, r: 3.1, manchon: 4.0, z0: 0, z1: 80 },
+  { nom: "P<1>", type: "passage relié", x: 70, r: 1.2, manchon: 1.6, z0: 10, z1: 60 },
 ] };
 const s = dessinDessus(plan, 40);
 const groupes = s.enfants.filter((n) => n.tag === "g");
@@ -96,7 +96,7 @@ return groupes.map((g) => ({
 """)
     lon, pas = out
     assert lon["classe"] == "trou-dessus longeron" and "Longeron" in lon["titre"] and "z = 0" in lon["titre"]
-    assert lon["rects"] == [["gaine", 0, -34, 80, 8], ["trou", 0, -33.1, 80, 6.2]]
+    assert lon["rects"] == [["manchon", 0, -34, 80, 8], ["trou", 0, -33.1, 80, 6.2]]
     assert pas["classe"] == "trou-dessus passage" and "P<1>" in pas["titre"]
     assert pas["rects"][-1][0] == "trou" and pas["rects"][-1][1:] == [10, -71.2, 50, 2.4]
 
@@ -134,7 +134,7 @@ def test_vue_de_dessus_dessine_les_baies():
     out = _node(_DOM + r"""
 const { dessinDessus } = await js("onglets/apercu.js");
 const plan = { aile: [0, 0, 100, 120], segments: [], coupes: [], trous: [
-  { nom: "SBAR_CABLE_1", type: "gaine", x: 30, r: 3, gaine: 3.5, z0: 0, z1: 50 },
+  { nom: "SBAR_CABLE_1", type: "gaine", x: 30, r: 3, manchon: 3.5, z0: 0, z1: 50 },
 ], baies: [
   { nom: "SERVO<1>", cote: "extrados", x0: 22, x1: 42, z0: 40, z1: 75, ouverture: [30, 85], profondeur: 7,
     renfort: true, renfort_partiel: false },

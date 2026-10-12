@@ -17,7 +17,7 @@ from aerorib.export import export_results
 from aerorib.io_step import StepReadError, read_step
 from aerorib.orient import orient
 from aerorib.pipeline import PipelineError, run_model
-from aerorib.report import format_bays, format_bores, format_text, write_html
+from aerorib.report import format_bays, format_bores, format_text, segment_heights, write_html
 from aerorib.validate import validate
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, pretty_exceptions_show_locals=False)
@@ -219,7 +219,7 @@ def run(
             typer.echo(format_text(b.report, title=b.name))
             typer.echo(format_bores(b.bores, b.filled))
             if b.bays:
-                typer.echo(format_bays(b.bays))
+                typer.echo(format_bays(b.bays, segment_heights(b.segments)))
         plate = 1
         for b in result.bodies:
             if len(b.segments) > 1:

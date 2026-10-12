@@ -431,6 +431,24 @@ def test_prepare_key_follows_servo_and_material():
     base = preview.prepare_key(load_config())
     assert base != preview.prepare_key(load_config(overrides={"servo": {"min_floor_gap": 2.0}}))
     assert base != preview.prepare_key(load_config(overrides={"material_settings": {"max_overhang_deg": 40}}))
+    # hauteur de couche (calage des ponts) et épaisseur des nervures (y_skin) entrent dans les baies en cache
+    assert base != preview.prepare_key(load_config(overrides={"material_settings": {"layer_height": 0.3}}))
+    assert base != preview.prepare_key(load_config(overrides={"slit_width": 0.2}))
+
+
+def test_prepare_follows_layer_height(run_of):
+    """Aperçu préparé avec une hauteur de couche puis une autre : les baies suivent (pas de cache périmé)."""
+    step, _ = run_of("extrados")
+    preview.clear_cache()
+    a = preview.prepare(step, load_config(overrides=OVER))
+    cfg_b = load_config(overrides={**OVER, "material_settings": {"layer_height": 0.3}})
+    b = preview.prepare(step, cfg_b)
+    (bay_a,), (bay_b,) = a.bays, b.bays
+    assert bay_a.rf_gaps != bay_b.rf_gaps
+    for za, zb, _, _ in bay_b.rf_gaps:
+        for z in (za, zb):
+            k = (z - bay_b.zmin) / 0.3
+            assert k == pytest.approx(round(k), abs=1e-6)
 
 
 @pytest.mark.slow
@@ -457,12 +475,23 @@ def test_bridge_bands_snap_between_layers():
     (bay,) = servo_bays(servos, skin, mid, cfg)
     xm = (bay.x0 + bay.x1) / 2
     hole = Bore("SBAR_CABLE_x", xm, bay.y_floor - 2.0, 1.5, 0.5, 0.42, 1, True, 0.0, 57.37, 0.15, 0.15, cable=True)
+    # bout du trou (avec son jeu) à 0,2 couche au-dessus d'une borne : le plus proche le rognerait
+    from dataclasses import replace
+
+    hole = replace(hole, z1=bay.zmin + 191.2 * lh - hole.clearance)
     (bay,) = servo_bays(servos, skin, mid, cfg, [hole])
     assert len(bay.rf_gaps) > 3
     for za, zb, _, _ in bay.rf_gaps:
         for z in (za, zb):
             k = (z - bay.zmin) / lh
             assert k == pytest.approx(round(k), abs=1e-6), z
+    # étendue de la fente du trou arrondie vers l'extérieur : juste sous son bout, le pont contourne encore le trou
+    from aerorib.features.bores import bore_extent
+
+    _, top = bore_extent(hole, bay.zmin, bay.zmax)
+    assert 0.1 < (top - bay.zmin) / lh % 1 < 0.5  # le plus proche serait en dessous : le cas à couvrir
+    (g,) = [g for g in bay.rf_gaps if g[0] <= top - 0.01 <= g[1]]
+    assert g[2] <= xm - hole.slit / 2 and g[3] >= xm + hole.slit / 2
     lo, hi = bay.rf_gaps[0][0], bay.rf_gaps[-1][1]
     for z in layer_heights(bay.zmin, bay.zmax, lh):
         if lo < z < hi:
@@ -471,7 +500,7 @@ def test_bridge_bands_snap_between_layers():
 
 def test_planform_lists_bays(run_of):
     """Vue de dessus : baie (boîte utile, ouverture rampes comprises, côté, renfort), sérialisée ; avertissements
-    du renfort dans ceux de la vue."""
+    du renfort dans les estimations (une seule fois)."""
     from dataclasses import replace
 
     cfg = load_config(overrides=OVER)
@@ -491,9 +520,13 @@ def test_planform_lists_bays(run_of):
 
     json.dumps(d)
     lost = replace(bay, rf_lost=((40.0, 45.0),))
-    view = preview.planform(replace(prep, bays=(lost,)), plates, cfg)
-    assert any(w.startswith("SERVO_1 : renfort incomplet") for w in view.warnings)
+    lost_prep = replace(prep, bays=(lost,))
+    view = preview.planform(lost_prep, plates, cfg)
     assert view.to_dict()["baies"][0]["renfort_partiel"] is True
+    # avertissement du renfort émis une seule fois, avec les estimations (comme les murs)
+    assert not any("renfort incomplet" in w for w in view.warnings)
+    est = preview.estimates(lost_prep, plates, cfg, cached=True)
+    assert sum(w.startswith("SERVO_1 : renfort incomplet") for w in est["avertissements"]) == 1
     plain = preview.planform(replace(prep, bays=(replace(bay, rf_offset=0.0, rf_width=0.0),)), plates, cfg)
     assert plain.to_dict()["baies"][0]["renfort"] is False
 
@@ -526,3 +559,28 @@ def test_html_report_lists_bays_and_conduits(run_of, tmp_path):
     html = path.read_text(encoding="utf-8")
     assert "SBAR_CABLE_SERVO (gaine, Ø" in html
     assert "baies : SERVO_1 (baie extrados" in html and "renfort)" in html
+
+
+def test_format_bays_names_the_segments():
+    (bay,), _, _ = _bays(servo_wing_bodies("extrados"))
+    lo, hi = (z - bay.zmin for z in bay.opening)
+    assert "tronçon" not in format_bays([bay], [120.0])  # pièce non découpée
+    assert format_bays([bay], [hi + 10, 50.0]).endswith(", renfort, tronçon 1)")
+    assert format_bays([bay], [lo + 5, 200.0]).endswith(", renfort, tronçons 1 et 2)")
+    assert format_bays([bay], [lo - 5, 200.0]).endswith(", renfort, tronçon 2)")
+    assert format_bays([bay], [lo + 1, 2.0, 200.0]).endswith(", renfort, tronçons 1, 2 et 3)")
+
+
+@pytest.mark.slow
+def test_bay_at_root_ramp_leaves_through_root_face(tmp_path):
+    """Baie près de l'emplanture (z0 = 3) : la rampe basse sort par la face d'emplanture ; imprimable, et l'aperçu
+    donne les mêmes baies et plaques que la génération (~20 s)."""
+    cfg = load_config(overrides=OVER)
+    step = write_step(tmp_path / "racine.step", servo_wing_bodies(box=(22.0, 42.0, 3.0, 16.0, 3.0, 38.0), cable=True))
+    (body,) = run_model(classify(read_step(step), cfg), cfg).bodies
+    (bay,) = body.bays
+    assert bay.opening[0] == pytest.approx(bay.zmin) and bay.z0 - bay.ramp < bay.zmin  # rampe coupée par l'emplanture
+    assert body.report.ok, [(i.z, i.message) for i in body.report.errors][:5]
+    preview.clear_cache()
+    prep = preview.prepare(step, cfg)
+    assert prep.bays == body.bays and len(preview.plates_2d(prep, cfg)) == body.plates

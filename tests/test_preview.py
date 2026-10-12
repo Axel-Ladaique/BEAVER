@@ -176,7 +176,7 @@ def test_planform(prep, plates):
         assert view.wing[0] < t["x"] < view.wing[2] and t["r"] > 0
         assert -1e-6 <= t["z0"] < t["z1"] <= 80 + 1e-6
     longeron = next(t for t in trous if t["type"] == "longeron")
-    assert longeron["gaine"] > longeron["r"]  # enveloppe gaine (trou + manchon)
+    assert longeron["manchon"] > longeron["r"]  # enveloppe trou + manchon
     json.dumps(view.to_dict())
 
 

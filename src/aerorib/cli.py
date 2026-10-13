@@ -14,6 +14,7 @@ from aerorib.bambu import BambuError, open_in_bambu, read_template, vase_warning
 from aerorib.config import AUTO_TEMPLATE, Config, embedded_templates, ConfigError, load_config, resolve_template
 from aerorib.material_profiles import ProfileError, copy_profile, find_profiles, load_profile
 from aerorib.export import export_results
+from aerorib.layout import format_rotations
 from aerorib.io_step import StepReadError, read_step
 from aerorib.orient import orient
 from aerorib.pipeline import PipelineError, run_model
@@ -229,6 +230,8 @@ def run(
         for b in result.bodies:
             if len(b.segments) > 1:
                 typer.echo(_format_segments(b.segments, plate if template else None))
+            for line in format_rotations(b.placements):
+                typer.echo(f"  {line}")
             for w in b.warnings:
                 typer.echo(f"  ⚠ {w}")
             plate += max(len(b.segments), 1)

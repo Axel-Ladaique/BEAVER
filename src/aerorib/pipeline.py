@@ -8,7 +8,8 @@ from typing import NamedTuple
 
 from build123d import Cylinder, Location, Solid
 from OCP.Standard import Standard_Failure
-from shapely.geometry import Point, Polygon
+from OCP.BRepTools import BRepTools
+from shapely.geometry import MultiPoint, Point, Polygon
 
 from aerorib.classify import Model
 from aerorib.bambu import BambuError, read_template
@@ -29,10 +30,11 @@ from aerorib.features.bores import (
 )
 from aerorib.features.ribs import diamond_plates, emptied_by_walls, plate_lines
 from aerorib.features.servo import ServoBay, ServoError, hole_meets_pocket, pocket_solid, reinforce_solids, reinforce_warnings, servo_bays
+from aerorib.layout import Placement, fit_on_bed, format_rotation
 from aerorib.midsurface import MidSurface
 from aerorib.orient import Orientation, orient
 from aerorib.segment import SegmentError, plan_cuts, split_part
-from aerorib.slicing import slice_layers
+from aerorib.slicing import slice_layers, to_mesh
 from aerorib.validate import Report, validate
 
 
@@ -52,6 +54,7 @@ class BodyResult:
     warnings: tuple[str, ...] = ()  # avertissements de volume d'impression / gabarit
     segments: tuple[Solid, ...] = ()  # tronçons imprimables, emplanture → saumon (un seul si pas de découpe)
     bays: tuple[ServoBay, ...] = ()  # baies de servo
+    placements: tuple[Placement, ...] = ()  # rotation sur le plateau de chaque tronçon (même ordre que segments)
 
 
 @dataclass(frozen=True)
@@ -326,15 +329,44 @@ def _segment(
         raise PipelineError(f"{body_name} : {exc}") from exc
     if cuts:
         progress(f"{body_name} : découpe en {len(pieces)} tronçons")
+    return tuple(pieces), tuple(warnings)
+
+
+def _footprint(piece: Solid) -> Polygon:
+    """Emprise XY d'un tronçon : enveloppe convexe des sommets de son maillage (tolérance fine, triangulation retirée)."""
+    mesh = to_mesh(piece, 0.05, 0.5)
+    BRepTools.Clean_s(piece.wrapped)
+    return MultiPoint([tuple(v) for v in mesh.vertices[:, :2]]).convex_hull
+
+
+def place_pieces(
+    body_name: str, pieces: tuple[Solid, ...], cfg: Config, progress: Callable[[str], None]
+) -> tuple[tuple[Placement, ...], tuple[str, ...]]:
+    """Rotation de chaque tronçon sur le plateau + avertissements (tronçon trop grand même tourné)."""
+    (W, D, _), _ = _print_volume(cfg)
+    margin = cfg.segment.margin
+    placements, warnings = [], []
     for i, piece in enumerate(pieces, 1):
         pb = piece.bounding_box(optimal=True)
         w, d = pb.max.X - pb.min.X, pb.max.Y - pb.min.Y
-        if w > W - 2 * seg.margin or d > D - 2 * seg.margin:
-            raise PipelineError(
-                f"{body_name} : le tronçon {i} fait {w:.0f}×{d:.0f} mm, plus grand que le plateau "
-                f"({W:.0f}×{D:.0f} mm, marge {seg.margin:g} mm)"
+        if w <= W - 2 * margin and d <= D - 2 * margin:  # tient droit : pas besoin du maillage
+            placements.append(Placement(0.0, True, min(W - 2 * margin - w, D - 2 * margin - d), (w, d)))
+            continue
+        pl = fit_on_bed(_footprint(piece), (W, D), margin)
+        if pl.fits:
+            progress(f"{body_name} : T{i} : {format_rotation(pl)}")
+        elif cfg.segment.mode != "off":  # en mode off, l'avertissement de dépassement existe déjà
+            warnings.append(
+                f"{body_name} : le tronçon {i} ({pl.size[0]:.0f}×{pl.size[1]:.0f} mm au mieux, même tourné) "
+                f"ne tient pas sur le plateau ({W:.0f}×{D:.0f} mm, marge {margin:g} mm) — "
+                "à découper ou à réduire"
             )
-    return tuple(pieces), tuple(warnings)
+        if not pl.fits:
+            pl = Placement(0.0, False, pl.slack, pl.size)
+        placements.append(pl)
+    for w_ in warnings:
+        progress(f"⚠ {w_}")
+    return tuple(placements), tuple(warnings)
 
 
 def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambda m: None) -> RunResult:
@@ -386,6 +418,9 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
         segments, warns = _segment(s.body.name, result, cfg, progress)
         if gen.slivers:
             warns = (*warns, f"{gen.slivers} éclat(s) négligeable(s) (< {MAX_SLIVER_VOLUME} mm³) retiré(s) à la découpe")
-        warns = (*gen.warnings, *warns)
-        bodies.append(BodyResult(s.body.name, skin, result, report, bores, n, filled, warns, segments, gen.bays))
+        placements, place_warns = place_pieces(s.body.name, segments, cfg, progress)
+        warns = (*gen.warnings, *warns, *place_warns)
+        bodies.append(
+            BodyResult(s.body.name, skin, result, report, bores, n, filled, warns, segments, gen.bays, placements)
+        )
     return RunResult(o, tuple(bodies))

@@ -140,6 +140,24 @@ def _centered(mesh: trimesh.Trimesh) -> np.ndarray:
     return v - (lo + hi) / 2
 
 
+def _rotation(angle_deg: float) -> str:
+    """Matrice 3MF d'une rotation anti-horaire autour de Z : 3×3 par lignes (convention p' = p·M, la
+    translation suit, comme dans le reste du fichier)."""
+    if not angle_deg:
+        return _IDENTITY
+    c, s = math.cos(math.radians(angle_deg)), math.sin(math.radians(angle_deg))
+    return f"{_fmt(c)} {_fmt(s)} 0 {_fmt(-s)} {_fmt(c)} 0 0 0 1"
+
+
+def _rotated_center(mesh: trimesh.Trimesh, angle_deg: float) -> tuple[float, float]:
+    """Centre XY de l'emprise du maillage centré, après rotation autour de son centre."""
+    v = _centered(mesh)[:, :2]
+    a = math.radians(angle_deg)
+    c, s = math.cos(a), math.sin(a)
+    x, y = c * v[:, 0] - s * v[:, 1], s * v[:, 0] + c * v[:, 1]
+    return float(x.max() + x.min()) / 2, float(y.max() + y.min()) / 2
+
+
 def _height(mesh: trimesh.Trimesh) -> float:
     v = np.asarray(mesh.vertices, dtype=float)
     return float(v[:, 2].max() - v[:, 2].min())
@@ -173,11 +191,15 @@ def _object_file(k: int, mesh: trimesh.Trimesh, version: str = _DEFAULT_VERSION)
 
 
 def write_project(
-    template: Template, objects: list[tuple[str, trimesh.Trimesh]], path: Path
+    template: Template, objects: list[tuple], path: Path
 ) -> Path:
-    """Écrit un projet 3MF : un objet par plateau, dans l'ordre, centré et posé à z = 0."""
+    """Écrit un projet 3MF : un objet par plateau, dans l'ordre, centré et posé à z = 0.
+
+    Chaque objet est (nom, maillage) ou (nom, maillage, angle_deg) : rotation anti-horaire autour de Z (à travers
+    le centre du maillage), écrite dans les transformations de l'objet ; l'emprise tournée reste centrée."""
     if not objects:
         raise BambuError("Aucun objet à écrire dans le projet Bambu.")
+    objects = [(o[0], o[1], float(o[2]) if len(o) > 2 else 0.0) for o in objects]
     n = len(objects)
     path = Path(path)
     W, D = template.bed
@@ -194,11 +216,12 @@ def write_project(
     except (zipfile.BadZipFile, OSError) as exc:
         raise BambuError(f"« {template.path} » n'est pas un projet Bambu Studio valide.") from exc
     res, items, rels, objcfg, plates, assemble = [], [], [], [], [], []
-    for k, (name, mesh) in enumerate(objects, 1):
+    for k, (name, mesh, angle) in enumerate(objects, 1):
         oid = 2 * k  # objet-assemblage ; son maillage (object_k.model) porte l'id 2k-1, comme Bambu Studio
         mid = oid - 1
         ox, oy = plate_origin(k - 1, n, template.bed)
-        tr = f"{_IDENTITY} {_fmt(ox + W / 2)} {_fmt(oy + D / 2)} {_fmt(_height(mesh) / 2)}"
+        cx, cy = _rotated_center(mesh, angle) if angle else (0.0, 0.0)
+        tr = f"{_rotation(angle)} {_fmt(ox + W / 2 - cx)} {_fmt(oy + D / 2 - cy)} {_fmt(_height(mesh) / 2)}"
         qn = quoteattr(name)
         res.append(
             f'  <object id="{oid}" p:UUID="{_uid("res", k)}" type="model">\n'
@@ -266,7 +289,7 @@ def write_project(
         z.writestr("_rels/.rels", ROOT_RELS)
         z.writestr("3D/_rels/3dmodel.model.rels", rels_xml)
         z.writestr("3D/3dmodel.model", model)
-        for k, (_name, mesh) in enumerate(objects, 1):
+        for k, (_name, mesh, _angle) in enumerate(objects, 1):
             z.writestr(f"3D/Objects/object_{k}.model", _object_file(k, mesh, version))
         z.writestr("Metadata/model_settings.config", cfg)
         for name, data in copied.items():

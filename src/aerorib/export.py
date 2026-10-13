@@ -9,6 +9,7 @@ from build123d import export_stl
 from OCP.BRepTools import BRepTools
 
 from aerorib.bambu import BambuError, Template, write_project
+from aerorib.layout import format_rotations
 from aerorib.io_step import NamedBody, write_step
 from aerorib.pipeline import RunResult
 from aerorib.report import format_bays, format_bores, segment_heights, write_html
@@ -67,7 +68,13 @@ def _write_all(run, out_dir, stem, formats, template, single, pieces, written) -
                 export_stl(solid, str(path), tolerance=0.02, angular_tolerance=0.3)
                 written.append(path)
         details = [format_bores(b.bores, b.filled)] + ([format_bays(b.bays, segment_heights(b.segments))] if b.bays else [])
+        if rot := format_rotations(b.placements):
+            details.append("plateau : " + " ; ".join(rot))
         written.append(write_html(b.report, out_dir / f"{base}-rapport.html", title=b.name, details=details))
     if "3mf" in formats:
-        objs = [(n, to_mesh(s, 0.02)) for b in run.bodies for n, s in pieces[b.name]]
+        objs = [
+            (n, to_mesh(s, 0.02), b.placements[k].angle_deg if k < len(b.placements) else 0.0)
+            for b in run.bodies
+            for k, (n, s) in enumerate(pieces[b.name])
+        ]
         written.append(write_project(template, objs, out_dir / f"{stem}.3mf"))

@@ -162,8 +162,10 @@ def test_too_wide(tmp_path):
                 data = json.dumps(s).encode()
             zo.writestr(item, data)
     cfg = _cfg(template=small, max_height=30)
-    with pytest.raises(PipelineError, match="plus grand que le plateau"):
-        run_model(classify(wing_x_bodies(), cfg), cfg)
+    run = run_model(classify(wing_x_bodies(), cfg), cfg)  # plus d'exception : avertissement (découpe en corde : tâche suivante)
+    (body,) = run.bodies
+    assert not any(p.fits for p in body.placements)
+    assert any("ne tient pas sur le plateau" in w for w in body.warnings)
 
 
 def test_missing_template_warns(tmp_path):

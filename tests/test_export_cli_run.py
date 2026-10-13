@@ -106,3 +106,32 @@ def test_run_internal_error_is_clean(tmp_path: Path, monkeypatch, exc):
     assert r.exit_code == 1
     assert r.output.startswith("erreur : erreur interne : ") and type(exc).__name__ in r.output
     assert "merci de transmettre le fichier STEP" in r.output and "Traceback" not in r.output
+
+
+def _fake_chord_run(*args, **kwargs) -> RunResult:
+    from aerorib.layout import Placement
+
+    part = Box(20, 10, 10).solids()[0]
+    a, b = Box(10, 10, 10).solids()[0], Box(10, 10, 10).moved(Location((10, 0, 0))).solids()[0]
+    stats = {"layers": 1.0, "height_mm": 10.0, "path_length_m": 0.0, "mass_g": 0.0}
+    rep = Report((), stats)
+    notice = "découpe automatique : coupe dans la corde en 2 morceaux (section 400 × 48 mm > plateau P1S même en diagonale)"
+    body = BodyResult(
+        "Aile_test", part, part, rep, (), 0, segments=(a, b), placements=(Placement(0.0, True, 1.0, (10, 10)),) * 2,
+        notices=(notice,), names=("A", "B"), spans=((0.0, 10.0), (0.0, 10.0)), piece_reports=(rep, rep),
+    )
+    return RunResult(Orientation(Location(), (0.0, 0.0, 1.0), "axe forcé"), (body,))
+
+
+def test_run_shows_chord_cut_notices_and_pieces(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(cli, "run_model", _fake_chord_run)
+    src = write_step(tmp_path / "aile.step", wing_x_bodies())
+    out = tmp_path / "o"
+    r = runner.invoke(app, ["run", str(src), "--out", str(out)])
+    assert r.exit_code == 0, r.output
+    assert "  ℹ découpe automatique : coupe dans la corde en 2 morceaux (section 400 × 48 mm" in r.output
+    assert "  morceaux : 2 — A (z = 0–10 mm), B (z = 0–10 mm)" in r.output
+    assert (out / "aile-a.stl").exists() and (out / "aile-b.stl").exists()
+    assert [x.path[-1] for x in read_step(out / "aile.step")] == ["Aile_test_a", "Aile_test_b"]
+    html = (out / "aile-rapport.html").read_text(encoding="utf-8")
+    assert "découpe automatique : coupe dans la corde" in html and "morceaux : A ✔, B ✔" in html

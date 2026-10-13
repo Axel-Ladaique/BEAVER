@@ -184,3 +184,32 @@ def servo_wing_bodies(
         tube = Cylinder(3.0, zc).moved(Location(((x0 + x1) / 2, y0 - 1.0, zc / 2)))
         bodies.append(NamedBody(("SBAR_CABLE_SERVO",), tube.solids()[0]))
     return bodies
+
+
+def wide_wing_bodies(
+    chord: float = 400.0,
+    span: float = 120.0,
+    sweep_deg: float = 0.0,
+    spar_x: float | None = 200.0,
+    spar_d: float = 8.0,
+    servo: ServoBox | None = None,
+    code: str = "4412",
+) -> list["NamedBody"]:
+    """Aile à grande corde (coupe dans la corde sur P1S), repère de construction (corde X, épaisseur Y, envergure Z) :
+    profil NACA extrudé avec flèche `sweep_deg` ; longeron `SBAR_8` parallèle à Z en x = spar_x (à l'emplanture,
+    sur la ligne de cambrure), sur toute l'envergure ; `servo` : boîte `SERVO_1` (x0, x1, y0, y1, z0, z1)."""
+    from aerorib.io_step import NamedBody
+
+    pts, camber = naca4(code, chord)
+    wing = swept_wing(chord=chord, span=span, sweep_deg=sweep_deg, code=code)
+    bodies = []
+    if spar_x is not None:
+        loc = Location((spar_x, camber(spar_x), span / 2))
+        wing = wing - Cylinder(spar_d / 2, span * 2).moved(loc)
+        bodies.append(NamedBody(("SBAR_8",), Cylinder(spar_d / 2, span).moved(loc).solids()[0]))
+    bodies.insert(0, NamedBody(("Aile_large",), wing.solids()[0]))
+    if servo is not None:
+        x0, x1, y0, y1, z0, z1 = servo
+        box = Box(x1 - x0, y1 - y0, z1 - z0).moved(Location(((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2)))
+        bodies.append(NamedBody(("SERVO_1",), box.solids()[0]))
+    return bodies

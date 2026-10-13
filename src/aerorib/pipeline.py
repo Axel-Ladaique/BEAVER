@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import NamedTuple
 
 from build123d import Cylinder, Location, Solid
@@ -28,12 +28,13 @@ from aerorib.features.bores import (
     passages_to_fill,
     spar_bores,
 )
+from aerorib.features.chord_cut import bay_obstacles, bore_obstacles, cut_lines, cut_segment, plan_layout
 from aerorib.features.ribs import diamond_plates, emptied_by_walls, plate_lines
 from aerorib.features.servo import ServoBay, ServoError, hole_meets_pocket, pocket_solid, reinforce_solids, reinforce_warnings, servo_bays
 from aerorib.layout import Placement, fit_on_bed, format_rotation
 from aerorib.midsurface import MidSurface
 from aerorib.orient import Orientation, orient
-from aerorib.segment import SegmentError, plan_pieces, split_part
+from aerorib.segment import SegmentError, split_part
 from aerorib.slicing import section_sampler, slice_layers, to_mesh
 from aerorib.validate import Report, validate
 
@@ -55,6 +56,17 @@ class BodyResult:
     segments: tuple[Solid, ...] = ()  # tronçons imprimables, emplanture → saumon (un seul si pas de découpe)
     bays: tuple[ServoBay, ...] = ()  # baies de servo
     placements: tuple[Placement, ...] = ()  # rotation sur le plateau de chaque tronçon (même ordre que segments)
+    notices: tuple[str, ...] = ()  # décisions automatiques de découpe (informations, pas des avertissements)
+    names: tuple[str, ...] = ()  # nom de chaque morceau (T1, T2… ; A, B / T1-A… avec une coupe dans la corde)
+    spans: tuple[tuple[float, float], ...] = ()  # étendue en Z de chaque morceau (mm depuis l'emplanture)
+    piece_reports: tuple[Report, ...] = ()  # validation de chaque morceau (coupe dans la corde seulement)
+
+    @property
+    def z_heights(self) -> list[float]:
+        """Hauteurs des tronçons en Z (emplanture → saumon), un par tronçon même coupé dans la corde."""
+        if not self.spans:
+            return [s.bounding_box().max.Z - s.bounding_box().min.Z for s in self.segments]
+        return [b - a for a, b in dict.fromkeys(self.spans)]
 
 
 @dataclass(frozen=True)
@@ -296,11 +308,37 @@ def usable_height(cfg: Config) -> float:
     return H - seg.margin
 
 
+class Segmented(NamedTuple):
+    pieces: tuple[Solid, ...]  # morceaux imprimables, posés à z = 0
+    warnings: tuple[str, ...]
+    notices: tuple[str, ...] = ()  # décisions automatiques de découpe (informations)
+    names: tuple[str, ...] = ()  # T1, T2… ; A, B / T1-A, T1-B… avec une coupe dans la corde
+    spans: tuple[tuple[float, float], ...] = ()  # étendue en Z de chaque morceau (mm depuis l'emplanture)
+    # coupe dans la corde : peau d'origine coupée de la même façon et zone de peau tolérée (faces de coupe), par
+    # morceau, pour la validation morceau par morceau
+    checks: tuple[tuple[Solid, Callable], ...] = ()
+    chord: bool = False  # au moins une coupe dans la corde
+
+
+CUT_FACE_TOL = 0.05  # mm : demi-largeur de la bande autour d'une face de coupe où la peau peut manquer
+
+
 def _segment(
     body_name: str, result: Solid, cfg: Config, progress: Callable[[str], None], skin: Solid | None = None
 ) -> tuple[tuple[Solid, ...], tuple[str, ...]]:
-    """Découpe en tronçons selon la hauteur et l'empreinte sur le plateau (`plan_pieces`). L'empreinte est lue sur
-    les sections de `skin` (peau d'origine, même contour extérieur que `result` ; `result` par défaut)."""
+    """(morceaux, avertissements) de `segment_part`."""
+    seg = segment_part(body_name, result, cfg, progress, skin)
+    return seg.pieces, seg.warnings
+
+
+def segment_part(
+    body_name: str, result: Solid, cfg: Config, progress: Callable[[str], None], skin: Solid | None = None,
+    original: Solid | None = None, bores: Sequence[Bore] = (), bays: Sequence[ServoBay] = (),
+) -> Segmented:
+    """Découpe en morceaux : tronçons en Z selon la hauteur et l'empreinte sur le plateau, puis coupe dans la corde
+    des tronçons qui ne tiennent pas (`plan_layout`). L'empreinte est lue sur les sections de `skin` (peau d'origine,
+    même contour extérieur que `result` ; `result` par défaut). `original` (peau de référence de la validation) est
+    coupée comme `result` quand il y a une coupe dans la corde ; `bores`, `bays` : obstacles des plans de coupe."""
     seg = cfg.segment
     (W, D, H), fallback = _print_volume(cfg)
     warnings = [f"{body_name} : {fallback}"] if fallback else []
@@ -321,33 +359,88 @@ def _segment(
             )
         for w_ in warnings:
             progress(f"⚠ {w_}")
-        return (result,), tuple(warnings)
+        return Segmented((result,), tuple(warnings), (), ("T1",), ((0.0, bb.max.Z - bb.min.Z),))
     for w_ in warnings:
         progress(f"⚠ {w_}")
     z0 = bb.min.Z
+    height = bb.max.Z - z0
     sample = section_sampler(skin if skin is not None else result, cfg.validation.tessellation_tol)
+    obstacles = [*bore_obstacles(bores, z0, bb.max.Z), *bay_obstacles(bays, z0, cfg.servo_strip())]
+    printer = cfg.printer.upper()
     try:
-        plan = plan_pieces(
-            bb.max.Z - z0, max_h, lambda zs: sample([z0 + z for z in zs]), (W, D), seg.margin, seg.cuts_at or None
+        plan = plan_layout(
+            height, max_h, lambda zs: sample([z0 + z for z in zs]), (W, D), seg.margin, seg.cuts_at or None,
+            chord=seg.chord, max_overhang_deg=cfg.preset.max_overhang_deg, obstacles=obstacles,
         )
         cuts = plan.cuts
-        pieces = split_part(result, [z0 + c for c in cuts]) if cuts else [result]
+        names = plan.names()
+        spans = tuple((s.z0, s.z1) for s in plan.segments for _ in range(s.k))
+        checks: list[tuple[Solid, Callable]] = []
+        if not plan.chord_cut:
+            pieces = split_part(result, [z0 + c for c in cuts]) if cuts else [result]
+        else:
+            pieces = []
+            last = len(plan.segments) - 1
+            for i, sp in enumerate(plan.segments):
+                label = f"{body_name} : T{i + 1}"
+                order = sp.order()
+                cut = cut_segment(result, sp, z0, i == 0, i == last, label)
+                pieces += [cut[j] for j in order]
+                if original is not None:
+                    ref = cut_segment(original, sp, z0, i == 0, i == last, f"{label} (référence)")
+                    checks += [(ref[j], cut_lines(sp, j, CUT_FACE_TOL)) for j in order]
     except SegmentError as exc:
         raise PipelineError(f"{body_name} : {exc}") from exc
-    if cuts:
-        progress(f"{body_name} : découpe en {len(pieces)} tronçons")
-    if plan.reason:
-        progress(f"{body_name} : découpe automatique : {len(pieces)} tronçons en Z ({plan.reason})")
-    if plan.chord is not None:
-        c = plan.chord
-        w_ = (
-            f"{body_name} : la section {c.size[0]:.0f}×{c.size[1]:.0f} mm (z = {c.z0:.0f} à {c.z1:.0f} mm) ne tient "
-            f"pas sur le plateau ({W:.0f}×{D:.0f} mm, marge {seg.margin:g} mm) même tournée : une coupe dans la "
-            "corde sera nécessaire"
+    notices = []
+    n_z = len(plan.z.cuts) + 1
+    if plan.z.reason:
+        notices.append(f"découpe automatique : {n_z} tronçons en Z ({plan.z.reason})")
+    if plan.extra_z:
+        notices.append(
+            f"découpe automatique : {len(plan.segments)} tronçons en Z pour limiter l'inclinaison de la coupe dans "
+            f"la corde (surplomb max {cfg.preset.max_overhang_deg:g}°)"
         )
-        warnings.append(w_)
-        progress(f"⚠ {w_}")
-    return tuple(pieces), tuple(warnings)
+    need = plan.z.chord
+    for i, sp in enumerate(plan.segments, 1):
+        if not sp.planes:
+            continue
+        where = f"T{i} : " if len(plan.segments) > 1 else ""
+        if need is not None and need.z0 <= sp.z1 and need.z1 >= sp.z0 and sp.size is not None:
+            why = f"section {sp.size[0]:.0f} × {sp.size[1]:.0f} mm > plateau {printer} même en diagonale"
+        else:
+            why = f"tronçon trop grand pour le plateau {printer} même tourné"
+        line = f"découpe automatique : {where}coupe dans la corde en {sp.k} morceaux ({why})"
+        for p in sp.planes:
+            if p.shift:
+                toward = "le bord de fuite" if (p.shift > 0) == sp.le_at_min else "le bord d'attaque"
+                line += (f" ; plan décalé de {abs(p.shift):.1f} mm vers {toward} pour éviter "
+                         + ", ".join(p.avoided or ("un obstacle",)))
+        notices.append(line)
+    n_seg = len(plan.segments)
+    if n_seg > 1:
+        progress(f"{body_name} : découpe en {n_seg} tronçons")
+    for line in notices:
+        progress(f"{body_name} : {line}")
+    return Segmented(
+        tuple(pieces), tuple(warnings), tuple(notices), tuple(names), spans, tuple(checks), plan.chord_cut
+    )
+
+
+def merge_reports(reports: Sequence[Report], names: Sequence[str], offsets: Sequence[float], height: float) -> Report:
+    """Rapport d'ensemble des morceaux validés séparément : défauts préfixés du nom du morceau, z ramenés au repère
+    de la pièce entière (`offsets` : bas de chaque morceau) ; couches, trajet et masse additionnés."""
+    issues, failed = [], {}
+    for r, name, dz in zip(reports, names, offsets):
+        issues += [replace(i, z=i.z + dz, message=f"{name} : {i.message}") for i in r.issues]
+        for z, polys in r.failed_layers.items():
+            failed[z + dz] = (*failed.get(z + dz, ()), *polys)
+    stats = {
+        "layers": float(sum(r.stats["layers"] for r in reports)),
+        "height_mm": float(height),
+        "path_length_m": sum(r.stats["path_length_m"] for r in reports),
+        "mass_g": sum(r.stats["mass_g"] for r in reports),
+    }
+    return Report(tuple(issues), stats, failed)
 
 
 def _footprint(piece: Solid) -> Polygon:
@@ -358,7 +451,8 @@ def _footprint(piece: Solid) -> Polygon:
 
 
 def place_pieces(
-    body_name: str, pieces: tuple[Solid, ...], cfg: Config, progress: Callable[[str], None]
+    body_name: str, pieces: tuple[Solid, ...], cfg: Config, progress: Callable[[str], None],
+    names: Sequence[str] = (),
 ) -> tuple[tuple[Placement, ...], tuple[str, ...]]:
     """Rotation de chaque tronçon sur le plateau + avertissements (tronçon trop grand même tourné)."""
     (W, D, _), _ = _print_volume(cfg)
@@ -372,10 +466,10 @@ def place_pieces(
             continue
         pl = fit_on_bed(_footprint(piece), (W, D), margin)
         if pl.fits:
-            progress(f"{body_name} : T{i} : {format_rotation(pl)}")
+            progress(f"{body_name} : {names[i - 1] if names else f'T{i}'} : {format_rotation(pl)}")
         elif cfg.segment.mode != "off":  # en mode off, l'avertissement de dépassement existe déjà
             warnings.append(
-                f"{body_name} : le tronçon {i} ({pl.size[0]:.0f}×{pl.size[1]:.0f} mm au mieux, même tourné) "
+                f"{body_name} : {f'le morceau {names[i - 1]}' if names else f'le tronçon {i}'} ({pl.size[0]:.0f}×{pl.size[1]:.0f} mm au mieux, même tourné) "
                 f"ne tient pas sur le plateau ({W:.0f}×{D:.0f} mm, marge {margin:g} mm) — "
                 "à découper ou à réduire"
             )
@@ -432,13 +526,31 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
             original = skin.cut(*gen.openings) if gen.openings else skin
         except GEOMETRY_ERRORS as exc:
             raise PipelineError(f"{s.body.name} : poche de servo impossible ({type(exc).__name__} : {exc})") from exc
-        report = validate(result, cfg, original=original)
-        segments, warns = _segment(s.body.name, result, cfg, progress, skin=skin)
+        seg = segment_part(
+            s.body.name, result, cfg, progress, skin=skin, original=original, bores=bores, bays=gen.bays
+        )
+        piece_reports: tuple[Report, ...] = ()
+        if seg.checks:  # coupe dans la corde : chaque morceau validé avec la peau d'origine coupée de même
+            piece_reports = tuple(
+                validate(piece, cfg, original=ref, skin_exempt=exempt)
+                for piece, (ref, exempt) in zip(seg.pieces, seg.checks)
+            )
+            bb = result.bounding_box(optimal=True)
+            report = merge_reports(
+                piece_reports, seg.names, [bb.min.Z + a for a, _ in seg.spans], bb.max.Z - bb.min.Z
+            )
+        else:
+            report = validate(result, cfg, original=original)
+        warns = seg.warnings
         if gen.slivers:
             warns = (*warns, f"{gen.slivers} éclat(s) négligeable(s) (< {MAX_SLIVER_VOLUME} mm³) retiré(s) à la découpe")
-        placements, place_warns = place_pieces(s.body.name, segments, cfg, progress)
+        names = seg.names if seg.chord else ()
+        placements, place_warns = place_pieces(s.body.name, seg.pieces, cfg, progress, names)
         warns = (*gen.warnings, *warns, *place_warns)
         bodies.append(
-            BodyResult(s.body.name, skin, result, report, bores, n, filled, warns, segments, gen.bays, placements)
+            BodyResult(
+                s.body.name, skin, result, report, bores, n, filled, warns, seg.pieces, gen.bays, placements,
+                seg.notices, seg.names, seg.spans, piece_reports,
+            )
         )
     return RunResult(o, tuple(bodies))

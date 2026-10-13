@@ -134,26 +134,28 @@ def test_segment_swept_wing_cut_and_notified():
     assert all(p.fits for p in placements) and pwarns == ()
 
 
-def test_segment_wide_chord_warns_chord_needed():
+def test_segment_wide_chord_is_cut_in_chord():
+    # avant la coupe dans la corde : simple avertissement ; désormais : 2 morceaux et une notification
     msgs = []
     wing = swept_wing(chord=400, span=60)
-    pieces, warns = pipeline._segment("B", wing, _cfg(), msgs.append)
-    assert len(pieces) == 1
-    (w,) = [w for w in warns if "corde" in w]
-    assert "la section 400×48 mm" in w and "ne tient pas sur le plateau" in w
-    assert "une coupe dans la corde sera nécessaire" in w
-    assert f"⚠ {w}" in msgs
+    seg = pipeline.segment_part("B", wing, _cfg(), msgs.append)
+    assert len(seg.pieces) == 2 and seg.warnings == () and seg.names == ("A", "B")
+    (n,) = seg.notices
+    assert "coupe dans la corde en 2 morceaux" in n and "section 400 × 48 mm" in n and "P1S" in n
+    assert f"B : {n}" in msgs
 
 
-def test_segment_explicit_cuts_not_fitting_warned():
-    msgs = []
-    cfg = _cfg(cuts_at=[30])
+def test_segment_explicit_cuts_not_fitting():
+    # tronçon imposé trop grand : coupe dans la corde tentée ; flèche 60° > surplomb 45° et coupes imposées
+    # (pas de tronçon supplémentaire possible) ⇒ erreur ; segment.chord: off ⇒ erreur aussi
     wing = swept_wing(chord=60, span=200, sweep_deg=60)
-    pieces, _ = pipeline._segment("B", wing, cfg, msgs.append)
-    assert len(pieces) == 2
-    assert not any("découpe automatique" in m for m in msgs)
-    placements, pwarns = pipeline.place_pieces("B", pieces, cfg, msgs.append)
-    assert not placements[1].fits and any("tronçon 2" in w for w in pwarns)
+    with pytest.raises(pipeline.PipelineError, match="inclinée de 60°.*surplomb max 45°"):
+        pipeline._segment("B", wing, _cfg(cuts_at=[30]), lambda m: None)
+    with pytest.raises(pipeline.PipelineError, match="segment.chord: off"):
+        pipeline._segment("B", wing, _cfg(cuts_at=[30], chord="off"), lambda m: None)
+    # segment.mode: off : rien n'est coupé, simple avertissement (inchangé)
+    pieces, warns = pipeline._segment("B", wing, _cfg(mode="off"), lambda m: None)
+    assert len(pieces) == 1 and any("segment.mode: off" in w for w in warns)
 
 
 def test_non_fitting_placement_is_consistent_with_zero_angle():

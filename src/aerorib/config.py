@@ -182,6 +182,9 @@ class SegmentSettings(_Strict):
     cuts_at: list[float] = Field(default_factory=list)  # altitudes de coupe forcées (mm, repère d'impression)
     # force la hauteur utile (sinon : hauteur du gabarit Bambu − marge ; sans gabarit : imprimante − marge)
     max_height: float | None = Field(default=None, gt=0)
+    # auto : un tronçon dont une section ne tient pas sur le plateau (même tournée) est coupé dans la corde ;
+    # off : erreur si un morceau ne tient pas
+    chord: Literal["auto", "off"] = "auto"
 
 
 class BambuSettings(_Strict):

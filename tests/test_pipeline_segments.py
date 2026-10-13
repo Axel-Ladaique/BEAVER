@@ -162,10 +162,17 @@ def test_too_wide(tmp_path):
                 data = json.dumps(s).encode()
             zo.writestr(item, data)
     cfg = _cfg(template=small, max_height=30)
-    run = run_model(classify(wing_x_bodies(), cfg), cfg)  # plus d'exception : avertissement (découpe en corde : tâche suivante)
+    # plateau 60 × 60 : chaque tronçon est coupé dans la corde (autrefois : avertissement « ne tient pas »)
+    run = run_model(classify(wing_x_bodies(), cfg), cfg)
     (body,) = run.bodies
-    assert not any(p.fits for p in body.placements)
-    assert any("ne tient pas sur le plateau" in w for w in body.warnings)
+    assert body.names == ("T1-A", "T1-B", "T2-A", "T2-B", "T3-A", "T3-B")
+    assert all(p.fits for p in body.placements) and body.warnings == ()
+    assert len(body.piece_reports) == 6 and all(r.ok for r in body.piece_reports) and run.ok
+    assert sum("coupe dans la corde en 2 morceaux" in n for n in body.notices) == 3
+    # segment.chord: off : erreur claire au lieu de morceaux qui ne tiennent pas
+    cfg = _cfg(template=small, max_height=30, chord="off")
+    with pytest.raises(PipelineError, match="ne tient pas sur le plateau.*segment.chord: off"):
+        run_model(classify(wing_x_bodies(), cfg), cfg)
 
 
 def test_missing_template_warns(tmp_path):

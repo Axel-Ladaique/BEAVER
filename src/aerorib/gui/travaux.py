@@ -142,7 +142,7 @@ def _run_job(step: str, config_path: str, out_dir: str, queue) -> None:
 
         from aerorib.bambu import BambuError, read_template, vase_warning
         from aerorib.classify import ClassifyError, classify
-        from aerorib.report import format_bays, format_bores, segment_heights
+        from aerorib.report import format_bays, format_bores
         from aerorib.config import ConfigError, load_config, material_label, resolve_template
         from aerorib.export import export_results
         from aerorib.io_step import StepReadError, read_step
@@ -182,7 +182,7 @@ def _run_job(step: str, config_path: str, out_dir: str, queue) -> None:
                 "masse": round(s["mass_g"], 2), "trajet": round(s["path_length_m"], 2),
                 "couches": int(s["layers"]), "hauteur": round(s["height_mm"], 2),
                 "trous": format_bores(b.bores, b.filled).strip().removeprefix("trous : "),
-                "baies": format_bays(b.bays, segment_heights(b.segments)).strip().removeprefix("baies : "),
+                "baies": format_bays(b.bays, b.z_heights).strip().removeprefix("baies : "),
             })
         rapports = sorted(p.name for p in out.glob("*-rapport.html"))
         finish(
@@ -193,6 +193,7 @@ def _run_job(step: str, config_path: str, out_dir: str, queue) -> None:
             trajet=round(sum(c["trajet"] for c in corps), 2),
             erreurs=erreurs,
             avertissements=avertissements,
+            notices=[f"{b.name} : {n}" for b in result.bodies for n in b.notices],
             corps=corps,
             orientation=result.orientation.source,
             rapport=rapports[0] if rapports else None,

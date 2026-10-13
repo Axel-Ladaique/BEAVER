@@ -55,7 +55,8 @@ from aerorib.pipeline import (
     usable_height,
     wall_warnings,
 )
-from aerorib.segment import SegmentError, plan_pieces
+from aerorib.features.chord_cut import bay_obstacles, bore_obstacles, plan_layout
+from aerorib.segment import SegmentError
 from aerorib.slicing import Layer, layer_heights, mesh_sections, to_mesh
 from aerorib.validate import Issue, check_connectivity, check_material_width, check_narrow_slits, slicer_closing
 
@@ -549,7 +550,11 @@ def _cuts(prep: Prepared, cfg: Config) -> tuple[list[float], list[str]]:
             return sample([zlo + z for z in zs])
 
     try:
-        plan = plan_pieces(zhi - zlo, usable_height(cfg), sections, (W, D), seg.margin, seg.cuts_at or None)
+        obstacles = [*bore_obstacles(prep.bores, zlo, zhi), *bay_obstacles(prep.bays, zlo, cfg.servo_strip())]
+        plan = plan_layout(
+            zhi - zlo, usable_height(cfg), sections, (W, D), seg.margin, seg.cuts_at or None, chord=seg.chord,
+            max_overhang_deg=cfg.preset.max_overhang_deg, obstacles=obstacles,
+        )
         return list(plan.cuts), []
     except SegmentError as exc:
         return [], [f"découpe en tronçons impossible : {exc}"]

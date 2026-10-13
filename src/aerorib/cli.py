@@ -18,7 +18,7 @@ from aerorib.layout import format_rotations
 from aerorib.io_step import StepReadError, read_step
 from aerorib.orient import orient
 from aerorib.pipeline import PipelineError, run_model
-from aerorib.report import format_bays, format_bores, format_text, segment_heights, write_html
+from aerorib.report import format_bays, format_bores, format_text, write_html
 from aerorib.validate import validate
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, pretty_exceptions_show_locals=False)
@@ -184,6 +184,18 @@ def profils(
         typer.echo(f"  {info.name:<12} {info.origin:<11} gabarit Bambu : {label}   ({info.path})")
 
 
+def _format_pieces(b, first_plate: int | None) -> str:
+    """Morceaux d'une coupe dans la corde : nom, étendue en Z, validation."""
+    items = [
+        f"{n} (z = {a:.0f}–{z:.0f} mm{'' if r.ok else ', ✘'})"
+        for n, (a, z), r in zip(b.names, b.spans, b.piece_reports)
+    ]
+    line = f"  morceaux : {len(b.segments)} — " + ", ".join(items)
+    if first_plate is not None:
+        line += f" → plateaux {first_plate} à {first_plate + len(b.segments) - 1}"
+    return line
+
+
 def _format_segments(segments, first_plate: int | None) -> str:
     z, spans = 0.0, []
     for s in segments:
@@ -225,12 +237,16 @@ def run(
             typer.echo(format_text(b.report, title=b.name))
             typer.echo(format_bores(b.bores, b.filled))
             if b.bays:
-                typer.echo(format_bays(b.bays, segment_heights(b.segments)))
+                typer.echo(format_bays(b.bays, b.z_heights))
         plate = 1
         for b in result.bodies:
-            if len(b.segments) > 1:
+            for n in b.notices:
+                typer.echo(f"  ℹ {n}")
+            if b.piece_reports:
+                typer.echo(_format_pieces(b, plate if template else None))
+            elif len(b.segments) > 1:
                 typer.echo(_format_segments(b.segments, plate if template else None))
-            for line in format_rotations(b.placements):
+            for line in format_rotations(b.placements, list(b.names) if b.piece_reports else None):
                 typer.echo(f"  {line}")
             for w in b.warnings:
                 typer.echo(f"  ⚠ {w}")

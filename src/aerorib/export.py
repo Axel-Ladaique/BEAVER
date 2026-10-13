@@ -12,7 +12,7 @@ from aerorib.bambu import BambuError, Template, write_project
 from aerorib.layout import format_rotations
 from aerorib.io_step import NamedBody, write_step
 from aerorib.pipeline import RunResult
-from aerorib.report import format_bays, format_bores, segment_heights, write_html
+from aerorib.report import format_bays, format_bores, write_html
 from aerorib.slicing import to_mesh
 
 
@@ -25,7 +25,15 @@ def _pieces(b) -> list[tuple[str, object]]:
     segs = tuple(b.segments) or (b.result,)
     if len(segs) == 1:
         return [(b.name, segs[0])]
-    return [(f"{b.name}_t{i}", s) for i, s in enumerate(segs, 1)]
+    return [(f"{b.name}_{label}", s) for label, s in zip(piece_labels(b), segs)]
+
+
+def piece_labels(b) -> list[str]:
+    """Suffixes des fichiers et objets de chaque morceau : t1, t2… ; a, b / t1-a, t1-b… (coupe dans la corde)."""
+    n = max(len(b.segments), 1)
+    if len(b.names) == n:
+        return [safe_name(name.lower()) for name in b.names]
+    return [f"t{i}" for i in range(1, n + 1)]
 
 
 def drop_mesh(solid) -> None:
@@ -63,12 +71,17 @@ def _write_all(run, out_dir, stem, formats, template, single, pieces, written) -
         base = stem if single else f"{stem}-{safe_name(b.name)}"
         if "stl" in formats:
             multi = len(pieces[b.name]) > 1
-            for k, (_, solid) in enumerate(pieces[b.name], 1):
-                path = out_dir / (f"{base}-t{k}.stl" if multi else f"{base}.stl")
+            for label, (_, solid) in zip(piece_labels(b), pieces[b.name]):
+                path = out_dir / (f"{base}-{label}.stl" if multi else f"{base}.stl")
                 export_stl(solid, str(path), tolerance=0.02, angular_tolerance=0.3)
                 written.append(path)
-        details = [format_bores(b.bores, b.filled)] + ([format_bays(b.bays, segment_heights(b.segments))] if b.bays else [])
-        if rot := format_rotations(b.placements):
+        details = [format_bores(b.bores, b.filled)] + ([format_bays(b.bays, b.z_heights)] if b.bays else [])
+        details += list(b.notices)
+        if b.piece_reports:
+            details.append("morceaux : " + ", ".join(
+                f"{n} {'✔' if r.ok else '✘'}" for n, r in zip(b.names, b.piece_reports)
+            ))
+        if rot := format_rotations(b.placements, list(b.names) if b.piece_reports else None):
             details.append("plateau : " + " ; ".join(rot))
         written.append(write_html(b.report, out_dir / f"{base}-rapport.html", title=b.name, details=details))
     if "3mf" in formats:

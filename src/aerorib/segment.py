@@ -98,9 +98,11 @@ def plan_pieces(
     Empreinte d'un tronçon [z0, z1] = enveloppe convexe de ses sections aux deux bouts et tous les SECTION_STEP mm
     (`sections` : voir slicing.section_sampler ; aucun booléen, mêmes résultats en aperçu et en génération).
     Part du nombre de tronçons exigé par la hauteur, puis l'augmente (tronçons égaux) jusqu'à ce que tous tiennent
-    ou qu'ils deviennent plus courts que MIN_SEGMENT. Si une section seule ne tient pas, des coupes en Z n'y
-    changent rien : coupes de hauteur seulement, et `chord` renseigné. Des coupes imposées (`cuts_at`) sont
-    respectées telles quelles."""
+    ou qu'ils deviennent plus courts que MIN_SEGMENT (rien ne tient avant : coupes de hauteur seules).
+    Une section trop grande seule (même tournée) ne profite pas des coupes en Z : la coupe dans la corde s'en
+    chargera (`chord` renseigné). Si le reste de son tronçon tient, coupes de hauteur seules ; sinon la pièce est
+    traitée par régions : les sections trop grandes isolées dans leurs propres tronçons (coupes de hauteur), les
+    autres régions recoupées pour l'empreinte. Des coupes imposées (`cuts_at`) sont respectées telles quelles."""
     base = plan_cuts(height, max_height, cuts_at)
     cache: dict[float, np.ndarray] = {}
 
@@ -109,8 +111,8 @@ def plan_pieces(
         cache.update(zip(missing, sections(missing)))
         return [cache[z] for z in zs]
 
-    def place(cuts) -> list[tuple[Placement, tuple[float, float]]]:
-        bounds = [0.0, *cuts, float(height)]
+    def place(cuts, lo: float = 0.0, hi: float = float(height)) -> list[tuple[Placement, tuple[float, float]]]:
+        bounds = [lo, *cuts, hi]
         out = []
         for a, b in zip(bounds, bounds[1:]):
             pts = [p for p in get(_samples(a, b, height)) if len(p)]
@@ -130,23 +132,86 @@ def plan_pieces(
     if bad:
         worst = min(bad, key=lambda t: t[2].slack)
         chord = ChordNeed(min(z for z, _, _ in bad), max(z for z, _, _ in bad), _extent(worst[1]))
-    if cuts_at is not None or chord is not None:
-        reason = None if cuts_at is not None or not base else f"hauteur {height:.0f} mm > {max_height:.0f} mm utiles"
-        return PiecePlan(tuple(base), tuple(pl for pl, _ in place(base)), n0, reason, chord)
     first = place(base)
-    cuts, placed, n = base, first, n0
-    while not all(pl.fits for pl, _ in placed) and height / (n + 1) >= MIN_SEGMENT - 1e-9:
-        n += 1
-        cuts = [height * i / n for i in range(1, n)]
-        placed = place(cuts)
-    if n > n0:
-        w, d = max((size for pl, size in first if not pl.fits), key=lambda s: s[0] * s[1])
+    if cuts_at is not None:
+        return PiecePlan(tuple(base), tuple(pl for pl, _ in first), n0, None, chord)
+
+    def good_part(a: float, b: float) -> np.ndarray | None:
+        """Sections du tronçon [a, b] qui tiennent seules (None : aucune)."""
+        pts = [p for z, p, pl in alone if a - 1e-9 <= z <= b + 1e-9 and pl.fits]
+        return np.concatenate(pts) if pts else None
+
+    def oversized(a: float, b: float) -> bool:
+        return any(a - 1e-9 <= z <= b + 1e-9 for z, _, _ in bad)
+
+    # tronçons de hauteur qui ne tiennent pas : leur empreinte (hors sections trop grandes, laissées à la coupe
+    # dans la corde)
+    too_big = []
+    for (pl, size), a, b in zip(first, [0.0, *base], [*base, float(height)]):
+        if pl.fits:
+            continue
+        if not oversized(a, b):
+            too_big.append(size)
+        elif (g := good_part(a, b)) is not None and not fit_on_bed(g, bed, margin).fits:
+            too_big.append(_extent(g))
+    if not too_big:  # tout tient, ou seule la coupe dans la corde aidera : coupes de hauteur
+        reason = f"hauteur {height:.0f} mm > {max_height:.0f} mm utiles" if base else None
+        return PiecePlan(tuple(base), tuple(pl for pl, _ in first), n0, reason, chord)
+
+    def fit_region(a: float, b: float) -> list[float]:
+        """Tronçons égaux de [a, b] : le moins possible qui tiennent tous, sinon ceux de la hauteur seule."""
+        nr = max(1, math.ceil((b - a) / (max_height * (1 + 1e-9)) - 1e-9))
+        n = nr
+        while True:
+            cuts = [a + (b - a) * i / n for i in range(1, n)]
+            if all(pl.fits for pl, _ in place(cuts, a, b)):
+                return cuts
+            if (b - a) / (n + 1) < MIN_SEGMENT - 1e-9:
+                return [a + (b - a) * i / nr for i in range(1, nr)]
+            n += 1
+
+    # régions : sections trop grandes (coupe dans la corde, coupes de hauteur seules) / autres (coupes d'empreinte)
+    regions: list[list] = []
+    for i, (z, _, pl) in enumerate(alone):
+        is_bad = not pl.fits
+        if not regions:
+            regions.append([0.0, None, is_bad])
+        elif is_bad != regions[-1][2]:
+            # la frontière est prise sur la dernière / première section qui tient : la région trop grande
+            # contient toutes ses sections
+            cut = alone[i - 1][0] if is_bad else z
+            regions[-1][1] = cut
+            regions.append([cut, None, is_bad])
+    regions[-1][1] = float(height)
+    while len(regions) > 1:  # régions trop courtes fusionnées avec une voisine (trop grande de préférence)
+        short = [i for i, r in enumerate(regions) if r[1] - r[0] < MIN_SEGMENT - 1e-9]
+        if not short:
+            break
+        i = short[0]
+        nbrs = [j for j in (i - 1, i + 1) if 0 <= j < len(regions)]
+        j = max(nbrs, key=lambda k: (regions[k][2], -(regions[k][1] - regions[k][0])))
+        lo, hi = min(i, j), max(i, j)
+        regions[lo:hi + 1] = [[regions[lo][0], regions[hi][1], regions[lo][2] or regions[hi][2]]]
+    cuts: list[float] = []
+    for k, (a, b, is_bad) in enumerate(regions):
+        if k:
+            cuts.append(a)
+        cuts += [a + c for c in plan_cuts(b - a, max_height)] if is_bad else fit_region(a, b)
+    placed = place(cuts)
+    bounds = [0.0, *cuts, float(height)]
+    for (pl, _), a, b in zip(placed, bounds, bounds[1:]):
+        g = good_part(a, b) if not pl.fits and oversized(a, b) else None
+        if not pl.fits and (not oversized(a, b) or (g is not None and not fit_on_bed(g, bed, margin).fits)):
+            cuts, placed = list(base), first  # rien ne tient avant MIN_SEGMENT : coupes de hauteur seules
+            break
+    if list(cuts) != list(base):
+        w, d = max(too_big, key=lambda s: s[0] * s[1])
         reason = f"empreinte {w:.0f}×{d:.0f} mm > plateau {aw:.0f}×{ad:.0f} mm, même tournée"
     elif cuts:
         reason = f"hauteur {height:.0f} mm > {max_height:.0f} mm utiles"
     else:
         reason = None
-    return PiecePlan(tuple(cuts), tuple(pl for pl, _ in placed), n0, reason)
+    return PiecePlan(tuple(cuts), tuple(pl for pl, _ in placed), n0, reason, chord)
 
 
 def split_part(solid: Shape, cuts: list[float]) -> list[Solid]:

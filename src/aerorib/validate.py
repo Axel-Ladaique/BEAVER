@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
@@ -144,10 +144,14 @@ def check_material_width(layer: Layer, line_width: float) -> list[Issue]:
     return issues
 
 
-def check_skin(layer: Layer, original: Layer, max_mouth: float, tol: float) -> list[Issue]:
+def check_skin(layer: Layer, original: Layer, max_mouth: float, tol: float, exempt=None) -> list[Issue]:
+    """`exempt` : zone (shapely) où la peau d'origine peut manquer (face d'une coupe dans la corde : les fentes de
+    nervure qui y débouchent restent reliées à l'extérieur)."""
     if not original.polygons:
         return []
     orig_boundary = unary_union([p.exterior for p in original.polygons])
+    if exempt is not None:
+        orig_boundary = orig_boundary.difference(exempt)
     res_boundary = unary_union([p.boundary for p in layer.polygons]) if layer.polygons else None
     missing = orig_boundary if res_boundary is None else orig_boundary.difference(res_boundary.buffer(tol))
     issues = []
@@ -164,7 +168,8 @@ def check_skin(layer: Layer, original: Layer, max_mouth: float, tol: float) -> l
 
 def _check_layer(args) -> list[Issue]:
     """Contrôles d'une couche ; fonction de module (picklable) pour le pool de processus."""
-    z, polygons, original_polygons, min_slit, line_width, max_mouth, skin_tol = args
+    z, polygons, original_polygons, min_slit, line_width, max_mouth, skin_tol, *rest = args
+    exempt = rest[0] if rest else None
     if delai := os.environ.get(TEST_DELAY_ENV):
         time.sleep(float(delai))
     layer = Layer(z, polygons)
@@ -173,7 +178,7 @@ def _check_layer(args) -> list[Issue]:
     found += check_material_width(closed, line_width)
     found += check_narrow_slits(layer, min_slit)
     if original_polygons is not None:
-        found += check_skin(layer, Layer(z, original_polygons), max_mouth, skin_tol)
+        found += check_skin(layer, Layer(z, original_polygons), max_mouth, skin_tol, exempt)
     return found
 
 
@@ -193,7 +198,9 @@ def validate(
     cfg: Config,
     original: Shape | None = None,
     heights: Sequence[float] | None = None,
+    skin_exempt: Callable[[float], object] | None = None,
 ) -> Report:
+    """`skin_exempt` : z → zone (shapely, XY) où la peau d'origine peut manquer sans erreur (faces de coupe)."""
     preset = cfg.preset
     tol = cfg.validation.tessellation_tol
     bb = shape.bounding_box()
@@ -214,6 +221,7 @@ def validate(
             preset.line_width,
             v.max_mouth_width,
             v.skin_tolerance,
+            skin_exempt(layer.z) if skin_exempt is not None else None,
         )
         for i, layer in enumerate(layers)
     ]

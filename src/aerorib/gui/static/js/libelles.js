@@ -93,6 +93,7 @@ const AIDES = {
   "spars.cable.strip": "gaine : défaut = largeur de ligne",
   "spars.cable.anchor": "gaine : sans attache par défaut",
 };
+export const IMPRIMANTES = { p1s: "P1S (256 × 256 × 250)", h2s: "H2S (340 × 320 × 340)" };
 export const CHOIX = {
   fill: "reboucher", link: "relier à la peau", off: "aucun", auto: "automatique",
   top: "dessus (extrados)", bottom: "dessous (intrados)",

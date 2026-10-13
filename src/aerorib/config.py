@@ -37,7 +37,12 @@ class PrinterSpec(_Strict):
 
 PRINTERS: dict[str, PrinterSpec] = {
     "p1s": PrinterSpec(volume=(256, 256, 256)),
+    "h2s": PrinterSpec(volume=(340, 320, 340)),
 }
+
+# gabarits Bambu embarqués : templates/<imprimante>_<matière>.3mf
+TEMPLATES_DIR = Path(__file__).parent / "templates"
+AUTO_TEMPLATE = "auto"
 
 
 class Naming(_Strict):
@@ -180,8 +185,9 @@ class SegmentSettings(_Strict):
 
 
 class BambuSettings(_Strict):
-    # gabarit de projet Bambu Studio (.3mf) ; None = aucun (le profil matière fournit le gabarit embarqué)
-    template: str | None = None
+    # gabarit de projet Bambu Studio (.3mf) : "auto" (défaut) = gabarit embarqué de l'imprimante et de la matière
+    # (templates/<printer>_<material>.3mf), un chemin impose le sien, null = aucun
+    template: str | None = AUTO_TEMPLATE
     open: bool = False  # ouvre le projet dans Bambu Studio après génération
 
 
@@ -196,7 +202,7 @@ class ValidationSettings(_Strict):
 class Config(_Strict):
     material: str = "pla_aero"
     material_settings: dict[str, float] = Field(default_factory=dict)
-    printer: str = "p1s"
+    printer: Literal["p1s", "h2s"] = "p1s"
     slit_width: float = Field(default=0.1, gt=0)
     naming: Naming = Field(default_factory=Naming)
     roles: dict[str, Role] = Field(default_factory=dict)
@@ -219,10 +225,10 @@ class Config(_Strict):
             raise ValueError(f"matière inconnue '{v}' (profils disponibles : {', '.join(names)})")
         return v
 
-    @field_validator("printer")
+    @field_validator("printer", mode="before")
     @classmethod
     def _known_printer(cls, v: str) -> str:
-        if v not in PRINTERS:
+        if not isinstance(v, str) or v not in PRINTERS:
             raise ValueError(f"imprimante inconnue '{v}' (connues : {', '.join(sorted(PRINTERS))})")
         return v
 
@@ -385,7 +391,7 @@ def _deep_merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
 def check_template_path(data: dict[str, Any], base: Path) -> None:
     """Un gabarit relatif d'un YAML projet s'entend relativement au dossier de ce YAML."""
     bambu = data.get("bambu")
-    if isinstance(bambu, dict) and isinstance(bambu.get("template"), str):
+    if isinstance(bambu, dict) and isinstance(bambu.get("template"), str) and bambu["template"] != AUTO_TEMPLATE:
         try:
             resolved = str((base / Path(bambu["template"]).expanduser()).resolve())
         except (ValueError, OSError, RuntimeError) as exc:
@@ -449,9 +455,19 @@ def material_label(material: str) -> str:
     return f"{head.upper()} {tail.capitalize()}".strip()
 
 
+def embedded_template(printer: str, material: str) -> Path:
+    return TEMPLATES_DIR / f"{printer}_{material}.3mf"
+
+
 def resolve_template(cfg: Config) -> Path:
-    """Chemin du gabarit Bambu à utiliser ; ConfigError clair si absent."""
+    """Chemin du gabarit Bambu à utiliser : `bambu.template` explicite d'abord ; sinon (« auto ») le gabarit
+    embarqué `templates/<imprimante>_<matière>.3mf` ; ConfigError clair si absent."""
     template = cfg.bambu.template
+    if template == AUTO_TEMPLATE:
+        auto = embedded_template(cfg.printer, cfg.material)
+        if auto.is_file():
+            return auto
+        template = None
     if template is None:
         raise ConfigError(
             f"pas de gabarit Bambu pour {cfg.material} : enregistrer un projet {material_label(cfg.material)} "

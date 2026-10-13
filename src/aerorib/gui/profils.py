@@ -33,7 +33,7 @@ import yaml
 from fastapi import APIRouter, Body
 from pydantic import ValidationError
 
-from aerorib.config import Config
+from aerorib.config import AUTO_TEMPLATE, TEMPLATES_DIR, Config
 from aerorib.gui.projects import ProjectError, _flatten, _is_set, scrub_paths
 from aerorib.material_profiles import (
     ENV_VAR,
@@ -166,8 +166,14 @@ class ProfileStore:
             raise ProjectError(422, scrub_paths(str(exc))) from exc
 
     @staticmethod
-    def _gabarit(merged: dict) -> dict:
-        tpl = (merged.get("bambu") or {}).get("template")
+    def _gabarit(merged: dict, nom: str = "") -> dict:
+        bambu = merged.get("bambu") or {}
+        tpl = bambu.get("template", AUTO_TEMPLATE)
+        if tpl == AUTO_TEMPLATE:  # gabarit embarqué choisi selon l'imprimante : on liste ceux de la matière
+            noms = sorted(TEMPLATES_DIR.glob(f"*_{nom}.3mf")) if nom else []
+            if not noms:
+                return {"chemin_nom": None, "existe": False}
+            return {"chemin_nom": "automatique : " + ", ".join(n.name for n in noms), "existe": True}
         if not isinstance(tpl, str):
             return {"chemin_nom": None, "existe": False}
         try:
@@ -191,13 +197,14 @@ class ProfileStore:
             {"chemin": list(loc), "origine": "utilisateur" if any(_is_set(u, loc) for u in user) else "embarqué"}
             for loc in _flatten(valeurs)
         ]
+        valeurs.setdefault("bambu", {}).setdefault("template", AUTO_TEMPLATE)  # affichage : choisi selon l'imprimante
         return {
             "nom": nom,
             "origine": info.origin,
             "embarque": any(p.parent == embedded_dir() for p, _ in layers),
             "valeurs": valeurs,
             "provenance": provenance,
-            "gabarit": self._gabarit(merged),
+            "gabarit": self._gabarit(merged, nom),
         }
 
     def list(self) -> list[dict]:

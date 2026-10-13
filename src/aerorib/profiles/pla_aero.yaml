@@ -42,6 +42,3 @@ passages:
   slit_side: top
   slit_width: 0.15
   max_tilt_deg: 5.0
-
-bambu:
-  template: ../templates/p1s_pla_aero.3mf   # relatif à ce fichier ; null = aucun gabarit

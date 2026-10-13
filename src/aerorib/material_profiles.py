@@ -109,7 +109,7 @@ def _read_layer(path: Path) -> dict[str, Any]:
             f"(autorisées : {', '.join(sorted(PROFILE_KEYS))})"
         )
     bambu = data.get("bambu")
-    if isinstance(bambu, dict) and isinstance(bambu.get("template"), str):
+    if isinstance(bambu, dict) and isinstance(bambu.get("template"), str) and bambu["template"] != "auto":
         data["bambu"] = {**bambu, "template": str((path.parent / bambu["template"]).expanduser().resolve())}
     return data
 

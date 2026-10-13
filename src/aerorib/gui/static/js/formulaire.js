@@ -6,7 +6,7 @@
 
 import { el, vider } from "./dom.js";
 import { cleChemin, copie, estPose, lire, poser, retirer } from "./chemins.js";
-import { aide, CHOIX, libelle } from "./libelles.js";
+import { aide, CHOIX, IMPRIMANTES, libelle } from "./libelles.js";
 import { PLAN } from "./schema.js";
 
 // --- lecture / contrôle des saisies -------------------------------------------------------------------------
@@ -380,7 +380,9 @@ export class Formulaire {
       case "choix": {
         const options = [...nat.noeud.enum];
         if (chemin.length === 1 && chemin[0] === "material" && this.choix.material) options.splice(0, options.length, ...this.choix.material);
-        const s = this.select(id, options, valeur, inactif);
+        const imprimante = chemin.length === 1 && chemin[0] === "printer";
+        const s = imprimante ? this.select(id, options, valeur, inactif, (v) => IMPRIMANTES[v] || v)
+          : this.select(id, options, valeur, inactif);
         if (nat.nullable) s.prepend(el("option", { value: "", texte: "(aucun)" }));
         s.addEventListener("change", sur(() => (s.value === "" && nat.nullable ? null : s.value)));
         return s;

@@ -12,7 +12,7 @@ from shapely.geometry import Point, Polygon
 
 from aerorib.classify import Model
 from aerorib.bambu import BambuError, read_template
-from aerorib.config import Config, ConfigError, resolve_template
+from aerorib.config import AUTO_TEMPLATE, Config, ConfigError, resolve_template
 from aerorib.features.bores import (
     Bore,
     BoreError,
@@ -273,7 +273,7 @@ def _print_volume(cfg: Config) -> tuple[tuple[float, float, float], str | None]:
         warn = f"gabarit Bambu illisible ({exc}) — volume de l'imprimante {cfg.printer} utilisé"
     except ConfigError as exc:
         warn = (
-            f"{exc} — volume de l'imprimante {cfg.printer} utilisé" if cfg.bambu.template is not None else None
+            f"{exc} — volume de l'imprimante {cfg.printer} utilisé" if cfg.bambu.template not in (None, AUTO_TEMPLATE) else None
         )
     return tuple(cfg.printer_spec.volume), warn
 

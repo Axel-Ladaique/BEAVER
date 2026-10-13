@@ -36,15 +36,17 @@ def test_liste(client):
     assert r.status_code == 200
     par_nom = {p["nom"]: p for p in r.json()}
     assert par_nom["pla_aero"]["origine"] == "embarqué"
-    assert par_nom["pla_aero"]["gabarit"] == {"chemin_nom": "p1s_pla_aero.3mf", "existe": True}
+    assert par_nom["pla_aero"]["gabarit"] == {
+        "chemin_nom": "automatique : h2s_pla_aero.3mf, p1s_pla_aero.3mf", "existe": True}
     assert par_nom["pla_aero"]["existe"] is True
-    assert par_nom["asa_aero"]["gabarit"] == {"chemin_nom": "p1s_asa_aero.3mf", "existe": True}
+    assert par_nom["asa_aero"]["gabarit"] == {
+        "chemin_nom": "automatique : h2s_asa_aero.3mf, p1s_asa_aero.3mf", "existe": True}
 
 
 def test_lecture_valeurs_et_provenance(client, udir):
     d = client.get("/api/profils/pla_aero", headers=H).json()
     assert d["valeurs"]["material_settings"]["density"] == 0.8
-    assert d["valeurs"]["bambu"]["template"] == "p1s_pla_aero.3mf"
+    assert d["valeurs"]["bambu"]["template"] == "auto"
     assert {"chemin": ["slit_width"], "origine": "embarqué"} in d["provenance"]
     assert all(p["origine"] == "embarqué" for p in d["provenance"])
     assert "/" not in str(d)  # aucun chemin absolu
@@ -59,7 +61,8 @@ def test_lecture_valeurs_et_provenance(client, udir):
 
 def test_asa_gabarit_embarque(client):
     d = client.get("/api/profils/asa_aero", headers=H).json()
-    assert d["gabarit"] == {"chemin_nom": "p1s_asa_aero.3mf", "existe": True}
+    assert d["gabarit"] == {
+        "chemin_nom": "automatique : h2s_asa_aero.3mf, p1s_asa_aero.3mf", "existe": True}
 
 
 def test_gabarit_utilisateur_inexistant(client, udir):

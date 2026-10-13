@@ -393,7 +393,8 @@ def cut_segment(
 
 def cut_lines(seg: SegmentPlan, j: int, width: float) -> Callable[[float], Polygon | None]:
     """Bandes (vue en couche, repère du morceau j, z depuis le bas du tronçon) de largeur 2·width autour des faces
-    coupées du morceau j : la validation y tolère une peau ouverte (fentes de nervure débouchant sur la coupe)."""
+    coupées du morceau j : la face d'origine y est comparée au morceau avec une tolérance élargie à la largeur d'une
+    fente de nervure (fentes qui longent la face et y débouchent), voir validate.check_skin."""
     sides = [p for p in (seg.planes[j - 1] if j > 0 else None, seg.planes[j] if j < len(seg.planes) else None) if p]
 
     def strips(z: float):

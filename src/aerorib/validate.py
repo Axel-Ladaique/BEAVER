@@ -145,15 +145,18 @@ def check_material_width(layer: Layer, line_width: float) -> list[Issue]:
 
 
 def check_skin(layer: Layer, original: Layer, max_mouth: float, tol: float, exempt=None) -> list[Issue]:
-    """`exempt` : zone (shapely) où la peau d'origine peut manquer (face d'une coupe dans la corde : les fentes de
-    nervure qui y débouchent restent reliées à l'extérieur)."""
+    """`exempt` : (zone, écart) — face d'une coupe dans la corde. Dans la zone (bande étroite autour de la face), la
+    peau d'origine est comparée au résultat avec une tolérance élargie de `écart` (largeur d'une fente de nervure vue
+    en couche) : une fente qui longe la face et y débouche est admise, une entaille plus profonde reste signalée."""
     if not original.polygons:
         return []
     orig_boundary = unary_union([p.exterior for p in original.polygons])
-    if exempt is not None:
-        orig_boundary = orig_boundary.difference(exempt)
     res_boundary = unary_union([p.boundary for p in layer.polygons]) if layer.polygons else None
     missing = orig_boundary if res_boundary is None else orig_boundary.difference(res_boundary.buffer(tol))
+    if exempt is not None and exempt[0] is not None and res_boundary is not None:
+        zone, extra = exempt
+        on_face = missing.intersection(zone).difference(res_boundary.buffer(tol + extra))
+        missing = missing.difference(zone).union(on_face)
     issues = []
     for piece in _parts(missing):
         # la tolérance érode `tol` à chaque extrémité de la portion manquante : on compare
@@ -200,7 +203,8 @@ def validate(
     heights: Sequence[float] | None = None,
     skin_exempt: Callable[[float], object] | None = None,
 ) -> Report:
-    """`skin_exempt` : z → zone (shapely, XY) où la peau d'origine peut manquer sans erreur (faces de coupe)."""
+    """`skin_exempt` : z → (zone shapely XY, écart) : faces de coupe où la peau est comparée avec une tolérance
+    élargie de l'écart (voir check_skin)."""
     preset = cfg.preset
     tol = cfg.validation.tessellation_tol
     bb = shape.bounding_box()

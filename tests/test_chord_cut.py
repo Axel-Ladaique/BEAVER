@@ -311,3 +311,72 @@ def test_wide_wing_bay_in_the_way():
     d = bay.reach + cfg.servo_strip()
     assert not (bay.x0 - d < cut < bay.x1 + d)
     assert "SERVO_1" in b.notices[0]
+
+
+# --- validation des faces de coupe ------------------------------------------------------------------------------
+
+
+def _face_layers(result):
+    from shapely.geometry import box as sbox
+
+    from aerorib.validate import Layer, check_skin
+
+    orig = Layer(1.0, (sbox(0, -10, 100, 10),))  # face de coupe en x = 100
+    exempt = (sbox(99.95, -1e5, 100.05, 1e5), 0.15)  # bande ±0,05 ; fente de nervure ≈ 0,15 mm en couche
+    layer = Layer(1.0, (result,))
+    return check_skin(layer, orig, 0.5, 0.05), check_skin(layer, orig, 0.5, 0.05, exempt)
+
+
+def test_cut_face_slit_mouth_tolerated():
+    from shapely.geometry import box as sbox
+
+    # fente de nervure (0,12 mm) qui longe la face de coupe et y débouche, de l'intrados jusqu'à 2 mm de l'extrados
+    piece = sbox(0, -10, 100, 10).difference(sbox(99.9, -11, 100.1, 8))
+    strict, tolerated = _face_layers(piece)
+    assert strict and "peau entamée" in strict[0].message  # sans tolérance de face : signalée
+    assert tolerated == []
+
+
+def test_cut_face_notch_still_reported():
+    from shapely.geometry import box as sbox
+
+    # entaille 5 × 16 mm débouchant sur la face de coupe : la face reste une paroi contrôlée
+    piece = sbox(0, -10, 100, 10).difference(sbox(95, -8, 101, 8))
+    _, tolerated = _face_layers(piece)
+    assert [i.check for i in tolerated] == ["skin"]
+    # 16 mm moins l'écart toléré (0,15 mm) à chaque bout
+    assert "peau entamée sur 15.7 mm" in tolerated[0].message
+
+
+def test_notched_chord_piece_fails_validation():
+    from build123d import Box, Pos
+
+    from aerorib.validate import validate
+
+    wing = swept_wing(chord=400, span=40, code="4412")
+    cfg = _cfg()
+    seg = pipeline.segment_part("B", wing, cfg, lambda m: None, original=wing)
+    piece, (ref, exempt) = seg.pieces[0], seg.checks[0]
+    x_cut = piece.bounding_box(optimal=True).max.X
+    assert validate(piece, cfg, original=ref, skin_exempt=exempt).ok
+    notched = piece - Pos(x_cut, 10, 20) * Box(10, 16, 60)  # entaille sur la face de coupe
+    report = validate(notched, cfg, original=ref, skin_exempt=exempt)
+    assert not report.ok and any(i.check == "skin" and "peau entamée" in i.message for i in report.errors)
+
+
+def test_failing_piece_fails_merged_report():
+    from aerorib.validate import Issue, Report
+
+    stats = {"layers": 120.0, "height_mm": 120.0, "path_length_m": 1.0, "mass_g": 2.0}
+    good = Report((), stats)
+    bad = Report((Issue("skin", "error", 10.5, "peau entamée sur 16.0 mm"),), stats, {10.5: ()})
+    merged = pipeline.merge_reports([good, bad], ["A", "B"], [3.0, 3.0], 120.0)
+    assert not merged.ok
+    (issue,) = merged.errors
+    assert issue.message == "B : peau entamée sur 16.0 mm" and issue.z == pytest.approx(13.5)
+    assert list(merged.failed_layers) == [pytest.approx(13.5)]
+    assert merged.stats["layers"] == 120  # couches de la pièce, pas la somme des morceaux
+    assert merged.stats["path_length_m"] == pytest.approx(2.0)
+    # deux tronçons en Z, chacun coupé en deux : couches des deux tronçons
+    split = pipeline.merge_reports([good] * 4, ["T1-A", "T1-B", "T2-A", "T2-B"], [0, 0, 120, 120], 240.0)
+    assert split.stats["layers"] == 240

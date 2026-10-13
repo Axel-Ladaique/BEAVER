@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import NamedTuple
@@ -320,7 +321,18 @@ class Segmented(NamedTuple):
     chord: bool = False  # au moins une coupe dans la corde
 
 
-CUT_FACE_TOL = 0.05  # mm : demi-largeur de la bande autour d'une face de coupe où la peau peut manquer
+CUT_FACE_TOL = 0.05  # mm : demi-largeur de la bande autour d'une face de coupe (la face d'origine y est)
+
+
+def slit_gap(cfg: Config) -> float:
+    """Largeur en couche d'une fente de nervure (fente / cos(angle)) + tolérance de maillage : écart admis entre la
+    face de coupe et le bord du morceau, là où une fente longe la face et y débouche."""
+    w = max(cfg.slit_width / math.cos(math.radians(cfg.rib_angle(layer))) for layer in cfg.rib_layers)
+    return w + cfg.validation.tessellation_tol
+
+
+def _face_exempt(band: Callable, gap: float) -> Callable:
+    return lambda z: (band(z), gap)
 
 
 def _segment(
@@ -376,6 +388,7 @@ def segment_part(
         names = plan.names()
         spans = tuple((s.z0, s.z1) for s in plan.segments for _ in range(s.k))
         checks: list[tuple[Solid, Callable]] = []
+        gap = slit_gap(cfg)
         if not plan.chord_cut:
             pieces = split_part(result, [z0 + c for c in cuts]) if cuts else [result]
         else:
@@ -388,7 +401,7 @@ def segment_part(
                 pieces += [cut[j] for j in order]
                 if original is not None:
                     ref = cut_segment(original, sp, z0, i == 0, i == last, f"{label} (référence)")
-                    checks += [(ref[j], cut_lines(sp, j, CUT_FACE_TOL)) for j in order]
+                    checks += [(ref[j], _face_exempt(cut_lines(sp, j, CUT_FACE_TOL), gap)) for j in order]
     except SegmentError as exc:
         raise PipelineError(f"{body_name} : {exc}") from exc
     notices = []
@@ -428,14 +441,16 @@ def segment_part(
 
 def merge_reports(reports: Sequence[Report], names: Sequence[str], offsets: Sequence[float], height: float) -> Report:
     """Rapport d'ensemble des morceaux validés séparément : défauts préfixés du nom du morceau, z ramenés au repère
-    de la pièce entière (`offsets` : bas de chaque morceau) ; couches, trajet et masse additionnés."""
+    de la pièce entière (`offsets` : bas de chaque morceau) ; trajet et masse additionnés ; couches : celles de la
+    pièce (une fois par tronçon en Z), le détail par morceau restant dans chaque rapport."""
     issues, failed = [], {}
     for r, name, dz in zip(reports, names, offsets):
         issues += [replace(i, z=i.z + dz, message=f"{name} : {i.message}") for i in r.issues]
         for z, polys in r.failed_layers.items():
             failed[z + dz] = (*failed.get(z + dz, ()), *polys)
     stats = {
-        "layers": float(sum(r.stats["layers"] for r in reports)),
+        # couches de la pièce : celles d'un morceau par tronçon en Z (les morceaux d'un tronçon partagent ses couches)
+        "layers": float(sum({dz: r.stats["layers"] for r, dz in zip(reports, offsets)}.values())),
         "height_mm": float(height),
         "path_length_m": sum(r.stats["path_length_m"] for r in reports),
         "mass_g": sum(r.stats["mass_g"] for r in reports),

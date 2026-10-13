@@ -178,7 +178,9 @@ def _run_job(step: str, config_path: str, out_dir: str, queue) -> None:
             avertissements += [f"{b.name} : {w}" for w in warns] + [f"{b.name} : {w}" for w in b.warnings]
             s = b.report.stats
             corps.append({
-                "nom": b.name, "ok": b.report.ok, "nervures": b.plates, "troncons": max(len(b.segments), 1),
+                "nom": b.name, "ok": b.report.ok, "nervures": b.plates,
+                "troncons": len(b.z_heights) or 1,  # tronçons en Z
+                "morceaux": max(len(b.segments), 1),  # pièces imprimées (coupes dans la corde comprises)
                 "masse": round(s["mass_g"], 2), "trajet": round(s["path_length_m"], 2),
                 "couches": int(s["layers"]), "hauteur": round(s["height_mm"], 2),
                 "trous": format_bores(b.bores, b.filled).strip().removeprefix("trous : "),
@@ -189,6 +191,7 @@ def _run_job(step: str, config_path: str, out_dir: str, queue) -> None:
             "ok" if result.ok else "non imprimable",
             nervures=sum(c["nervures"] for c in corps),
             troncons=sum(c["troncons"] for c in corps),
+            morceaux=sum(c["morceaux"] for c in corps),
             masse=round(sum(c["masse"] for c in corps), 2),
             trajet=round(sum(c["trajet"] for c in corps), 2),
             erreurs=erreurs,

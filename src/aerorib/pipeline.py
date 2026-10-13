@@ -267,8 +267,14 @@ GEOMETRY_ERRORS = (ValueError, RuntimeError, Standard_Failure)
 def _print_volume(cfg: Config) -> tuple[tuple[float, float, float], str | None]:
     """((largeur, profondeur, hauteur), avertissement) : gabarit Bambu s'il existe, sinon imprimante."""
     try:
-        t = read_template(resolve_template(cfg))
-        return (t.bed[0], t.bed[1], t.height), None
+        path = resolve_template(cfg)
+        t = read_template(path)
+        model = str(t.settings.get("printer_model") or "")
+        warn = None
+        if model and not model.lower().endswith(cfg.printer):
+            warn = (f"gabarit {path.name} ({model}) ≠ imprimante choisie {cfg.printer}\u00a0: "
+                    "le volume et le projet suivent le gabarit")
+        return (t.bed[0], t.bed[1], t.height), warn
     except BambuError as exc:
         warn = f"gabarit Bambu illisible ({exc}) — volume de l'imprimante {cfg.printer} utilisé"
     except ConfigError as exc:

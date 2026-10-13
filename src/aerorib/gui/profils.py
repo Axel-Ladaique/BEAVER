@@ -33,7 +33,7 @@ import yaml
 from fastapi import APIRouter, Body
 from pydantic import ValidationError
 
-from aerorib.config import AUTO_TEMPLATE, TEMPLATES_DIR, Config
+from aerorib.config import AUTO_TEMPLATE, Config, embedded_templates
 from aerorib.gui.projects import ProjectError, _flatten, _is_set, scrub_paths
 from aerorib.material_profiles import (
     ENV_VAR,
@@ -170,7 +170,7 @@ class ProfileStore:
         bambu = merged.get("bambu") or {}
         tpl = bambu.get("template", AUTO_TEMPLATE)
         if tpl == AUTO_TEMPLATE:  # gabarit embarqué choisi selon l'imprimante : on liste ceux de la matière
-            noms = sorted(TEMPLATES_DIR.glob(f"*_{nom}.3mf")) if nom else []
+            noms = embedded_templates(nom) if nom else []
             if not noms:
                 return {"chemin_nom": None, "existe": False}
             return {"chemin_nom": "automatique : " + ", ".join(n.name for n in noms), "existe": True}

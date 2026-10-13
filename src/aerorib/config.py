@@ -455,6 +455,12 @@ def material_label(material: str) -> str:
     return f"{head.upper()} {tail.capitalize()}".strip()
 
 
+def embedded_templates(material: str) -> list[Path]:
+    """Gabarits embarqués existants d'une matière, imprimante par défaut en premier."""
+    names = sorted(PRINTERS, key=lambda k: k != Config.model_fields["printer"].default)
+    return [p for p in (embedded_template(k, material) for k in names) if p.is_file()]
+
+
 def embedded_template(printer: str, material: str) -> Path:
     return TEMPLATES_DIR / f"{printer}_{material}.3mf"
 

@@ -11,7 +11,7 @@ import typer
 from aerorib import __version__
 from aerorib.classify import ClassifyError, cable_marker, classify
 from aerorib.bambu import BambuError, open_in_bambu, read_template, vase_warning
-from aerorib.config import AUTO_TEMPLATE, TEMPLATES_DIR, Config, ConfigError, load_config, resolve_template
+from aerorib.config import AUTO_TEMPLATE, Config, embedded_templates, ConfigError, load_config, resolve_template
 from aerorib.material_profiles import ProfileError, copy_profile, find_profiles, load_profile
 from aerorib.export import export_results
 from aerorib.io_step import StepReadError, read_step
@@ -176,7 +176,7 @@ def profils(
             continue
         label = "aucun"
         if template == AUTO_TEMPLATE:
-            found = sorted(TEMPLATES_DIR.glob(f"*_{info.name}.3mf"))
+            found = embedded_templates(info.name)
             label = "automatique : " + ", ".join(f.name for f in found) if found else "aucun"
         elif template:
             label = Path(template).name + ("" if Path(template).is_file() else " (introuvable)")

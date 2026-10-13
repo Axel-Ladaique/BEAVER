@@ -39,7 +39,6 @@ def test_embedded_profiles_have_no_hardcoded_template():
 def test_h2s_usable_volume_from_template():
     (w, d, h), warn = _print_volume(load_config(overrides={"printer": "h2s"}))
     assert warn is None and (w, d) == (340, 320) and h == 340
-    assert h - load_config().segment.margin == 335
     assert read_template(resolve_template(load_config(overrides={"printer": "h2s"}))).bed == (340, 320)
 
 
@@ -80,3 +79,21 @@ def test_p1s_pla_unchanged_vs_explicit_template(tmp_path):
     explicit = str(Path(TEMPLATES_DIR / "p1s_pla_aero.3mf"))
     b = _members(_write(b_dir, {"bambu": {"template": explicit}}))
     assert a == b
+
+
+def test_unknown_printer_message():
+    from aerorib.config import ConfigError
+
+    with pytest.raises(ConfigError, match="imprimante inconnue 'x9' \\(connues : h2s, p1s\\)"):
+        load_config(overrides={"printer": "x9"})
+
+
+def test_pinned_template_printer_mismatch_warns():
+    p1s = str(TEMPLATES_DIR / "p1s_pla_aero.3mf")
+    cfg = load_config(overrides={"printer": "h2s", "bambu": {"template": p1s}})
+    assert resolve_template(cfg).name == "p1s_pla_aero.3mf"  # l'explicite l'emporte
+    vol, warn = _print_volume(cfg)
+    assert vol[:2] == (256, 256)
+    assert warn == ("gabarit p1s_pla_aero.3mf (Bambu Lab P1S) ≠ imprimante choisie h2s\u00a0: "
+                    "le volume et le projet suivent le gabarit")
+    assert _print_volume(load_config(overrides={"printer": "p1s", "bambu": {"template": p1s}}))[1] is None

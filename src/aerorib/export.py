@@ -72,8 +72,13 @@ def _write_all(run, out_dir, stem, formats, template, single, pieces, written) -
             details.append("plateau : " + " ; ".join(rot))
         written.append(write_html(b.report, out_dir / f"{base}-rapport.html", title=b.name, details=details))
     if "3mf" in formats:
+        for b in run.bodies:
+            if len(b.placements) != len(pieces[b.name]):
+                raise ValueError(
+                    f"{b.name} : {len(b.placements)} placement(s) sur le plateau pour {len(pieces[b.name])} morceau(x)"
+                )
         objs = [
-            (n, to_mesh(s, 0.02), b.placements[k].angle_deg if k < len(b.placements) else 0.0)
+            (n, to_mesh(s, 0.02), b.placements[k].angle_deg)
             for b in run.bodies
             for k, (n, s) in enumerate(pieces[b.name])
         ]

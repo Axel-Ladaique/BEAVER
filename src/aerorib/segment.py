@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 
+import numpy as np
 from build123d import Box, Pos, Solid, Shape
+
+from aerorib.layout import Placement, fit_on_bed
 
 
 class SegmentError(ValueError):
@@ -42,6 +47,106 @@ def plan_cuts(height: float, max_height: float, cuts_at: list[float] | None = No
         if b - a < MIN_SEGMENT - 1e-9:
             raise SegmentError(f"tronçon de {b - a:g} mm trop court (minimum {MIN_SEGMENT:g} mm)")
     return cuts
+
+
+SECTION_STEP = 5.0  # mm : pas des sections échantillonnées pour l'empreinte d'un tronçon
+_EDGE = 0.01  # mm : sections d'extrémité prises juste à l'intérieur de la pièce (pas sur les faces planes)
+
+Sections = Callable[[Sequence[float]], list[np.ndarray]]  # zs (depuis l'emplanture) → points XY de chaque section
+
+
+@dataclass(frozen=True)
+class ChordNeed:
+    """Sections qui ne tiennent pas seules sur le plateau, même tournées : seule une coupe dans la corde aidera."""
+
+    z0: float  # étendue (mm, depuis l'emplanture) des sections trop grandes
+    z1: float
+    size: tuple[float, float]  # largeur × épaisseur (sans rotation) de la plus encombrante
+
+
+@dataclass(frozen=True)
+class PiecePlan:
+    cuts: tuple[float, ...]  # coupes internes (mm, depuis l'emplanture)
+    # placement prévu de chaque tronçon d'après les sections échantillonnées ; pour un tronçon qui ne tient pas,
+    # celui de fit_on_bed (angle le moins mauvais) — le placement réel est recalculé sur le tronçon généré
+    placements: tuple[Placement, ...]
+    height_n: int  # nombre de tronçons exigé par la hauteur seule
+    reason: str | None = None  # justification d'une découpe automatique (None : pas de coupe, ou coupes imposées)
+    chord: ChordNeed | None = None  # coupe dans la corde nécessaire
+
+    @property
+    def fits(self) -> bool:
+        return all(p.fits for p in self.placements)
+
+
+def _samples(z0: float, z1: float, height: float) -> list[float]:
+    k = max(1, math.ceil((z1 - z0) / SECTION_STEP - 1e-9))
+    return [float(z) for z in np.clip(np.linspace(z0, z1, k + 1), _EDGE, height - _EDGE)]
+
+
+def _extent(pts: np.ndarray) -> tuple[float, float]:
+    w, d = np.ptp(pts, axis=0)
+    return float(w), float(d)
+
+
+def plan_pieces(
+    height: float, max_height: float, sections: Sections, bed: tuple[float, float], margin: float = 0.0,
+    cuts_at: list[float] | None = None,
+) -> PiecePlan:
+    """Coupes en Z pour que chaque tronçon tienne en hauteur ET sur le plateau (rotation autour de Z permise).
+
+    Empreinte d'un tronçon [z0, z1] = enveloppe convexe de ses sections aux deux bouts et tous les SECTION_STEP mm
+    (`sections` : voir slicing.section_sampler ; aucun booléen, mêmes résultats en aperçu et en génération).
+    Part du nombre de tronçons exigé par la hauteur, puis l'augmente (tronçons égaux) jusqu'à ce que tous tiennent
+    ou qu'ils deviennent plus courts que MIN_SEGMENT. Si une section seule ne tient pas, des coupes en Z n'y
+    changent rien : coupes de hauteur seulement, et `chord` renseigné. Des coupes imposées (`cuts_at`) sont
+    respectées telles quelles."""
+    base = plan_cuts(height, max_height, cuts_at)
+    cache: dict[float, np.ndarray] = {}
+
+    def get(zs: list[float]) -> list[np.ndarray]:
+        missing = sorted({z for z in zs if z not in cache})
+        cache.update(zip(missing, sections(missing)))
+        return [cache[z] for z in zs]
+
+    def place(cuts) -> list[tuple[Placement, tuple[float, float]]]:
+        bounds = [0.0, *cuts, float(height)]
+        out = []
+        for a, b in zip(bounds, bounds[1:]):
+            pts = [p for p in get(_samples(a, b, height)) if len(p)]
+            if not pts:
+                out.append((Placement(0.0, True, 0.0, (0.0, 0.0)), (0.0, 0.0)))
+                continue
+            hull = np.concatenate(pts)
+            out.append((fit_on_bed(hull, bed, margin), _extent(hull)))
+        return out
+
+    n0 = len(base) + 1
+    aw, ad = bed[0] - 2 * margin, bed[1] - 2 * margin
+    zs = _samples(0.0, height, height)
+    alone = [(z, p, fit_on_bed(p, bed, margin)) for z, p in zip(zs, get(zs)) if len(p)]
+    bad = [(z, p, pl) for z, p, pl in alone if not pl.fits]
+    chord = None
+    if bad:
+        worst = min(bad, key=lambda t: t[2].slack)
+        chord = ChordNeed(min(z for z, _, _ in bad), max(z for z, _, _ in bad), _extent(worst[1]))
+    if cuts_at is not None or chord is not None:
+        reason = None if cuts_at is not None or not base else f"hauteur {height:.0f} mm > {max_height:.0f} mm utiles"
+        return PiecePlan(tuple(base), tuple(pl for pl, _ in place(base)), n0, reason, chord)
+    first = place(base)
+    cuts, placed, n = base, first, n0
+    while not all(pl.fits for pl, _ in placed) and height / (n + 1) >= MIN_SEGMENT - 1e-9:
+        n += 1
+        cuts = [height * i / n for i in range(1, n)]
+        placed = place(cuts)
+    if n > n0:
+        w, d = max((size for pl, size in first if not pl.fits), key=lambda s: s[0] * s[1])
+        reason = f"empreinte {w:.0f}×{d:.0f} mm > plateau {aw:.0f}×{ad:.0f} mm, même tournée"
+    elif cuts:
+        reason = f"hauteur {height:.0f} mm > {max_height:.0f} mm utiles"
+    else:
+        reason = None
+    return PiecePlan(tuple(cuts), tuple(pl for pl, _ in placed), n0, reason)
 
 
 def split_part(solid: Shape, cuts: list[float]) -> list[Solid]:

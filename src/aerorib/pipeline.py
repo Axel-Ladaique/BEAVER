@@ -33,8 +33,8 @@ from aerorib.features.servo import ServoBay, ServoError, hole_meets_pocket, pock
 from aerorib.layout import Placement, fit_on_bed, format_rotation
 from aerorib.midsurface import MidSurface
 from aerorib.orient import Orientation, orient
-from aerorib.segment import SegmentError, plan_cuts, split_part
-from aerorib.slicing import slice_layers, to_mesh
+from aerorib.segment import SegmentError, plan_pieces, split_part
+from aerorib.slicing import section_sampler, slice_layers, to_mesh
 from aerorib.validate import Report, validate
 
 
@@ -297,8 +297,10 @@ def usable_height(cfg: Config) -> float:
 
 
 def _segment(
-    body_name: str, result: Solid, cfg: Config, progress: Callable[[str], None]
+    body_name: str, result: Solid, cfg: Config, progress: Callable[[str], None], skin: Solid | None = None
 ) -> tuple[tuple[Solid, ...], tuple[str, ...]]:
+    """Découpe en tronçons selon la hauteur et l'empreinte sur le plateau (`plan_pieces`). L'empreinte est lue sur
+    les sections de `skin` (peau d'origine, même contour extérieur que `result` ; `result` par défaut)."""
     seg = cfg.segment
     (W, D, H), fallback = _print_volume(cfg)
     warnings = [f"{body_name} : {fallback}"] if fallback else []
@@ -322,13 +324,29 @@ def _segment(
         return (result,), tuple(warnings)
     for w_ in warnings:
         progress(f"⚠ {w_}")
+    z0 = bb.min.Z
+    sample = section_sampler(skin if skin is not None else result, cfg.validation.tessellation_tol)
     try:
-        cuts = plan_cuts(bb.max.Z - bb.min.Z, max_h, seg.cuts_at or None)
-        pieces = split_part(result, [bb.min.Z + c for c in cuts]) if cuts else [result]
+        plan = plan_pieces(
+            bb.max.Z - z0, max_h, lambda zs: sample([z0 + z for z in zs]), (W, D), seg.margin, seg.cuts_at or None
+        )
+        cuts = plan.cuts
+        pieces = split_part(result, [z0 + c for c in cuts]) if cuts else [result]
     except SegmentError as exc:
         raise PipelineError(f"{body_name} : {exc}") from exc
     if cuts:
         progress(f"{body_name} : découpe en {len(pieces)} tronçons")
+    if plan.reason:
+        progress(f"{body_name} : découpe automatique : {len(pieces)} tronçons en Z ({plan.reason})")
+    if plan.chord is not None:
+        c = plan.chord
+        w_ = (
+            f"{body_name} : la section {c.size[0]:.0f}×{c.size[1]:.0f} mm (z = {c.z0:.0f} à {c.z1:.0f} mm) ne tient "
+            f"pas sur le plateau ({W:.0f}×{D:.0f} mm, marge {seg.margin:g} mm) même tournée : une coupe dans la "
+            "corde sera nécessaire"
+        )
+        warnings.append(w_)
+        progress(f"⚠ {w_}")
     return tuple(pieces), tuple(warnings)
 
 
@@ -361,8 +379,8 @@ def place_pieces(
                 f"ne tient pas sur le plateau ({W:.0f}×{D:.0f} mm, marge {margin:g} mm) — "
                 "à découper ou à réduire"
             )
-        if not pl.fits:
-            pl = Placement(0.0, False, pl.slack, pl.size)
+        if not pl.fits:  # posé sans rotation : marge et emprise sont celles de 0°
+            pl = Placement(0.0, False, min(W - 2 * margin - w, D - 2 * margin - d), (w, d))
         placements.append(pl)
     for w_ in warnings:
         progress(f"⚠ {w_}")
@@ -415,7 +433,7 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
         except GEOMETRY_ERRORS as exc:
             raise PipelineError(f"{s.body.name} : poche de servo impossible ({type(exc).__name__} : {exc})") from exc
         report = validate(result, cfg, original=original)
-        segments, warns = _segment(s.body.name, result, cfg, progress)
+        segments, warns = _segment(s.body.name, result, cfg, progress, skin=skin)
         if gen.slivers:
             warns = (*warns, f"{gen.slivers} éclat(s) négligeable(s) (< {MAX_SLIVER_VOLUME} mm³) retiré(s) à la découpe")
         placements, place_warns = place_pieces(s.body.name, segments, cfg, progress)

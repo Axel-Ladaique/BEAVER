@@ -51,11 +51,12 @@ from aerorib.pipeline import (
     check_fill,
     rib_options,
     spars_inside,
+    _print_volume,
     usable_height,
     wall_warnings,
 )
-from aerorib.segment import SegmentError, plan_cuts
-from aerorib.slicing import Layer, layer_heights, to_mesh
+from aerorib.segment import SegmentError, plan_pieces
+from aerorib.slicing import Layer, layer_heights, mesh_sections, to_mesh
 from aerorib.validate import Issue, check_connectivity, check_material_width, check_narrow_slits, slicer_closing
 
 SECONDS_PER_PLATE = 0.3  # s : coût estimé d'une plaque (recalé : aile Fusion v2, 84 plaques, 29 s réelles)
@@ -540,8 +541,16 @@ def _cuts(prep: Prepared, cfg: Config) -> tuple[list[float], list[str]]:
     seg = cfg.segment
     if seg.mode == "off":
         return [], []
+    (W, D, _), _ = _print_volume(cfg)
+    sample = mesh_sections(prep.mesh)
+
+    def sections(zs):
+        with prep.mesh_lock:
+            return sample([zlo + z for z in zs])
+
     try:
-        return plan_cuts(zhi - zlo, usable_height(cfg), seg.cuts_at or None), []
+        plan = plan_pieces(zhi - zlo, usable_height(cfg), sections, (W, D), seg.margin, seg.cuts_at or None)
+        return list(plan.cuts), []
     except SegmentError as exc:
         return [], [f"découpe en tronçons impossible : {exc}"]
 

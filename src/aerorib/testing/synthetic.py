@@ -17,7 +17,9 @@ from build123d import (
     Line,
     Location,
     Part,
+    Solid,
     Spline,
+    Vector,
     extrude,
     make_face,
 )
@@ -60,6 +62,28 @@ def naca_wing(code: str = "4412", chord: float = 150.0, span: float = 100.0) -> 
             make_face()
         extrude(amount=span)
     return bp.part, camber
+
+
+def naca_face(code: str = "4412", chord: float = 150.0):
+    """Face plane z = 0 du profil NACA (bord d'attaque en x = 0)."""
+    pts, _ = naca4(code, chord)
+    mid = len(pts) // 2
+    with BuildSketch() as sk:
+        with BuildLine():
+            Spline(*pts[: mid + 1])
+            Spline(*pts[mid:])
+            Line(pts[-1], pts[0])
+        make_face()
+    return sk.sketch.faces()[0]
+
+
+def swept_wing(
+    chord: float = 60.0, span: float = 200.0, sweep_deg: float = 0.0, dihedral_deg: float = 0.0, code: str = "0012",
+) -> Solid:
+    """Aile prismatique en flèche et/ou en dièdre, repère de construction (envergure Z, corde X, épaisseur Y) :
+    section constante, décalée de z·tan(flèche) en X et z·tan(dièdre) en Y ; emplanture en z = 0."""
+    d = Vector(span * math.tan(math.radians(sweep_deg)), span * math.tan(math.radians(dihedral_deg)), span)
+    return Solid.extrude(naca_face(code, chord), d)
 
 
 def _slit(x: float, y_from: float, up: bool, width: float, span: float) -> Box:

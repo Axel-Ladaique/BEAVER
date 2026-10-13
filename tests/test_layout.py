@@ -115,3 +115,43 @@ def test_straight_wing_no_rotation():
     (body,) = run.bodies
     assert len(body.segments) == 1 and body.placements[0].angle_deg == 0
     assert format_rotations(body.placements) == []
+
+
+@pytest.mark.parametrize("skew", [1.0, -1.0])
+def test_fit_angle_lands_inside_plate_in_3mf(tmp_path, skew):
+    """L'angle choisi par fit_on_bed, écrit dans le 3MF, place réellement le maillage dans le plateau."""
+    t = read_template(FIXTURE)
+    margin = 5.0
+    # parallélogramme 300 × 40 incliné (et son miroir), décalé hors de l'origine : tourné, il doit tenir
+    base = np.array([[0, 0], [300, 0], [300 + 30 * skew, 40], [30 * skew, 40]], float) + (70, -20)
+    verts = np.vstack([np.c_[base, np.zeros(4)], np.c_[base, np.full(4, 30.0)]])
+    mesh = trimesh.Trimesh(verts, [[0, 1, 2], [0, 2, 3], [4, 6, 5], [4, 7, 6],
+                                   [0, 4, 5], [0, 5, 1], [1, 5, 6], [1, 6, 2], [2, 6, 7], [2, 7, 3], [3, 7, 4], [3, 4, 0]])
+    pl = fit_on_bed(verts[:, :2], t.bed, margin)
+    assert pl.fits and pl.angle_deg != 0
+    out = write_project(t, [("a", mesh, pl.angle_deg)], tmp_path / "o.3mf")
+    with zipfile.ZipFile(out) as z:
+        model = ET.fromstring(z.read("3D/3dmodel.model"))
+        cfg = ET.fromstring(z.read("Metadata/model_settings.config"))
+        v = _read_mesh(z.read("3D/Objects/object_1.model"))
+        transforms = [model.find(".//c:item", NS).get("transform"), cfg.find("assemble/assemble_item").get("transform")]
+    ox, oy = plate_origin(0, 1, t.bed)
+    for tr in transforms:
+        m = [float(x) for x in tr.split()]
+        p = v @ np.array(m[:9]).reshape(3, 3) + np.array(m[9:])  # convention 3MF : p' = p·M + t
+        lo, hi = p[:, :2].min(0), p[:, :2].max(0)
+        assert lo[0] >= ox + margin - 1e-3 and lo[1] >= oy + margin - 1e-3
+        assert hi[0] <= ox + t.bed[0] - margin + 1e-3 and hi[1] <= oy + t.bed[1] - margin + 1e-3
+        assert hi - lo == pytest.approx(pl.size, abs=1e-3)
+
+
+def test_export_refuses_missing_placements(tmp_path):
+    from dataclasses import replace
+
+    cfg = _cfg(max_height=30)
+    run = run_model(classify(wing_x_bodies(), cfg), cfg)
+    (body,) = run.bodies
+    assert len(body.placements) == len(body.segments) == 3
+    bad = replace(run, bodies=(replace(body, placements=body.placements[:2]),))
+    with pytest.raises(ValueError, match="placement"):
+        export_results(bad, tmp_path, "aile", ["3mf"], template=read_template(FIXTURE))

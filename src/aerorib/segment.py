@@ -16,7 +16,15 @@ class SegmentError(ValueError):
     """Découpe en tronçons impossible ou invalide."""
 
 
+class CutFailure(SegmentError):
+    """Booléen de découpe en échec (résultat vide ou exception OpenCascade), typiquement sur des faces coïncidentes
+    avec le plan de coupe : un léger décalage de la coupe le résout en général (`cut_chain`)."""
+
+
 MIN_SEGMENT = 10.0  # mm : longueur minimale d'un tronçon
+CUT_CLEARANCE = 0.5  # mm : écart minimal entre une coupe en Z planifiée et un plan critique (bout de trou, baie…)
+# décalages successifs (mm) d'une coupe dont le booléen échoue (faces coïncidentes non prévues par le planificateur)
+RETRY_OFFSETS = (0.05, -0.05, 0.2, -0.2, 0.5, -0.5)
 
 
 def plan_cuts(height: float, max_height: float, cuts_at: list[float] | None = None) -> list[float]:
@@ -73,6 +81,8 @@ class PiecePlan:
     height_n: int  # nombre de tronçons exigé par la hauteur seule
     reason: str | None = None  # justification d'une découpe automatique (None : pas de coupe, ou coupes imposées)
     chord: ChordNeed | None = None  # coupe dans la corde nécessaire
+    # coupes imposées (`cuts_at`) déplacées hors d'un plan critique : (position demandée, position retenue)
+    moved: tuple[tuple[float, float], ...] = ()
 
     @property
     def fits(self) -> bool:
@@ -89,7 +99,69 @@ def _extent(pts: np.ndarray) -> tuple[float, float]:
     return float(w), float(d)
 
 
+def clear_of(
+    z: float, critical: Sequence[float], lo: float, hi: float, ok: Callable[[float], bool] = lambda z: True,
+    clearance: float = CUT_CLEARANCE,
+) -> float | None:
+    """Position la plus proche de `z`, dans ]lo, hi[, à au moins `clearance` de chaque plan critique et admise par
+    `ok` ; None si aucune. `z` lui-même s'il convient."""
+    cands = {z} | {c + d for c in critical for d in (-clearance, clearance)}
+    for c in sorted(cands, key=lambda c: (abs(c - z), c)):
+        if lo < c < hi and all(abs(c - k) >= clearance - 1e-9 for k in critical) and ok(c):
+            return c
+    return None
+
+
 def plan_pieces(
+    height: float, max_height: float, sections: Sections, bed: tuple[float, float], margin: float = 0.0,
+    cuts_at: list[float] | None = None, critical: Sequence[float] = (),
+) -> PiecePlan:
+    """Coupes en Z de `_plan_pieces`, écartées d'au moins CUT_CLEARANCE des plans critiques `critical` (mm depuis
+    l'emplanture : bouts de trous et de leur jeu, baies de servo, rebouchages… — faces de la pièce générée
+    perpendiculaires à Z, sur lesquelles le booléen de découpe d'OpenCascade échoue sans erreur). Coupe automatique :
+    position libre la plus proche qui garde les tronçons voisins dans la hauteur utile (et sur le plateau s'ils y
+    tenaient) ; coupe imposée : déplacée du minimum, signalée (`moved`)."""
+    cache: dict[float, np.ndarray] = {}
+
+    def get(zs: list[float]) -> list[np.ndarray]:
+        missing = sorted({z for z in zs if z not in cache})
+        if missing:
+            cache.update(zip(missing, sections(missing)))
+        return [cache[z] for z in zs]
+
+    plan = _plan_pieces(height, max_height, get, bed, margin, cuts_at)
+    crit = sorted(float(c) for c in critical if 0.0 < c < height)
+    if not plan.cuts or not crit:
+        return plan
+
+    def placement(a: float, b: float) -> Placement:
+        pts = [p for p in get(_samples(a, b, height)) if len(p)]
+        return fit_on_bed(np.concatenate(pts), bed, margin) if pts else Placement(0.0, True, 0.0, (0.0, 0.0))
+
+    nominal = list(plan.cuts)
+    out: list[float] = []
+    for i, c in enumerate(nominal):
+        prev = out[-1] if out else 0.0
+        nxt = nominal[i + 1] if i + 1 < len(nominal) else float(height)
+        was_fit = plan.placements[i].fits
+
+        def ok(z: float, prev=prev, nxt=nxt, was_fit=was_fit, last=i + 1 == len(nominal)) -> bool:
+            if not (MIN_SEGMENT - 1e-9 <= z - prev <= max_height * (1 + 1e-9) and nxt - z >= MIN_SEGMENT - 1e-9):
+                return False
+            if last and float(height) - z > max_height * (1 + 1e-9):
+                return False
+            return cuts_at is not None or not was_fit or placement(prev, z).fits
+
+        z = clear_of(c, crit, prev, nxt, ok)
+        out.append(c if z is None else z)  # aucune position libre : la découpe se repliera (`cut_chain`)
+    if out == nominal:
+        return plan
+    placements = tuple(placement(a, b) for a, b in zip([0.0, *out], [*out, float(height)]))
+    moved = tuple((a, b) for a, b in zip(nominal, out) if a != b) if cuts_at is not None else ()
+    return PiecePlan(tuple(out), placements, plan.height_n, plan.reason, plan.chord, moved)
+
+
+def _plan_pieces(
     height: float, max_height: float, sections: Sections, bed: tuple[float, float], margin: float = 0.0,
     cuts_at: list[float] | None = None,
 ) -> PiecePlan:
@@ -214,11 +286,86 @@ def plan_pieces(
     return PiecePlan(tuple(cuts), tuple(pl for pl, _ in placed), n0, reason, chord)
 
 
-def split_part(solid: Shape, cuts: list[float]) -> list[Solid]:
+def cut_chain(
+    cuts: Sequence[float], make: Callable[..., object], notice: Callable[[float, float], None] = lambda a, b: None,
+    shifts: bool = False, where: Callable[[float], str] = lambda z: f"z = {z:g} mm",
+) -> list:
+    """Morceaux successifs séparés par les coupes `cuts` : `make(i, lo, hi, shift)` découpe le morceau i entre lo et
+    hi (None : au-delà de la pièce) et lève SegmentError en cas d'échec. Une coupe qui échoue (booléen vide, exception
+    OpenCascade, nombre de solides inattendu) est réessayée décalée de RETRY_OFFSETS — la coupe partagée, donc les
+    deux morceaux qui la bordent — ; puis, si `shifts`, le morceau est recoupé avec `shift` (décalage des plans de
+    coupe dans la corde) pris dans RETRY_OFFSETS. `notice(nominale, retenue)` signale chaque coupe en Z déplacée.
+    Échec persistant : CutFailure en français (« géométrie coïncidente »), ou l'erreur d'origine si le booléen avait
+    réussi (nombre de solides, solide invalide : défaut réel de la pièce)."""
+    nominal = [float(c) for c in cuts]
+    cur = list(nominal)
+    n = len(nominal) + 1
+    out: list = [None] * n
+
+    def bounds(i: int, at: list[float]) -> tuple[float | None, float | None]:
+        return (at[i - 1] if i > 0 else None, at[i] if i < n - 1 else None)
+
+    def fits_between(z: float, lo: float | None, hi: float | None) -> bool:
+        return (lo is None or z > lo + 1e-6) and (hi is None or z < hi - 1e-6)
+
+    for i in range(n):
+        lo, hi = bounds(i, cur)
+        try:
+            out[i] = make(i, lo, hi, 0.0)
+            continue
+        except SegmentError as exc:
+            first = exc
+        done = False
+        if i < n - 1:  # coupe du haut (pas encore utilisée par un morceau déjà découpé)
+            nxt = nominal[i + 1] if i + 1 < n - 1 else None
+            for d in RETRY_OFFSETS:
+                z = nominal[i] + d
+                if not fits_between(z, lo, nxt):
+                    continue
+                try:
+                    out[i] = make(i, lo, z, 0.0)
+                except SegmentError:
+                    continue
+                cur[i], done = z, True
+                break
+        if not done and i > 0:  # coupe du bas : le morceau précédent est recoupé avec elle
+            for d in RETRY_OFFSETS:
+                z = nominal[i - 1] + d
+                if not fits_between(z, cur[i - 2] if i > 1 else None, hi):
+                    continue
+                try:
+                    prev = make(i - 1, cur[i - 2] if i > 1 else None, z, 0.0)
+                    this = make(i, z, hi, 0.0)
+                except SegmentError:
+                    continue
+                out[i - 1], out[i], cur[i - 1], done = prev, this, z, True
+                break
+        if not done and shifts:  # plans de coupe dans la corde du morceau
+            for d in RETRY_OFFSETS:
+                try:
+                    out[i] = make(i, lo, hi, d)
+                except SegmentError:
+                    continue
+                done = True
+                break
+        if not done:
+            if not isinstance(first, CutFailure):
+                raise first
+            z = nominal[i] if i < n - 1 else nominal[i - 1]
+            raise CutFailure(f"coupe à {where(z)} impossible (géométrie coïncidente) : {first}") from first
+    for a, b in zip(nominal, cur):
+        if a != b:
+            notice(a, b)
+    return out
+
+
+def split_part(
+    solid: Shape, cuts: list[float], notice: Callable[[float, float], None] = lambda a, b: None
+) -> list[Solid]:
     """Coupe par plans z = cte ; chaque tronçon est ramené à min Z = 0 (emplanture → saumon).
 
     Applique MIN_SEGMENT mais pas la hauteur utile : l'appelant fournit des coupes déjà planifiées
-    (voir plan_cuts).
+    (voir plan_cuts). Booléen en échec sur une coupe : coupe décalée (`cut_chain`), `notice(nominale, retenue)`.
     """
     bb = solid.bounding_box(optimal=True)
     try:
@@ -237,19 +384,23 @@ def split_part(solid: Shape, cuts: list[float]) -> list[Solid]:
     pad = 10.0
     sx, sy = bb.size.X + 2 * pad, bb.size.Y + 2 * pad
     cx, cy = (bb.min.X + bb.max.X) / 2, (bb.min.Y + bb.max.Y) / 2
-    bounds = [bb.min.Z - pad, *cuts, bb.max.Z + pad]
-    out: list[Solid] = []
-    for i, (z0, z1) in enumerate(zip(bounds, bounds[1:])):
+
+    def make(i: int, lo: float | None, hi: float | None, _shift: float) -> Solid:
+        z0 = bb.min.Z - pad if lo is None else lo
+        z1 = bb.max.Z + pad if hi is None else hi
         try:
-            box = Pos(cx, cy, (z0 + z1) / 2) * Box(sx, sy, z1 - z0)
-            solids = list((solid & box).solids())
+            common = solid & (Pos(cx, cy, (z0 + z1) / 2) * Box(sx, sy, z1 - z0))
+            solids = [] if common is None else list(common.solids())
         except Exception as exc:  # erreurs OCC (Standard_Failure, etc.)
-            raise SegmentError(f"découpe impossible à z = {z1 if i < len(cuts) else z0:g} mm ({exc})") from exc
+            raise CutFailure(f"tronçon {i + 1} : booléen en échec ({type(exc).__name__})") from exc
+        if not solids:
+            raise CutFailure(f"tronçon {i + 1} : intersection vide")
         if len(solids) != 1:
             raise SegmentError(f"tronçon {i + 1} : {len(solids)} solides obtenus au lieu de 1")
         s = solids[0]
         if not s.is_valid:
             raise SegmentError(f"tronçon {i + 1} : solide invalide")
         zmin = s.bounding_box(optimal=True).min.Z
-        out.append(Pos(0, 0, -zmin) * s)
-    return out
+        return Pos(0, 0, -zmin) * s
+
+    return cut_chain(cuts, make, notice)

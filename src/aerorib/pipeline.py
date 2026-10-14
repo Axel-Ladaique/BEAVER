@@ -36,11 +36,13 @@ from aerorib.features.bores import (
 from aerorib.features.chord_cut import LayoutPlan, bay_obstacles, bore_obstacles, cut_lines, cut_segment, plan_layout
 from aerorib.features.ribs import diamond_plates, emptied_by_walls, plate_lines
 from aerorib.features.tubes import Region, Tube, band, beyond, is_transversal, spar_tubes, tube_warnings
-from aerorib.features.servo import ServoBay, ServoError, hole_meets_pocket, pocket_solid, reinforce_solids, reinforce_warnings, servo_bays
+from aerorib.features.servo import (
+    ServoBay, ServoError, hole_meets_pocket, pocket_profile, pocket_solid, reinforce_solids, reinforce_warnings, servo_bays,
+)
 from aerorib.layout import Placement, fit_on_bed, format_rotation
 from aerorib.midsurface import MidSurface
 from aerorib.orient import Orientation, orient
-from aerorib.segment import SegmentError, split_part
+from aerorib.segment import CutFailure, SegmentError, cut_chain, split_part
 from aerorib.slicing import mesh_sections, section_sampler, slice_layers, to_mesh
 from aerorib.validate import MAX_FAILED_LAYERS, Issue, Report, validate
 
@@ -293,21 +295,77 @@ def chord_regions(plan: LayoutPlan | None, z_root: float) -> list[Region]:
     return out
 
 
-def layout_for(height: float, z0: float, sample, cfg: Config, bores, bays) -> LayoutPlan:
+def critical_planes(bores: Sequence[Bore], bays: Sequence[ServoBay], filled: Sequence[Passage], zmin: float,
+                    zmax: float) -> list[float]:
+    """Plans z = cte (absolus) où la génération pose des faces perpendiculaires à Z : bouts des trous et de leurs
+    fentes (± jeu, `bore_extent`) et bouts du longeron, rebouchages, baies de servo (boîte, rampes, ponts de la fente
+    de renfort, rencontre trou–poche). Une coupe en Z posée sur l'un d'eux fait échouer le booléen d'OpenCascade sans
+    erreur (résultat vide) : le planificateur s'en écarte (`segment.CUT_CLEARANCE`). Les SBAR transversales n'en
+    ajoutent pas : leurs bouts sont perpendiculaires à leur axe, pas à Z (et leurs fentes suivent le plan de coupe)."""
+    zs: set[float] = set()
+    for b in bores:
+        lo, hi = bore_extent(b, zmin, zmax)
+        zs |= {b.z0, b.z1, lo, hi}
+        for bay in bays:
+            if b.cut_hole and (meet := hole_meets_pocket(bay, b.x, b.y, b.radius, lo, hi)) is not None:
+                zs |= set(meet)
+    for f in filled:
+        zs |= {f.z0, f.z1}
+    for bay in bays:
+        lo, _, hi, _ = pocket_profile(bay).bounds
+        zs |= {bay.z0, bay.z1, bay.z0 - bay.ramp, bay.z1 + bay.ramp, lo, hi}
+        zs |= {z for g in bay.rf_gaps for z in g[:2]}
+        zs |= {z for r in bay.rings for z in r[3:]}
+    return sorted(z for z in zs if math.isfinite(z) and zmin < z < zmax)
+
+
+def rib_crossings(cfg: Config, origin: float, zmin: float, zmax: float) -> list[float]:
+    """Plans z = cte où les deux familles de plaques d'un même niveau de nervures se croisent (`plate_lines` : plaques
+    x = c ± tan(angle)·(z − origine), c au pas `spacing` ; croisements en origine + j·spacing / (2·tan(angle))). Leurs
+    arêtes de croisement (parallèles à Y) sont dans ces plans : une coupe en Z posée dessus fait échouer le booléen
+    (aile ×3, coupe à 420 mm). `origin` : bas de la boîte de calage du motif (`skins_anchor`, sinon la peau)."""
+    out = []
+    for layer in cfg.rib_layers:
+        t = math.tan(math.radians(cfg.rib_angle(layer)))
+        if t <= 0 or layer.spacing <= 0:
+            continue
+        step = layer.spacing / (2 * t)
+        j0, j1 = math.ceil((zmin - origin) / step - 1e-9), math.floor((zmax - origin) / step + 1e-9)
+        if j1 - j0 > 100_000:
+            continue
+        out += [origin + j * step for j in range(j0, j1 + 1)]
+    return out
+
+
+def rib_origin_of(skin, anchor=None) -> float:
+    """Bas de la boîte de calage du motif de nervures (`plate_lines` : `anchor`, sinon la boîte de la peau)."""
+    return (anchor if anchor is not None else skin.bounding_box()).min.Z
+
+
+def layout_for(
+    height: float, z0: float, sample, cfg: Config, bores, bays, filled: Sequence[Passage] = (),
+    rib_origin: float | None = None,
+) -> LayoutPlan:
     """Plan de découpe (coupes en Z puis dans la corde) d'une pièce d'étendue [z0, z0 + height] ; `sample` : zs absolus
-    → points des sections. Même calcul en génération (`segment_part`, SBAR transversales) et dans l'aperçu."""
+    → points des sections. Même calcul en génération (`segment_part`, SBAR transversales) et dans l'aperçu ; les
+    coupes en Z restent écartées des plans critiques (`critical_planes`, `rib_crossings` ; `rib_origin` : bas de la
+    boîte de calage du motif de nervures, `rib_origin_of` ; None : pièce sans nervures)."""
     seg = cfg.segment
     (W, D, H), _, _ = _print_volume(cfg)
     max_h = seg.max_height if seg.max_height is not None else H - seg.margin
     obstacles = [*bore_obstacles(bores, z0, z0 + height), *bay_obstacles(bays, z0, cfg.servo_strip())]
+    zmax = z0 + height
+    ribs = [] if rib_origin is None else rib_crossings(cfg, rib_origin, z0, zmax)
+    critical = [z - z0 for z in (*critical_planes(bores, bays, filled, z0, zmax), *ribs) if z0 < z < zmax]
     return plan_layout(
         height, max_h, lambda zs: sample([z0 + z for z in zs]), (W, D), seg.margin, seg.cuts_at or None,
-        chord=seg.chord, max_overhang_deg=cfg.preset.max_overhang_deg, obstacles=obstacles,
+        chord=seg.chord, max_overhang_deg=cfg.preset.max_overhang_deg, obstacles=obstacles, critical=critical,
     )
 
 
 def skin_tubes(
-    skin: Solid, transversal, cfg: Config, cables, bores, bays, mesh=None
+    skin: Solid, transversal, cfg: Config, cables, bores, bays, mesh=None, filled: Sequence[Passage] = (),
+    rib_origin: float | None = None,
 ) -> tuple[list[tuple[Tube, Solid]], LayoutPlan | None]:
     """SBAR transversales d'une peau orientée (avant rebouchage) et plan de découpe qui fixe leurs fentes.
     Plan impossible (SegmentError) : None — l'erreur est signalée par la découpe."""
@@ -319,7 +377,9 @@ def skin_tubes(
     plan = None
     if cfg.segment.mode != "off":
         try:
-            plan = layout_for(obb.max.Z - obb.min.Z, obb.min.Z, mesh_sections(mesh), cfg, bores, bays)
+            plan = layout_for(
+                obb.max.Z - obb.min.Z, obb.min.Z, mesh_sections(mesh), cfg, bores, bays, filled, rib_origin,
+            )
         except SegmentError:
             plan = None
     bb = skin.bounding_box()
@@ -345,7 +405,10 @@ def generate_skin(
         to_fill = passages_to_fill(skin, cfg, exclude=bores, found=found)
         bores += passage_bores(skin, cfg, exclude=bores, found=found)
         bays = servo_bays(servos, skin, mid, cfg, bores)
-        held, plan = skin_tubes(skin, transversal, cfg, cables, bores, bays)
+        held, plan = skin_tubes(
+            skin, transversal, cfg, cables, bores, bays, filled=[f for _, f in to_fill],
+            rib_origin=rib_origin_of(skin, anchor),
+        )
     except (BoreError, ServoError) as exc:
         raise PipelineError(str(exc)) from exc
     tubes = [t for t, _ in held]
@@ -505,6 +568,11 @@ def layout_notices(plan: LayoutPlan, cfg: Config, bed: tuple[float, float], labe
             f"découpe automatique : {len(plan.segments)} tronçons en Z pour limiter l'inclinaison de la coupe dans "
             f"la corde (surplomb max {cfg.preset.max_overhang_deg:g}°)"
         )
+    for a, b in plan.z.moved:
+        notices.append(
+            f"découpe : coupe imposée à z = {a:g} mm déplacée à {b:.2f} mm (trop près d'une face de trou, de baie ou "
+            f"de rebouchage : le booléen y échoue)"
+        )
     label = label if label is not None else _print_volume(cfg).label
     plateau = f"plateau {label} ({bed[0]:.0f} × {bed[1]:.0f} mm)"
     need = plan.z.chord
@@ -537,12 +605,15 @@ def body_notice(n_pieces: int, cfg: Config) -> str:
 def segment_part(
     body_name: str, result: Solid, cfg: Config, progress: Callable[[str], None], skin: Solid | None = None,
     original: Solid | None = None, bores: Sequence[Bore] = (), bays: Sequence[ServoBay] = (),
-    plan: LayoutPlan | None = None,
+    plan: LayoutPlan | None = None, filled: Sequence[Passage] = (), rib_origin: float | None = None,
 ) -> Segmented:
     """Découpe en morceaux : tronçons en Z selon la hauteur et l'empreinte sur le plateau, puis coupe dans la corde
     des tronçons qui ne tiennent pas (`plan_layout`). L'empreinte est lue sur les sections de `skin` (peau d'origine,
     même contour extérieur que `result` ; `result` par défaut). `original` (peau de référence de la validation) est
-    coupée comme `result` quand il y a une coupe dans la corde ; `bores`, `bays` : obstacles des plans de coupe."""
+    coupée comme `result` quand il y a une coupe dans la corde ; `bores`, `bays` : obstacles des plans de coupe ;
+    `bores`, `bays`, `filled` : plans critiques dont les coupes en Z s'écartent (`critical_planes`). Une coupe dont le
+    booléen échoue malgré tout est décalée de quelques centièmes à dixièmes de mm (`segment.cut_chain`), pour
+    `result` comme pour `original`, et signalée."""
     seg = cfg.segment
     (W, D, _), _, printer = _print_volume(cfg)
     bb = result.bounding_box(optimal=True)
@@ -559,28 +630,65 @@ def segment_part(
     try:
         if plan is None:  # plan déjà calculé par generate_skin quand il y a des SBAR transversales
             sample = section_sampler(skin if skin is not None else result, cfg.validation.tessellation_tol)
-            plan = layout_for(height, z0, sample, cfg, bores, bays)
+            plan = layout_for(height, z0, sample, cfg, bores, bays, filled, rib_origin)
         cuts = plan.cuts
         names = plan.names()
-        spans = tuple((s.z0, s.z1) for s in plan.segments for _ in range(s.k))
         checks: list[tuple[Solid, Callable]] = []
         gap = slit_gap(cfg)
+        retried: list[str] = []
+        actual: dict[float, float] = {}  # coupe en Z planifiée (absolue) → coupe retenue après repli
+
+        def moved(a: float, b: float) -> None:
+            actual[a] = b
+            retried.append(
+                f"découpe : coupe en Z déplacée de z = {a - z0:.2f} à {b - z0:.2f} mm depuis l'emplanture (booléen en "
+                "échec sur des faces coïncidentes)"
+            )
+
+        where = lambda z: f"z = {z - z0:.2f} mm depuis l'emplanture"  # noqa: E731
+        shifted: dict[int, float] = {}  # tronçon → décalage des plans de coupe dans la corde (repli)
+        last = len(plan.segments) - 1
+
+        def actual_seg(i: int, lo: float | None, hi: float | None, shift: float):
+            sp = plan.segments[i]
+            return replace(
+                sp, z0=sp.z0 if lo is None else lo - z0, z1=sp.z1 if hi is None else hi - z0,
+                planes=tuple(p.shifted(shift, p.avoided) for p in sp.planes) if shift else sp.planes,
+            )
+
         if not plan.chord_cut:
-            pieces = split_part(result, [z0 + c for c in cuts]) if cuts else [result]
+            pieces = split_part(result, [z0 + c for c in cuts], moved) if cuts else [result]
+            at = [actual.get(z0 + c, z0 + c) for c in cuts]
+            segs = [actual_seg(i, lo, hi, 0.0) for i, (lo, hi) in enumerate(zip([None, *at], [*at, None]))]
         else:
-            pieces = []
-            last = len(plan.segments) - 1
-            for i, sp in enumerate(plan.segments):
+            def make(i: int, lo: float | None, hi: float | None, shift: float):
+                shift = shift or shifted.get(i, 0.0)  # morceau recoupé (coupe du haut déplacée) : même décalage
+                sp = actual_seg(i, lo, hi, shift)
                 label = f"{body_name} : T{i + 1}"
-                order = sp.order()
                 cut = cut_segment(result, sp, z0, i == 0, i == last, label)
+                ref = cut_segment(original, sp, z0, i == 0, i == last, f"{label} (référence)") if original is not None else None
+                if shift:
+                    shifted[i] = shift
+                return sp, cut, ref
+
+            done = cut_chain([z0 + c for c in cuts], make, moved, shifts=True, where=where)
+            for i, d in sorted(shifted.items()):
+                retried.append(
+                    f"découpe : T{i + 1} : plans de coupe dans la corde décalés de {d:+.2f} mm (booléen en échec sur "
+                    "des faces coïncidentes)"
+                )
+            pieces = []
+            segs = []
+            for sp, cut, ref in done:
+                order = sp.order()
+                segs.append(sp)
                 pieces += [cut[j] for j in order]
-                if original is not None:
-                    ref = cut_segment(original, sp, z0, i == 0, i == last, f"{label} (référence)")
+                if ref is not None:
                     checks += [(ref[j], _face_exempt(cut_lines(sp, j, CUT_FACE_TOL), gap)) for j in order]
+        spans = tuple((s.z0, s.z1) for s in segs for _ in range(s.k))
     except SegmentError as exc:
         raise PipelineError(f"{body_name} : {exc}") from exc
-    notices = layout_notices(plan, cfg, (W, D), printer)
+    notices = [*layout_notices(plan, cfg, (W, D), printer), *retried]
     n_seg = len(plan.segments)
     if n_seg > 1:
         progress(f"{body_name} : découpe en {n_seg} tronçons")
@@ -768,7 +876,7 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
         try:
             seg = segment_part(
                 s.body.name, result, cfg, progress, skin=skin, original=original, bores=bores, bays=gen.bays,
-                plan=gen.plan,
+                plan=gen.plan, filled=gen.filled, rib_origin=rib_origin_of(skin, anchor),
             )
         except PipelineError:
             raise

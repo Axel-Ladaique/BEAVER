@@ -40,8 +40,15 @@ def to_mesh(shape: Shape, tol: float = 0.02, angular: float = 0.3) -> trimesh.Tr
         os.remove(tmp)
 
 
+LAYER_TOP_GAP = 1e-3  # mm : une couche dont le milieu est à moins de cela du sommet n'est pas tranchée
+
+
 def layer_heights(zmin: float, zmax: float, layer_height: float) -> np.ndarray:
-    return np.arange(zmin + layer_height / 2, zmax, layer_height)
+    """Milieux des couches d'une pièce posée en zmin, comme le slicer la tranche depuis son propre bas : strictement
+    à l'intérieur de [zmin, zmax]. Sans la marge LAYER_TOP_GAP, une hauteur ≡ ½ couche (mod. couche) — par ex. une
+    coupe en Z écartée de 0,5 mm d'un plan critique, couche 0,2 mm — mettrait la dernière couche (arrondi de
+    `arange`) sur la face du sommet : section vide, « couche vide » à tort."""
+    return np.arange(zmin + layer_height / 2, zmax - LAYER_TOP_GAP, layer_height)
 
 
 def slice_layers(shape: Shape, heights: Sequence[float], tol: float = 0.02) -> list[Layer]:

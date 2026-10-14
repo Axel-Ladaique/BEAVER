@@ -119,10 +119,14 @@ def test_real_wing_v2_bambu_one_segment(tmp_path):
 def test_real_wing_v2_bambu_two_segments(tmp_path):
     body, paths, plates = _bambu_wing(tmp_path, {"segment": {"max_height": 120}})
     assert len(body.segments) == 2 and len(plates) == 2
+    heights = []
     for seg in body.segments:
         assert seg.is_valid and len(seg.solids()) == 1
         bb = seg.bounding_box()
-        assert bb.min.Z == pytest.approx(0.0, abs=1e-3) and bb.max.Z == pytest.approx(105.0, abs=0.5)
+        assert bb.min.Z == pytest.approx(0.0, abs=1e-3)
+        heights.append(bb.max.Z)
+    # coupe nominale à 105 mm = croisement des plaques (pas 30, 45° : tous les 15 mm) : écartée de 0,5 mm
+    assert sorted(heights) == pytest.approx([104.5, 105.5], abs=0.01)
     assert sorted(p.name for p in paths) == ["aile-rapport.html", "aile-t1.stl", "aile-t2.stl", "aile.3mf"]
 
 

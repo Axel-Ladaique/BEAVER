@@ -366,7 +366,11 @@ def tubes(prep: Prepared, cfg: Config) -> tuple[Tube, ...]:
         if key in prep.memo:
             return prep.memo[key]
         try:
-            held, _ = skin_tubes(prep.skin, list(prep.tube_spars), cfg, prep.cables, prep.bores, prep.bays, prep.mesh)
+            held, _ = skin_tubes(
+                prep.skin, list(prep.tube_spars), cfg, prep.cables, prep.bores, prep.bays, prep.mesh,
+                filled=[f for _, f in prep.filled],
+                rib_origin=(prep.anchor if prep.anchor is not None else prep.bb).min.Z,
+            )
         except BoreError as exc:
             raise PreviewError(f"{prep.name} : {exc}") from exc
         out = tuple(t for t, _ in held)
@@ -752,7 +756,10 @@ def _layout(prep: Prepared, cfg: Config) -> Layout:
         out = Layout([], warns, [], [_piece("T1", zlo, zhi, ext, pl)], [])
     else:
         try:
-            plan = layout_for(height, zlo, sections, cfg, prep.bores, prep.bays)
+            plan = layout_for(
+                height, zlo, sections, cfg, prep.bores, prep.bays, [f for _, f in prep.filled],
+                (prep.anchor if prep.anchor is not None else prep.bb).min.Z,
+            )
         except SegmentError as exc:
             out = Layout([], [*warns, f"découpe en tronçons impossible : {exc}"], [], [], [], ok=False)
         else:

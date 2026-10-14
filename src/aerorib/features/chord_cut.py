@@ -17,7 +17,9 @@ from build123d import Face, Pos, Shape, Solid, Vector, Wire, extrude
 from shapely.geometry import MultiPoint, Polygon, box
 
 from aerorib.layout import Placement, fit_on_bed
-from aerorib.segment import MIN_SEGMENT, PiecePlan, SegmentError, Sections, _extent, _samples, plan_pieces
+from aerorib.segment import (
+    MIN_SEGMENT, CutFailure, PiecePlan, SegmentError, Sections, _extent, _samples, clear_of, plan_pieces,
+)
 
 MAX_PIECES = 6  # morceaux en corde au plus par tronçon
 MIN_PIECE = 10.0  # mm : largeur minimale d'un morceau en corde, à chaque bout du tronçon
@@ -259,12 +261,13 @@ def _steep_message(e: _TooSteep, max_overhang: float) -> str:
 def plan_layout(
     height: float, max_height: float, sections: Sections, bed: tuple[float, float], margin: float = 0.0,
     cuts_at: list[float] | None = None, chord: str = "auto", max_overhang_deg: float = 45.0,
-    obstacles: Sequence[Obstacle] = (), off_label: str = "segment.chord: off",
+    obstacles: Sequence[Obstacle] = (), off_label: str = "segment.chord: off", critical: Sequence[float] = (),
 ) -> LayoutPlan:
     """Plan de découpe complet, sans booléen : coupes en Z (`plan_pieces`), puis coupe dans la corde de chaque
     tronçon qui ne tient pas sur le plateau (k minimal, plans i/k de la corde, inclinaison ≤ surplomb, décalés hors
     des obstacles). Si les plans sont trop inclinés, le tronçon est d'abord redécoupé en Z (sauf coupes imposées),
-    puis SegmentError. `chord = "off"` : SegmentError si un tronçon ne tient pas."""
+    puis SegmentError. `chord = "off"` : SegmentError si un tronçon ne tient pas. `critical` : plans z = cte (mm depuis
+    l'emplanture) dont toute coupe en Z reste écartée (`segment.plan_pieces`, CUT_CLEARANCE)."""
     cache: dict[float, np.ndarray] = {}
 
     def get(zs: list[float]) -> list[np.ndarray]:
@@ -273,7 +276,8 @@ def plan_layout(
             cache.update(zip(missing, sections(missing)))
         return [cache[z] for z in zs]
 
-    zplan = plan_pieces(height, max_height, get, bed, margin, cuts_at)
+    crit = sorted(float(c) for c in critical if 0.0 < c < height)
+    zplan = plan_pieces(height, max_height, get, bed, margin, cuts_at, crit)
     bounds = [0.0, *zplan.cuts, float(height)]
 
     def plain(a: float, b: float) -> Placement:
@@ -304,6 +308,9 @@ def plan_layout(
         m, done = 2, None
         while (b - a) / m >= MIN_SEGMENT - 1e-9 and done is None:
             sub = [a + (b - a) * i / m for i in range(m + 1)]
+            for i in range(1, m):  # coupes ajoutées, elles aussi écartées des plans critiques
+                z = clear_of(sub[i], crit, sub[i - 1] + MIN_SEGMENT - 1e-9, sub[i + 1] - MIN_SEGMENT + 1e-9)
+                sub[i] = sub[i] if z is None else z
             try:
                 part = []
                 for sa, sb in zip(sub, sub[1:]):
@@ -379,10 +386,12 @@ def cut_segment(
         name = f"{label} morceau {j + 1}".strip()
         try:
             common = shape & _prism(left, right, z_lo, z_hi, bb)
-            solids = list(common.solids())
+            solids = [] if common is None else list(common.solids())
         except Exception as exc:  # erreurs OCC
-            raise SegmentError(f"{name} : coupe dans la corde impossible ({exc})") from exc
+            raise CutFailure(f"{name} : booléen de la coupe en échec ({type(exc).__name__})") from exc
         kept = [s for s in solids if s.volume > SLIVER_VOLUME]
+        if not kept:  # booléen vide : faces coïncidentes avec un plan de coupe (`segment.cut_chain` réessaie)
+            raise CutFailure(f"{name} : intersection vide")
         if len(kept) != 1:
             raise SegmentError(f"{name} : {len(kept)} solides obtenus au lieu de 1 après la coupe dans la corde")
         if not kept[0].is_valid:

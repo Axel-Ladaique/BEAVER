@@ -80,13 +80,21 @@ class RunResult:
         return all(b.report.ok for b in self.bodies)
 
 
+_Z_OVERLAP = 1e-3  # mm : un longeron qui ne recouvre pas l'étendue en Z de la peau d'au moins cela n'y est pas
+
+
 def spars_inside(skin: Solid, spars: list[tuple[str, Solid]], tol: float) -> list[tuple[str, Solid]]:
+    """Longerons (et gaines) logés dans la peau : axe dans le contour de la section à mi-hauteur, et étendue en Z
+    qui recouvre celle de la peau (plusieurs corps d'aile : un longeron va à chaque corps qu'il traverse)."""
     bb = skin.bounding_box()
     (mid,) = slice_layers(skin, [(bb.min.Z + bb.max.Z) / 2], tol)
     envelope = [Polygon(p.exterior) for p in mid.polygons]
     kept = []
     for name, solid in spars:
-        c = solid.bounding_box().center()
+        sb = solid.bounding_box()
+        if min(sb.max.Z, bb.max.Z) - max(sb.min.Z, bb.min.Z) <= _Z_OVERLAP:
+            continue
+        c = sb.center()
         if any(e.contains(Point(c.X, c.Y)) for e in envelope):
             kept.append((name, solid))
     return kept
@@ -158,23 +166,26 @@ def fill_skin(skin: Solid, passages: list[tuple[str, Passage]], tol: float) -> S
     return solids[0]
 
 
-def rib_options(cfg: Config, bb, i: int, bays: Sequence[ServoBay] = ()) -> dict:
+def rib_options(cfg: Config, bb, i: int, bays: Sequence[ServoBay] = (), anchor=None) -> dict:
     """Paramètres de `diamond_plates` / `diamond_profiles` pour le niveau i : un seul jeu pour la génération et
-    l'aperçu, qui doivent produire exactement les mêmes plaques (`bays` : baies de servo à contourner)."""
+    l'aperçu, qui doivent produire exactement les mêmes plaques (`bays` : baies de servo à contourner ; `anchor` :
+    boîte de calage du motif, la boîte globale des peaux quand le modèle en a plusieurs, voir `plate_lines`)."""
     layer = cfg.rib_layers[i]
     return dict(
         angle_deg=cfg.rib_angle(layer), gap=cfg.split.gap, slit=cfg.slit_width, min_depth=cfg.split.min_rib_depth,
-        line_width=cfg.preset.line_width, max_mouth=cfg.validation.max_mouth_width, exclude=deeper_lines(cfg, bb, i),
-        bays=tuple(bays), pocket_strip=cfg.servo_strip(),
+        line_width=cfg.preset.line_width, max_mouth=cfg.validation.max_mouth_width, exclude=deeper_lines(cfg, bb, i, anchor),
+        bays=tuple(bays), pocket_strip=cfg.servo_strip(), anchor=anchor,
     )
 
 
-def wall_warnings(bb, mid, bores, cfg: Config, counts: Sequence[int], bays: Sequence[ServoBay] = ()) -> list[str]:
+def wall_warnings(
+    bb, mid, bores, cfg: Config, counts: Sequence[int], bays: Sequence[ServoBay] = (), anchor=None
+) -> list[str]:
     """Avertissements des niveaux de nervures vidés par l'arrêt avant les parois raides (`counts` : plaques par
     niveau). Calcul refait seulement pour un niveau sans plaque : rare, donc sans coût en temps normal."""
     out = []
     for i, (layer, n) in enumerate(zip(cfg.rib_layers, counts)):
-        if n == 0 and emptied_by_walls(bb, mid, list(bores), layer, **rib_options(cfg, bb, i, bays)):
+        if n == 0 and emptied_by_walls(bb, mid, list(bores), layer, **rib_options(cfg, bb, i, bays, anchor)):
             out.append(
                 f"niveau de nervures « {layer.name} » : aucune plaque — toutes écartées des parois trop raides pour "
                 f"la fente (slit_width {cfg.slit_width} mm, angle {cfg.rib_angle(layer)}°, "
@@ -184,7 +195,7 @@ def wall_warnings(bb, mid, bores, cfg: Config, counts: Sequence[int], bays: Sequ
     return out
 
 
-def deeper_lines(cfg: Config, bb, i: int) -> list[tuple[int, float]]:
+def deeper_lines(cfg: Config, bb, i: int, anchor=None) -> list[tuple[int, float]]:
     """Plans (famille, c) des niveaux au moins aussi profonds que le niveau i peu profond, de même angle :
     une plaque peu profonde sur l'un d'eux y est contenue (booléen inutile, faces coplanaires)."""
     layer = cfg.rib_layers[i]
@@ -201,7 +212,7 @@ def deeper_lines(cfg: Config, bb, i: int) -> list[tuple[int, float]]:
         line
         for j, other in enumerate(cfg.rib_layers)
         if j != i and deeper(j) and cfg.rib_angle(other) == cfg.rib_angle(layer)
-        for line in plate_lines(bb, other, cfg.rib_angle(other))
+        for line in plate_lines(bb, other, cfg.rib_angle(other), anchor)
     ]
 
 
@@ -237,8 +248,10 @@ class Generated(NamedTuple):
 
 def generate_skin(
     skin: Solid, spars: list[tuple[str, Solid]], cfg: Config, cables: frozenset[str] = frozenset(),
-    servos: Sequence[tuple[str, Solid]] = (),
+    servos: Sequence[tuple[str, Solid]] = (), anchor=None,
 ) -> Generated:
+    """Nervures, trous et baies d'une peau orientée. `anchor` : boîte de calage du motif de nervures (boîte globale
+    des peaux d'un modèle à plusieurs corps d'aile ; None = boîte de la peau)."""
     tol = cfg.validation.tessellation_tol
     bb = skin.bounding_box()
     nx, nz = cfg.split.grid
@@ -255,10 +268,10 @@ def generate_skin(
     skin = fill_skin(skin, to_fill, tol)
     plates, counts = [], []
     for i, layer in enumerate(cfg.rib_layers):
-        layer_plates = diamond_plates(bb, mid, bores, layer, **rib_options(cfg, bb, i, bays))
+        layer_plates = diamond_plates(bb, mid, bores, layer, **rib_options(cfg, bb, i, bays, anchor))
         plates += layer_plates
         counts.append(len(layer_plates))
-    warns = wall_warnings(bb, mid, bores, cfg, counts, bays) + reinforce_warnings(bays)
+    warns = wall_warnings(bb, mid, bores, cfg, counts, bays, anchor) + reinforce_warnings(bays)
     # gaines et longerons qui entrent dans une baie : simplement découpés par la poche
     # poches et fentes de renfort : ouvertures voulues de la peau
     pockets = [t for b in bays for t in (pocket_solid(b), *reinforce_solids(b))]
@@ -496,14 +509,37 @@ def place_pieces(
     return tuple(placements), tuple(warnings)
 
 
+def skins_anchor(skins: Sequence[Solid]):
+    """Boîte de calage du motif de nervures : None pour une seule peau (boîte de la peau, comme avant), boîte
+    englobante de toutes les peaux orientées sinon — même calcul en génération et dans l'aperçu."""
+    if len(skins) < 2:
+        return None
+    box = skins[0].bounding_box()
+    for skin in skins[1:]:
+        box = box.add(skin.bounding_box())
+    return box
+
+
+def _overlaps(a, b) -> bool:
+    return all(
+        min(getattr(a.max, k), getattr(b.max, k)) > max(getattr(a.min, k), getattr(b.min, k)) for k in ("X", "Y", "Z")
+    )
+
+
+def servos_for(skin: Solid, servos: Sequence[tuple[str, Solid]], several: bool) -> list[tuple[str, Solid]]:
+    """Baies de servo d'une peau : toutes s'il n'y a qu'une peau (une boîte hors de la pièce est refusée par
+    `servo_bays`), sinon celles dont la boîte recoupe la boîte de la peau."""
+    if not several:
+        return list(servos)
+    bb = skin.bounding_box()
+    return [(name, solid) for name, solid in servos if _overlaps(solid.bounding_box(), bb)]
+
+
 def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambda m: None) -> RunResult:
+    """Génération de toutes les peaux du modèle. Plusieurs peaux (corps d'aile découpés dans la CAO) : un morceau
+    par corps (re-découpé s'il ne tient pas), orientation commune, motif de nervures calé sur la boîte globale
+    (`skins_anchor`), longerons, gaines et baies attribués à chaque corps qu'ils traversent."""
     skins = model.of("skin")
-    if len(skins) > 1:
-        names = ", ".join(s.body.name for s in skins)
-        raise PipelineError(
-            f"plusieurs peaux ({names}) : en P1, traiter une pièce à la fois "
-            "(exporter chaque aile dans son propre STEP)"
-        )
     progress("orientation…")
     try:
         o = orient(model, cfg)
@@ -513,12 +549,20 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
     spars = [(s.body.name, s.body.solid.moved(o.location)) for s in model.of("spar")]
     cables = frozenset(c.body.name for c in model.cables)
     servos = [(s.body.name, s.body.solid.moved(o.location)) for s in model.of("servo")]
+    oriented = [s.body.solid.moved(o.location) for s in skins]
+    several = len(skins) > 1
+    anchor = skins_anchor(oriented)
+    if several:
+        progress(f"{len(skins)} corps d'aile ({', '.join(s.body.name for s in skins)}) : un morceau par corps, "
+                 "nervures alignées d'un corps à l'autre")
+        for name, solid in servos:
+            if not any(servos_for(skin, [(name, solid)], True) for skin in oriented):
+                raise PipelineError(f"{name} : la boîte ne traverse aucun corps d'aile (elle est hors de la pièce)")
     bodies = []
-    for s in skins:
-        skin = s.body.solid.moved(o.location)
+    for s, skin in zip(skins, oriented):
         progress(f"{s.body.name} : surface médiane, trous et nervures…")
         try:
-            gen = generate_skin(skin, spars, cfg, cables, servos)
+            gen = generate_skin(skin, spars, cfg, cables, servos_for(skin, servos, several), anchor=anchor)
             result, bores, n, filled = gen.result, gen.bores, gen.plates, gen.filled
         except PipelineError:
             raise
@@ -559,13 +603,21 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
         warns = seg.warnings
         if gen.slivers:
             warns = (*warns, f"{gen.slivers} éclat(s) négligeable(s) (< {MAX_SLIVER_VOLUME} mm³) retiré(s) à la découpe")
+        notices = seg.notices
+        if several and len(seg.pieces) > 1:
+            notices = (
+                f"corps d'aile déjà découpé dans la CAO, encore découpé en {len(seg.pieces)} morceaux pour tenir dans "
+                f"le volume d'impression ({cfg.printer.upper()})",
+                *notices,
+            )
+            progress(f"{s.body.name} : {notices[0]}")
         names = seg.names if seg.chord else ()
         placements, place_warns = place_pieces(s.body.name, seg.pieces, cfg, progress, names)
         warns = (*gen.warnings, *warns, *place_warns)
         bodies.append(
             BodyResult(
                 s.body.name, skin, result, report, bores, n, filled, warns, seg.pieces, gen.bays, placements,
-                seg.notices, seg.names, seg.spans, piece_reports,
+                notices, seg.names, seg.spans, piece_reports,
             )
         )
     return RunResult(o, tuple(bodies))

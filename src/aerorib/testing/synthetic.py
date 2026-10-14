@@ -213,3 +213,38 @@ def wide_wing_bodies(
         box = Box(x1 - x0, y1 - y0, z1 - z0).moved(Location(((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2)))
         bodies.append(NamedBody(("SERVO_1",), box.solids()[0]))
     return bodies
+
+
+def split_wing_bodies(
+    split: Literal["z", "chord"] = "z",
+    at: float | None = None,
+    chord: float = 100.0,
+    span: float = 80.0,
+    spar_x: float | None = 30.0,
+    spar_d: float = 8.0,
+    code: str = "4412",
+) -> list["NamedBody"]:
+    """Aile droite découpée « dans la CAO » en deux corps `WING_1`, `WING_2`, repère de construction (corde X,
+    épaisseur Y, envergure Z, emplanture z = 0) : en Z (`split="z"`, plan z = at, défaut mi-envergure) ou dans la
+    corde (`split="chord"`, plan x = at, défaut mi-corde). Longeron `SBAR_8` parallèle à Z en x = spar_x, sur la
+    ligne de cambrure, sur toute l'envergure (traverse la jonction d'une découpe en Z)."""
+    from aerorib.io_step import NamedBody
+
+    pts, camber = naca4(code, chord)
+    wing, _ = naca_wing(code, chord, span)
+    bodies = []
+    if spar_x is not None:
+        loc = Location((spar_x, camber(spar_x), span / 2))
+        wing = wing - Cylinder(spar_d / 2, span * 2).moved(loc)
+        bodies.append(NamedBody(("SBAR_8",), Cylinder(spar_d / 2, span).moved(loc).solids()[0]))
+    big = 10 * (chord + span)
+    if split == "z":
+        cut = span / 2 if at is None else at
+        lo = Box(big, big, cut, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        hi = Box(big, big, span - cut, align=(Align.CENTER, Align.CENTER, Align.MIN)).moved(Location((0, 0, cut)))
+    else:
+        cut = chord / 2 if at is None else at
+        lo = Box(big, big, 2 * big, align=(Align.MAX, Align.CENTER, Align.CENTER)).moved(Location((cut, 0, 0)))
+        hi = Box(big, big, 2 * big, align=(Align.MIN, Align.CENTER, Align.CENTER)).moved(Location((cut, 0, 0)))
+    one, two = (wing & lo).solids()[0], (wing & hi).solids()[0]
+    return [NamedBody(("WING_1",), one), NamedBody(("WING_2",), two), *bodies]

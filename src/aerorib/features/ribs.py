@@ -351,13 +351,20 @@ def _plate_length(bb, angle_deg: float) -> float:
     return (bb.max.Z - bb.min.Z) / math.cos(math.radians(angle_deg)) + 10
 
 
-def plate_lines(bb, layer: RibLayer, angle_deg: float) -> list[tuple[int, float]]:
-    """Plans du motif losange : (famille ±1, abscisse c de la plaque en z = zmin)."""
+def plate_lines(bb, layer: RibLayer, angle_deg: float, anchor=None) -> list[tuple[int, float]]:
+    """Plans du motif losange : (famille ±1, abscisse c de la plaque en z = zmin).
+
+    `anchor` (boîte englobante, None = `bb`) : boîte sur laquelle le motif est calé (x = anchor.min.X + phase en
+    z = anchor.min.Z) ; avec la boîte globale de plusieurs corps d'aile, les plaques de deux corps voisins sont
+    dans les mêmes plans et les nervures se prolongent d'un corps à l'autre. Les plans restent exprimés dans le
+    repère de `bb` (c en z = bb.min.Z) et couvrent `bb`."""
     ang = math.radians(angle_deg)
     reach = _plate_length(bb, angle_deg) * math.sin(ang)
-    origin = bb.min.X + layer.phase
+    ref = bb if anchor is None else anchor
     out = []
     for sign in (1, -1):
+        # plan d'origine du motif, suivi jusqu'à z = bb.min.Z (décalage nul sans ancre)
+        origin = ref.min.X + layer.phase + sign * math.tan(ang) * (bb.min.Z - ref.min.Z)
         lo = bb.min.X - (reach if sign > 0 else 0) - layer.spacing
         hi = bb.max.X + (reach if sign < 0 else 0) + layer.spacing
         for k in range(math.floor((lo - origin) / layer.spacing), math.ceil((hi - origin) / layer.spacing) + 1):
@@ -390,7 +397,7 @@ def _end_windows(mid: MidSurface, zmin: float, zmax: float, d1: float) -> list[t
 def diamond_profiles(
     bb, mid: MidSurface, bores: list[Bore], layer: RibLayer, *, angle_deg: float, gap: float, slit: float,
     min_depth: float, line_width: float, max_mouth: float, exclude: Sequence[tuple[int, float]] = (),
-    walls: bool = True, bays: Sequence[ServoBay] = (), pocket_strip: float = 0.0,
+    walls: bool = True, bays: Sequence[ServoBay] = (), pocket_strip: float = 0.0, anchor=None,
 ) -> list[PlateProfile]:
     """Profils 2D des plaques d'un niveau, sans construire les solides (aperçu rapide).
 
@@ -399,6 +406,7 @@ def diamond_profiles(
     `walls=False` : sans cet arrêt (pour vérifier qu'il ne vide pas un niveau, voir `emptied_by_walls`).
     `bays` : baies de servo, zones interdites (poche + `pocket_strip`, ponts, anneaux des trous qui y débouchent)
     avec la même ombre que les trous, limitées à la peau d'ouverture le long de la plaque.
+    `anchor` : boîte de calage du motif (voir `plate_lines`).
     """
     max_slope, margin = wall_limits(slit=slit, angle_deg=angle_deg, line_width=line_width, max_mouth=max_mouth)
     # deux bandes qui se croisent, chacune à band_tol de ym ± gap/2, se recouvrent d'au moins gap − 2·band_tol :
@@ -413,7 +421,7 @@ def diamond_profiles(
     ends = _end_windows(mid, zmin, zmax, math.cos(ang))
     ss = np.unique(np.concatenate([ss, [a + k * h for a, h in ends for k in (-1, 0, 1)]]))
     out: list[PlateProfile] = []
-    for sign, c in plate_lines(bb, layer, angle_deg):
+    for sign, c in plate_lines(bb, layer, angle_deg, anchor):
         if any(es == sign and abs(ec - c) < _SAME_LINE for es, ec in exclude):
             continue
         d0, d1 = sign * math.sin(ang), math.cos(ang)
@@ -446,11 +454,13 @@ def emptied_by_walls(bb, mid: MidSurface, bores: list[Bore], layer: RibLayer, **
 def diamond_plates(
     bb, mid: MidSurface, bores: list[Bore], layer: RibLayer, *, angle_deg: float, gap: float, slit: float,
     min_depth: float, line_width: float, max_mouth: float, exclude: Sequence[tuple[int, float]] = (),
-    bays: Sequence[ServoBay] = (), pocket_strip: float = 0.0,
+    bays: Sequence[ServoBay] = (), pocket_strip: float = 0.0, anchor=None,
 ) -> list[Solid]:
-    """Plaques d'un niveau ; `exclude` : plans (famille, c) déjà coupés par un niveau plus profond."""
+    """Plaques d'un niveau ; `exclude` : plans (famille, c) déjà coupés par un niveau plus profond ; `anchor` :
+    boîte de calage du motif (voir `plate_lines`)."""
     profiles = diamond_profiles(
         bb, mid, bores, layer, angle_deg=angle_deg, gap=gap, slit=slit, min_depth=min_depth,
         line_width=line_width, max_mouth=max_mouth, exclude=exclude, bays=bays, pocket_strip=pocket_strip,
+        anchor=anchor,
     )
     return [plate_solid(p.polygon, p.c, p.d0, p.d1, bb.min.Z, slit) for p in profiles]

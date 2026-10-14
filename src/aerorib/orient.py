@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from build123d import Location, Plane, Solid
+from build123d import Compound, Location, Plane, Shape, Solid
+from shapely.geometry import Polygon
+from shapely.ops import unary_union
 
 from aerorib.classify import Model
 from aerorib.config import Config, OrientationAxis
@@ -43,9 +45,18 @@ def _section_area(mesh, axis: np.ndarray, t: float) -> tuple[float, np.ndarray |
     return float(sum(p.area for p in planar.polygons_full)), np.asarray(section.vertices)
 
 
-def _needs_flip(skin_moved: Solid, inset: float, tol: float) -> bool:
+_JOIN = 0.05  # mm : jeu comblé entre les sections de deux corps d'aile jointifs (maillages non conformes)
+
+
+def _needs_flip(skin_moved: Shape, inset: float, tol: float, merge: bool = False) -> bool:
+    """Extrados en −Y à l'emplanture. `merge` (plusieurs corps d'aile) : les sections jointives des corps sont
+    d'abord réunies — un corps coupé dans la corde n'a pas, seul, la cambrure du profil."""
     (root,) = slice_layers(skin_moved, [inset], tol)
-    return bool(root.polygons) and camber_offset(max(root.polygons, key=lambda p: p.area)) < 0
+    polys = list(root.polygons)
+    if merge and len(polys) > 1:
+        joined = unary_union([Polygon(p.exterior).buffer(_JOIN) for p in polys]).buffer(-_JOIN)
+        polys = [g for g in getattr(joined, "geoms", [joined]) if isinstance(g, Polygon) and not g.is_empty]
+    return bool(polys) and camber_offset(max(polys, key=lambda p: p.area)) < 0
 
 
 CABLE_TOUCH_TOL = 0.5  # mm : une gaine à moins de cette distance d'un bout de l'envergure « touche » ce bout
@@ -69,7 +80,8 @@ def choose_root(model: Model, cfg: Config, axis: np.ndarray) -> tuple[bool | Non
     if not cables:
         return None, ""
     axis = np.asarray(axis, dtype=float) / np.linalg.norm(axis)
-    lo, hi = _span_range(model.of("skin")[0].body.solid, axis)
+    ranges = [_span_range(s.body.solid, axis) for s in model.of("skin")]  # envergure de l'ensemble des peaux
+    lo, hi = min(r[0] for r in ranges), max(r[1] for r in ranges)
     at_lo: list[str] = []
     at_hi: list[str] = []
     for c in cables:
@@ -84,8 +96,9 @@ def choose_root(model: Model, cfg: Config, axis: np.ndarray) -> tuple[bool | Non
 
 
 def orientation_location(
-    skin: Solid, axis: np.ndarray, tol: float = 0.02, root_is_lo: bool | None = None
+    skin: Shape, axis: np.ndarray, tol: float = 0.02, root_is_lo: bool | None = None, merge: bool = False
 ) -> Location:
+    """Repère orienté de `skin` (une peau, ou un composé de plusieurs corps d'aile avec `merge`)."""
     axis = np.asarray(axis, dtype=float)
     axis = axis / np.linalg.norm(axis)
     mesh = to_mesh(skin, tol)
@@ -113,7 +126,7 @@ def orientation_location(
     chord /= norm
     origin = centre + axis * root_t
     loc = Location(Plane(origin=tuple(origin), x_dir=tuple(chord), z_dir=tuple(z_dir))).inverse()
-    if _needs_flip(skin.moved(loc), inset, tol):
+    if _needs_flip(skin.moved(loc), inset, tol, merge):
         # Convention : une rotation propre ne peut pas inverser Y seul ; la corde reste sur X
         # mais le BA passe en +X quand la pièce a dû être tournée pour mettre l'extrados en +Y.
         loc = Location((0, 0, 0), (0, 0, 180)) * loc
@@ -125,9 +138,12 @@ def orient(model: Model, cfg: Config) -> Orientation:
     if not skins:
         raise ValueError("aucune peau à orienter")
     axis, source = choose_axis(model, cfg)
-    skin = skins[0].body.solid
+    # plusieurs corps d'aile (découpés dans la CAO) : un seul repère pour l'ensemble, calculé sur le composé des
+    # peaux — emplanture = bout de l'envergure totale, corde et extrados lus sur la section réunie des corps
+    multi = len(skins) > 1
+    skin = Compound([s.body.solid for s in skins]) if multi else skins[0].body.solid
     root_is_lo, why = choose_root(model, cfg, axis)
-    loc = orientation_location(skin, axis, cfg.validation.tessellation_tol, root_is_lo)
+    loc = orientation_location(skin, axis, cfg.validation.tessellation_tol, root_is_lo, merge=multi)
     if why:
         source = f"{source} ; {why}"
     return Orientation(loc, tuple(float(c) for c in axis), source)

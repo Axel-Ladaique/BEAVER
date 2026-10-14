@@ -98,7 +98,7 @@ def test_tilted_spar_is_refused():
         generate_skin(skin, [("SBAR_penche", spar)], HALF)
 
 
-# --- erreurs lisibles (G4) et plusieurs peaux (G5) ---------------------------------------------
+# --- erreurs lisibles (G4) ; plusieurs peaux : tests/test_pieces.py ---------------------------------------------
 
 
 def test_orientation_failure_is_pipeline_error(monkeypatch):
@@ -129,14 +129,6 @@ def test_occ_failure_is_pipeline_error(monkeypatch):
     monkeypatch.setattr(pipeline, "generate_skin", boom)
     with pytest.raises(PipelineError, match="génération impossible"):
         run_model(classify(wing_x_bodies(), FAST), FAST)
-
-
-def test_several_skins_refused():
-    from build123d import Box
-
-    bodies = wing_x_bodies() + [NamedBody(("Aile_B",), Box(10, 10, 10))]
-    with pytest.raises(PipelineError, match=r"plusieurs peaux \(Aile_test, Aile_B\) : en P1, traiter une pièce"):
-        run_model(classify(bodies, FAST), FAST)
 
 
 def test_coaxial_small_bore_is_not_recut_by_the_spar(monkeypatch):

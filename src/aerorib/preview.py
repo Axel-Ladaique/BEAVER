@@ -14,7 +14,7 @@ import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import Future
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from pathlib import Path
 
@@ -50,6 +50,8 @@ from aerorib.pipeline import (
     PipelineError,
     check_fill,
     rib_options,
+    servos_for,
+    skins_anchor,
     spars_inside,
     _print_volume,
     usable_height,
@@ -118,6 +120,10 @@ class Prepared:
     key: tuple[str, str] = ("", "")
     bays: tuple[ServoBay, ...] = ()  # baies de servo (même calcul que generate_skin)
     mesh_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    anchor: object = None  # boîte de calage du motif de nervures (plusieurs corps d'aile), voir `skins_anchor`
+    # plusieurs corps d'aile : une préparation par corps (même ordre que la génération) ; cette préparation-ci
+    # en est l'ensemble (boîte globale, trous, baies et maillage réunis), et les vues sont calculées corps par corps
+    parts: tuple["Prepared", ...] = ()
 
     @property
     def bounds(self) -> tuple[float, float, float, float, float, float]:
@@ -126,6 +132,8 @@ class Prepared:
 
     def holes(self, z: float | None = None) -> list[dict]:
         """Trous présents (à la hauteur z, ou sur toute la pièce)."""
+        if self.parts:
+            return [h for part in self.parts if _at(part, z) for h in part.holes(z)]
         zmin, zmax = self.bb.min.Z, self.bb.max.Z
         out = []
         for b in self.bores:
@@ -139,13 +147,21 @@ class Prepared:
         return out
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "corps": self.name,
             "orientation": self.orientation.source,
             "boite": [_round(v) for v in self.bounds],
             "trous": self.holes(),
             "preparation_s": round(self.prepare_s, 2),
         }
+        if self.parts:
+            out["morceaux"] = [{"nom": p.name, "boite": [_round(v) for v in p.bounds]} for p in self.parts]
+        return out
+
+
+def _at(part: Prepared, z: float | None) -> bool:
+    """Corps présent à la hauteur z (tous si z est None)."""
+    return z is None or part.zrange[0] <= z <= part.zrange[1]
 
 
 _PREP_FIELDS = ("naming", "roles", "orientation", "split", "spars", "passages", "servo")
@@ -258,28 +274,47 @@ def _prepare(path: Path, cfg: Config, key: tuple[str, str]) -> Prepared:
     except (StepReadError, ClassifyError) as exc:
         raise PreviewError(str(exc)) from exc
     skins = model.of("skin")
-    if len(skins) > 1:
-        names = ", ".join(s.body.name for s in skins)
-        raise PreviewError(
-            f"plusieurs peaux ({names}) : traiter une pièce à la fois (exporter chaque aile dans son propre STEP)"
-        )
     try:
         o = orient(model, cfg)
     except GEOMETRY_ERRORS as exc:
         raise PreviewError(f"orientation impossible : {exc}") from exc
-    s = skins[0]
-    skin = s.body.solid.moved(o.location)
     spars = tuple((b.body.name, b.body.solid.moved(o.location)) for b in model.of("spar"))
     servos = [(b.body.name, b.body.solid.moved(o.location)) for b in model.of("servo")]
+    cables = frozenset(c.body.name for c in model.cables)
+    oriented = [s.body.solid.moved(o.location) for s in skins]
+    several = len(skins) > 1
+    anchor = skins_anchor(oriented)  # mêmes plans de nervures que `run_model`
+    if several:
+        for name, solid in servos:
+            if not any(servos_for(skin, [(name, solid)], True) for skin in oriented):
+                raise PreviewError(f"{name} : la boîte ne traverse aucun corps d'aile (elle est hors de la pièce)")
+    parts = [
+        _prepare_skin(s.body.name, skin, spars, servos_for(skin, servos, several), cables, o, cfg, key, anchor, t0)
+        for s, skin in zip(skins, oriented)
+    ]
+    if not several:
+        return replace(parts[0], prepare_s=time.perf_counter() - t0)
+    lo, hi = min(p.zrange[0] for p in parts), max(p.zrange[1] for p in parts)
+    return Prepared(
+        " + ".join(p.name for p in parts), Compound([p.skin for p in parts]), spars, o, anchor, (lo, hi), parts[0].mid,
+        tuple(b for p in parts for b in p.bores), tuple(f for p in parts for f in p.filled),
+        tuple(a for p in parts for a in p.anchors), trimesh.util.concatenate([p.mesh for p in parts]),
+        time.perf_counter() - t0, key, bays=tuple(b for p in parts for b in p.bays), anchor=anchor, parts=tuple(parts),
+    )
+
+
+def _prepare_skin(
+    name: str, skin: Solid, spars, servos, cables, o: Orientation, cfg: Config, key, anchor, t0: float
+) -> Prepared:
+    """Préparation d'une peau orientée : mêmes étapes que `generate_skin`, sans les booléens."""
     tol = cfg.validation.tessellation_tol
     try:
-        # mêmes étapes que generate_skin, sans les booléens
         bb = skin.bounding_box()
         nx, nz = cfg.split.grid
         mid = MidSurface.from_skin(skin, nx, nz, tol)
         inside = spars_inside(skin, list(spars), tol)
         found = find_passages(skin, cfg.passages.max_tilt_deg)
-        bores = extend_to_existing_bores(spar_bores(inside, cfg, frozenset(c.body.name for c in model.cables)), skin, cfg, found)
+        bores = extend_to_existing_bores(spar_bores(inside, cfg, cables), skin, cfg, found)
         to_fill = passages_to_fill(skin, cfg, exclude=bores, found=found)
         bores += passage_bores(skin, cfg, exclude=bores, found=found)
         check_fill(skin, to_fill, tol)
@@ -288,12 +323,12 @@ def _prepare(path: Path, cfg: Config, key: tuple[str, str]) -> Prepared:
         mesh = to_mesh(skin, tol)
         obb = skin.bounding_box(optimal=True)
     except (PipelineError, BoreError, ServoError) as exc:
-        raise PreviewError(f"{s.body.name} : {exc}") from exc
+        raise PreviewError(f"{name} : {exc}") from exc
     except GEOMETRY_ERRORS as exc:
-        raise PreviewError(f"{s.body.name} : préparation impossible ({type(exc).__name__} : {exc})") from exc
+        raise PreviewError(f"{name} : préparation impossible ({type(exc).__name__} : {exc})") from exc
     return Prepared(
-        s.body.name, skin, spars, o, bb, (obb.min.Z, obb.max.Z), mid, tuple(bores), tuple(to_fill), anchors, mesh,
-        time.perf_counter() - t0, key, bays=bays,
+        name, skin, tuple(spars), o, bb, (obb.min.Z, obb.max.Z), mid, tuple(bores), tuple(to_fill), anchors, mesh,
+        time.perf_counter() - t0, key, bays=bays, anchor=anchor,
     )
 
 
@@ -315,9 +350,11 @@ class Plate2D:
     depth: str | float  # "full" ou mm
     slit: float
     polygon: Polygon
+    body: int = 0  # indice du corps d'aile (plusieurs peaux), dans l'ordre de `Prepared.parts`
 
     def to_dict(self) -> dict:
         return {
+            "corps": self.body,
             "couche": self.layer,
             "nom": self.layer_name,
             "famille": self.family,
@@ -332,11 +369,15 @@ class Plate2D:
 
 
 def plates_2d(prep: Prepared, cfg: Config) -> list[Plate2D]:
-    """Profils 2D de toutes les plaques, exactement ceux de `generate_skin` (mêmes zones, mêmes exclusions)."""
+    """Profils 2D de toutes les plaques, exactement ceux de `generate_skin` (mêmes zones, mêmes exclusions, même
+    calage du motif) ; plusieurs corps d'aile : plaques de chaque corps, `body` = indice du corps."""
+    if prep.parts:
+        return [replace(p, body=k) for k, part in enumerate(prep.parts) for p in plates_2d(part, cfg)]
     bb = prep.bb
     out = []
     for i, layer in enumerate(cfg.rib_layers):
-        for p in diamond_profiles(bb, prep.mid, list(prep.bores), layer, **rib_options(cfg, bb, i, prep.bays)):
+        opts = rib_options(cfg, bb, i, prep.bays, prep.anchor)
+        for p in diamond_profiles(bb, prep.mid, list(prep.bores), layer, **opts):
             out.append(
                 Plate2D(i, layer.name, p.family, p.c, p.d0, p.d1, bb.min.Z, p.top, layer.depth, cfg.slit_width, p.polygon)
             )
@@ -461,7 +502,18 @@ def _section(prep: Prepared, plates: list[Plate2D], cfg: Config, z: float, raw: 
 
 
 def section(prep: Prepared, plates: list[Plate2D], cfg: Config, z: float) -> SectionView:
-    """Couche approximée à z : peau − empreintes des plaques − trous/fentes/attaches, avec ses défauts."""
+    """Couche approximée à z : peau − empreintes des plaques − trous/fentes/attaches, avec ses défauts.
+    Plusieurs corps d'aile : réunion des couches de chaque corps présent à z (chacun avec ses plaques)."""
+    if prep.parts:
+        views = [
+            section(part, [p for p in plates if p.body == k], cfg, z)
+            for k, part in enumerate(prep.parts) if _at(part, float(z))
+        ]
+        return SectionView(
+            float(z), [p for v in views for p in v.polygons], [p for v in views for p in v.skin],
+            [f for v in views for f in v.footprints], [d for v in views for d in v.defects],
+            sorted(pt for v in views for pt in v.band), cfg.split.gap, [h for v in views for h in v.holes],
+        )
     (raw,) = _skin_slices(prep, [float(z)])
     return _section(prep, plates, cfg, float(z), raw)
 
@@ -490,9 +542,12 @@ class PlanformView:
     # baies de servo vues de dessus : {nom, cote, x0, x1, z0, z1 (boîte utile), ouverture [z, z] (rampes
     # comprises), profondeur, renfort, renfort_partiel}
     bays: list[dict] = field(default_factory=list)
+    # plusieurs corps d'aile : {nom, x0, z0, x1, z1} de chaque corps (vide pour une seule peau)
+    bodies: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
+            "corps": self.bodies,
             "segments": [
                 [_round(s.x0), _round(s.z0), _round(s.x1), _round(s.z1), s.layer, s.family] for s in self.segments
             ],
@@ -562,7 +617,19 @@ def _cuts(prep: Prepared, cfg: Config) -> tuple[list[float], list[str]]:
 
 def planform(prep: Prepared, plates: list[Plate2D], cfg: Config | None = None) -> PlanformView:
     """Vue de dessus (x, z) : parties coupées de chaque plaque, contour de l'aile, trous, baies de servo, coupes de
-    tronçons."""
+    tronçons. Plusieurs corps d'aile : vues de chaque corps réunies (coupes et avertissements par corps), contour
+    = boîte globale, `corps` = nom et étendue de chaque corps."""
+    if prep.parts:
+        views = [planform(part, [p for p in plates if p.body == k], cfg) for k, part in enumerate(prep.parts)]
+        bb = prep.bb
+        return PlanformView(
+            [sg for v in views for sg in v.segments], (bb.min.X, prep.zrange[0], bb.max.X, prep.zrange[1]),
+            [c for v in views for c in v.cuts],
+            [f"{part.name} : {w}" for part, v in zip(prep.parts, views) for w in v.warnings],
+            [b for v in views for b in v.bores], [b for v in views for b in v.bays],
+            [{"nom": part.name, "x0": _round(v.wing[0]), "z0": _round(v.wing[1]), "x1": _round(v.wing[2]),
+              "z1": _round(v.wing[3])} for part, v in zip(prep.parts, views)],
+        )
     bb = prep.bb
     zmin, zmax = bb.min.Z, bb.max.Z
     segs = []
@@ -587,7 +654,30 @@ def estimates(prep: Prepared, plates: list[Plate2D], cfg: Config, *, cached: boo
     `duree_s` = plaques × SECONDS_PER_PLATE + durée de préparation mesurée, sauf si `cached` (préparation
     servie par le cache, voir `prepare_status`) : elle n'est alors pas recomptée. `preparation_s` donne
     toujours la durée mesurée lors du calcul initial.
+
+    Plusieurs corps d'aile : chiffres de chaque corps additionnés (chaque corps est imprimé à part : couches et
+    tronçons de chacun), avertissements préfixés du nom du corps.
     """
+    if prep.parts:
+        per = [
+            estimates(part, [p for p in plates if p.body == k], cfg, cached=True) for k, part in enumerate(prep.parts)
+        ]
+        n_plates = sum(e["plaques"] for e in per)
+        troncons = None if any(e["troncons"] is None for e in per) else [t for e in per for t in e["troncons"]]
+        return {
+            "plaques": n_plates,
+            "plaques_par_couche": [
+                {**c, "plaques": sum(e["plaques_par_couche"][i]["plaques"] for e in per)}
+                for i, c in enumerate(per[0]["plaques_par_couche"])
+            ],
+            "troncons": troncons,
+            "couches": sum(e["couches"] for e in per),
+            "trajet_m": sum(e["trajet_m"] for e in per),
+            "masse_g": sum(e["masse_g"] for e in per),
+            "duree_s": n_plates * SECONDS_PER_PLATE + (0.0 if cached else prep.prepare_s),
+            "preparation_s": prep.prepare_s,
+            "avertissements": [f"{part.name} : {w}" for part, e in zip(prep.parts, per) for w in e["avertissements"]],
+        }
     preset = cfg.preset
     per_layer = [0] * len(cfg.rib_layers)
     for p in plates:
@@ -596,7 +686,10 @@ def estimates(prep: Prepared, plates: list[Plate2D], cfg: Config, *, cached: boo
     cuts, warns = _cuts(prep, cfg)
     bounds = [0.0, *cuts, zhi - zlo]
     troncons = [b - a for a, b in pairwise(bounds)] if not warns else None
-    warns = [*wall_warnings(prep.bb, prep.mid, prep.bores, cfg, per_layer, prep.bays), *reinforce_warnings(prep.bays), *warns]
+    warns = [
+        *wall_warnings(prep.bb, prep.mid, prep.bores, cfg, per_layer, prep.bays, prep.anchor),
+        *reinforce_warnings(prep.bays), *warns,
+    ]
     bb = prep.bb
     zs = layer_heights(bb.min.Z, bb.max.Z, preset.layer_height)
     n = len(zs)

@@ -96,7 +96,9 @@ def test_split_in_chord_ribs_on_the_same_planes():
     lead, trail = (_planes(s, FAST, anchor) for s in skins)
     assert lead and trail
     assert _on_lattice(lead, anchor, FAST) and _on_lattice(trail, anchor, FAST)
-    assert {(f, x) for f, x, _, _ in lead} & {(f, x) for f, x, _, _ in trail}  # plans prolongés d'un corps à l'autre
+    # mêmes plans de part et d'autre de la jonction ; les plaques s'arrêtent toutefois ≈ 1,5 mm avant la face de
+    # jonction de chaque côté (paroi verticale : arrêt avant les parois raides), d'où une bande sans nervure ≈ 3 mm
+    assert {(f, x) for f, x, _, _ in lead} & {(f, x) for f, x, _, _ in trail}
     assert not _on_lattice(_planes(skins[1], FAST, None), anchor, FAST)
 
 
@@ -122,9 +124,18 @@ def test_spar_across_a_spanwise_joint_is_held_in_both_bodies(run_z):
     for b in run_z.bodies:
         (spar,) = [x for x in b.bores if x.cut_hole]
         assert spar.name == "SBAR_8"
-    # trou débouchant à la jonction des deux côtés (le longeron traverse)
+    # trou débouchant sur la face de jonction des deux côtés (le longeron traverse)
+    from shapely.geometry import Point
+    from shapely.ops import unary_union
+
+    from aerorib.features.bores import bore_extent
+    from aerorib.slicing import slice_layers
+
     lo, hi = (next(x for x in b.bores if x.cut_hole) for b in run_z.bodies)
-    assert lo.z1 > JOINT_Z and hi.z0 < JOINT_Z
+    assert bore_extent(lo, 0.0, JOINT_Z)[1] > JOINT_Z and bore_extent(hi, JOINT_Z, 80.0)[0] < JOINT_Z
+    for b, z, bore in ((run_z.bodies[0], JOINT_Z - 0.1, lo), (run_z.bodies[1], JOINT_Z + 0.1, hi)):
+        (layer,) = slice_layers(b.result, [z])
+        assert not unary_union(layer.polygons).intersects(Point(bore.x, bore.y).buffer(bore.radius - 0.2))
 
 
 def test_split_in_chord_gives_one_printable_piece_per_body():
@@ -258,3 +269,29 @@ def test_preview_section_shows_every_body_at_that_height(tmp_path):
     assert len(view.polygons) == 2  # corps avant et corps arrière, imprimés séparément
     xs = sorted(p.bounds[0] for p in view.polygons)
     assert xs[1] - xs[0] == pytest.approx(50.0, abs=1.0)
+
+
+def test_spar_on_a_chord_joint_is_refused(tmp_path):
+    from aerorib import preview
+    from aerorib.io_step import write_step
+    from aerorib.pipeline import PipelineError
+
+    bodies = split_wing_bodies("chord", at=30, spar_x=30)
+    msg = r"SBAR_8 : sur la jonction entre WING_1 et WING_2 .* déplacer le longeron ou la coupe"
+    with pytest.raises(PipelineError, match=msg):
+        run_model(classify(bodies, FAST), FAST)
+    with pytest.raises(preview.PreviewError, match=msg):
+        preview.prepare(write_step(tmp_path / "jonction.step", bodies), FAST)
+
+
+def test_gap_between_chord_bodies_warns_about_orientation():
+    from build123d import Location
+
+    from aerorib.io_step import NamedBody
+
+    one, two, spar = split_wing_bodies("chord")
+    _, o, _ = _oriented([one, two, spar])
+    assert o.warnings == ()
+    apart = NamedBody(two.path, two.solid.moved(Location((0.5, 0, 0))))  # jeu de 0,5 mm entre les corps
+    _, o, _ = _oriented([one, apart, spar])
+    assert len(o.warnings) == 1 and "ne se rejoignent pas" in o.warnings[0]

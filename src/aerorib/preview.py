@@ -49,6 +49,7 @@ from aerorib.pipeline import (
     GEOMETRY_ERRORS,
     PipelineError,
     check_fill,
+    check_spars_assigned,
     rib_options,
     servos_for,
     skins_anchor,
@@ -288,6 +289,12 @@ def _prepare(path: Path, cfg: Config, key: tuple[str, str]) -> Prepared:
         for name, solid in servos:
             if not any(servos_for(skin, [(name, solid)], True) for skin in oriented):
                 raise PreviewError(f"{name} : la boîte ne traverse aucun corps d'aile (elle est hors de la pièce)")
+        try:
+            check_spars_assigned(
+                [(s.body.name, skin) for s, skin in zip(skins, oriented)], spars, cfg.validation.tessellation_tol
+            )
+        except PipelineError as exc:
+            raise PreviewError(str(exc)) from exc
     parts = [
         _prepare_skin(s.body.name, skin, spars, servos_for(skin, servos, several), cables, o, cfg, key, anchor, t0)
         for s, skin in zip(skins, oriented)
@@ -676,7 +683,10 @@ def estimates(prep: Prepared, plates: list[Plate2D], cfg: Config, *, cached: boo
             "masse_g": sum(e["masse_g"] for e in per),
             "duree_s": n_plates * SECONDS_PER_PLATE + (0.0 if cached else prep.prepare_s),
             "preparation_s": prep.prepare_s,
-            "avertissements": [f"{part.name} : {w}" for part, e in zip(prep.parts, per) for w in e["avertissements"]],
+            "avertissements": [
+                *prep.orientation.warnings,
+                *(f"{part.name} : {w}" for part, e in zip(prep.parts, per) for w in e["avertissements"]),
+            ],
         }
     preset = cfg.preset
     per_layer = [0] * len(cfg.rib_layers)

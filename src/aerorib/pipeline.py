@@ -535,6 +535,23 @@ def servos_for(skin: Solid, servos: Sequence[tuple[str, Solid]], several: bool) 
     return [(name, solid) for name, solid in servos if _overlaps(solid.bounding_box(), bb)]
 
 
+def check_spars_assigned(
+    skins: Sequence[tuple[str, Solid]], spars: Sequence[tuple[str, Solid]], tol: float
+) -> None:
+    """Plusieurs corps d'aile : un longeron (ou une gaine) dont la boîte recoupe celle d'un corps doit être logé dans
+    au moins un corps (`spars_inside`). Sinon (axe sur une jonction dans la corde, entre deux contours), il serait
+    ignoré en silence et traverserait la matière : PipelineError en français."""
+    for name, solid in spars:
+        sb = solid.bounding_box()
+        touched = [n for n, skin in skins if _overlaps(sb, skin.bounding_box())]
+        if touched and not any(spars_inside(skin, [(name, solid)], tol) for _, skin in skins):
+            where = " et ".join(touched)
+            raise PipelineError(
+                f"{name} : sur la jonction entre {where} (axe hors du contour de chaque corps) — déplacer le longeron "
+                "ou la coupe dans la CAO"
+            )
+
+
 def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambda m: None) -> RunResult:
     """Génération de toutes les peaux du modèle. Plusieurs peaux (corps d'aile découpés dans la CAO) : un morceau
     par corps (re-découpé s'il ne tient pas), orientation commune, motif de nervures calé sur la boîte globale
@@ -558,6 +575,11 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
         for name, solid in servos:
             if not any(servos_for(skin, [(name, solid)], True) for skin in oriented):
                 raise PipelineError(f"{name} : la boîte ne traverse aucun corps d'aile (elle est hors de la pièce)")
+        check_spars_assigned(
+            [(s.body.name, skin) for s, skin in zip(skins, oriented)], spars, cfg.validation.tessellation_tol
+        )
+    for w in o.warnings:
+        progress(f"⚠ {w}")
     bodies = []
     for s, skin in zip(skins, oriented):
         progress(f"{s.body.name} : surface médiane, trous et nervures…")
@@ -613,7 +635,7 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
             progress(f"{s.body.name} : {notices[0]}")
         names = seg.names if seg.chord else ()
         placements, place_warns = place_pieces(s.body.name, seg.pieces, cfg, progress, names)
-        warns = (*gen.warnings, *warns, *place_warns)
+        warns = (*(o.warnings if not bodies else ()), *gen.warnings, *warns, *place_warns)
         bodies.append(
             BodyResult(
                 s.body.name, skin, result, report, bores, n, filled, warns, seg.pieces, gen.bays, placements,

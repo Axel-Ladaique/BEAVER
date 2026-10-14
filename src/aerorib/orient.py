@@ -20,6 +20,7 @@ class Orientation:
     location: Location
     axis: tuple[float, float, float]
     source: str
+    warnings: tuple[str, ...] = ()  # ex. sections des corps d'aile non réunies à l'emplanture
 
 
 def choose_axis(model: Model, cfg: Config) -> tuple[np.ndarray, str]:
@@ -48,14 +49,22 @@ def _section_area(mesh, axis: np.ndarray, t: float) -> tuple[float, np.ndarray |
 _JOIN = 0.05  # mm : jeu comblé entre les sections de deux corps d'aile jointifs (maillages non conformes)
 
 
-def _needs_flip(skin_moved: Shape, inset: float, tol: float, merge: bool = False) -> bool:
-    """Extrados en −Y à l'emplanture. `merge` (plusieurs corps d'aile) : les sections jointives des corps sont
-    d'abord réunies — un corps coupé dans la corde n'a pas, seul, la cambrure du profil."""
+def _root_polygons(skin_moved: Shape, inset: float, tol: float, merge: bool = False) -> list[Polygon]:
+    """Section d'emplanture (z = inset). `merge` (plusieurs corps d'aile) : sections jointives réunies, à `_JOIN`
+    près (un jeu plus large entre deux corps laisse deux sections)."""
     (root,) = slice_layers(skin_moved, [inset], tol)
     polys = list(root.polygons)
     if merge and len(polys) > 1:
         joined = unary_union([Polygon(p.exterior).buffer(_JOIN) for p in polys]).buffer(-_JOIN)
         polys = [g for g in getattr(joined, "geoms", [joined]) if isinstance(g, Polygon) and not g.is_empty]
+    return polys
+
+
+def _needs_flip(skin_moved: Shape, inset: float, tol: float, merge: bool = False) -> bool:
+    """Extrados en −Y à l'emplanture. `merge` (plusieurs corps d'aile) : les sections jointives des corps sont
+    d'abord réunies — un corps coupé dans la corde n'a pas, seul, la cambrure du profil ; si elles ne se réunissent
+    pas (jeu entre les corps), la plus grande décide (voir l'avertissement de `orient`)."""
+    polys = _root_polygons(skin_moved, inset, tol, merge)
     return bool(polys) and camber_offset(max(polys, key=lambda p: p.area)) < 0
 
 
@@ -146,4 +155,15 @@ def orient(model: Model, cfg: Config) -> Orientation:
     loc = orientation_location(skin, axis, cfg.validation.tessellation_tol, root_is_lo, merge=multi)
     if why:
         source = f"{source} ; {why}"
-    return Orientation(loc, tuple(float(c) for c in axis), source)
+    warnings: tuple[str, ...] = ()
+    if multi:
+        moved = skin.moved(loc)
+        bb = moved.bounding_box()
+        polys = _root_polygons(moved, min(0.5, (bb.max.Z - bb.min.Z) / 4), cfg.validation.tessellation_tol, True)
+        if len(polys) > 1:
+            warnings = (
+                f"orientation : les sections des corps d'aile ne se rejoignent pas à l'emplanture ({len(polys)} "
+                f"contours séparés, jeu > {2 * _JOIN:g} mm entre les corps ?) — extrados choisi sur le plus grand "
+                "corps, vérifier l'orientation et le jeu entre les corps dans la CAO",
+            )
+    return Orientation(loc, tuple(float(c) for c in axis), source, warnings)

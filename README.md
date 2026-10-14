@@ -45,7 +45,13 @@ refermerait (< 0,10 mm).
 
 Limites de la phase P1 :
 
-- **une seule peau par fichier** : exporter chaque aile dans son propre STEP ;
+- **plusieurs peaux par fichier** (corps d'aile découpés dans la CAO, ex. `WING_1`, `WING_2`) : un morceau par
+  corps (re-découpé s'il ne tient pas dans le volume d'impression, avec une notice), orientation commune, motif de
+  nervures calé sur la boîte de l'ensemble (mêmes plans d'un corps à l'autre). Longerons, gaines et baies vont à
+  chaque corps qu'ils traversent ; un longeron dont l'axe est sur une jonction dans la corde est refusé. À une
+  jonction dans la corde, les nervures s'arrêtent ≈ 1,5 mm avant la face de chaque côté (paroi verticale), d'où une
+  bande sans nervure d'environ 3 mm ; près des bords d'attaque et de fuite, une plaque très courte peut exister
+  d'un côté de la jonction et pas de l'autre ;
 - longerons et alésages **parallèles à l'axe d'impression** : un longeron incliné (même de 1°) est
   refusé, car le trou vertical ne le laisserait pas entrer ;
 - un longeron plus court que la pièce reçoit un trou et une fente limités à sa longueur (débouchant

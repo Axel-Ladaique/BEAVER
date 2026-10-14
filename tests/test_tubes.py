@@ -520,3 +520,44 @@ def test_open_end_near_a_cambered_trailing_edge_does_not_hide_a_cut():
     # la référence (bouche admise : bout réel + OPEN_END + rayon max) s'arrête avant le bout de l'outil
     length = lambda pr: float(np.linalg.norm(pr.ring1[0] - pr.ring0[0]))  # noqa: E731
     assert length(t.hole) > length(t.opening) + 1.0
+
+
+def test_sbar_running_along_the_skin_from_an_open_end_is_refused():
+    """Sonde de la re-revue : SBAR Ø4 à 0,1 mm sous la face plane, qui longe la peau dès son bout débouchant. Sa
+    « bouche » ne s'écarte pas de la peau (distance axe–peau en palier) : elle s'arrête tout de suite, le reste du
+    trou ouvre la face ⇒ refus. Avant (c7b0484) : bouche de ≈ 40 mm, livrée ✔ face ouverte sur ≈ 30 mm. (Deux bouts
+    débouchants dans les mêmes couches : refus vase mode en amont ; bouches jointives : test suivant.)"""
+    with pytest.raises(pipeline.PipelineError, match=r"SBAR_T : trop près de la peau"):
+        _run(_slotted_bodies((-1.0, 17.9, 40.0), (30.0, 17.9, 40.0)), SLOT_CFG)  # débouchante en x = 0, fermée en 30
+
+
+@pytest.mark.parametrize("y, refused", [(17.9, True), (10.0, False)])
+def test_short_sbar_open_at_both_ends_gets_no_blanket_excuse(y, refused):
+    """Bouches jointives : SBAR Ø4 de 32 mm, débouchante aux deux bouts d'un pavé 30 × 20 (enveloppe connue, sans
+    maillage), qui longe la face y = 20 à 0,1 mm. Chaque bouche est bornée seule (palier de la distance axe–peau) :
+    le trou ouvre la face entre les deux ⇒ TubeError. Avant (c7b0484), deux bouches de ≈ 40 mm se rejoignaient et
+    tout le trou était excusé. Au milieu de l'épaisseur (y = 10), rien à redire."""
+    from shapely.geometry import box
+
+    from aerorib.features.tubes import TubeError, _check_wall, _prism
+
+    env = box(0.0, 0.0, 30.0, 20.0)
+    zr = (0.0, 80.0)
+    d = np.array([1.0, 0.0, 0.0])
+    a, b = np.array([-1.0, y, 40.0]), np.array([31.0, y, 40.0])
+    profile = teardrop(2.15, 90.0, 45.0)
+    hole = _prism(a - 0.5 * d, b + 0.5 * d, profile, np.array([0.0, 0.0, 1.0]), np.array([0.0, -1.0, 0.0]))
+
+    def inside(pts):
+        return np.array([zr[0] < p[2] < zr[1] and env.contains(Point(p[0], p[1])) for p in pts])
+
+    def env_at(zs):
+        return [env] * len(zs)
+
+    zs = [float(z) for z in np.arange(37.0, 43.0, 0.25)]
+    check = lambda: _check_wall("SBAR_T", hole, profile, a, b, d, (True, True), zs, env_at(zs), inside, env_at, zr, 0.42)  # noqa: E731
+    if refused:
+        with pytest.raises(TubeError, match="trop près de la peau"):
+            check()
+    else:
+        check()

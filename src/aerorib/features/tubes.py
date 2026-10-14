@@ -48,6 +48,7 @@ _REACH_PAD = 0.5  # mm : le trou dépasse la sortie franche d'autant (si la sect
 _Z_ROUND = 0.05  # mm : arrondi des hauteurs des enveloppes le long de l'axe (sections partagées, axe incliné)
 MOUTH_MIN_ANGLE = 5.0  # ° : sortie la plus rasante admise (longueur max d'une bouche le long de l'axe)
 _MIN_PIERCE = 0.01  # mm² : percée de la peau négligeable (bruit numérique)
+_PLATEAU_STEPS = 3  # pas de _REACH_STEP : D (axe–peau) qui ne croît plus sur cette longueur ⇒ fin de la bouche
 FACETS = 64  # facettes de la goutte d'eau (polygone circonscrit au cercle)
 _FAR = 1e4
 # couches de l'analyse : pas = hauteur du trou / _MAX_SAMPLES, borné à [_MIN_STEP, _MAX_STEP] mm (au-delà de 100 mm de
@@ -694,22 +695,37 @@ def _exit_t(a: np.ndarray, d: np.ndarray, length: float, inside, from_start: boo
 
 def _mouth_end(a: np.ndarray, d: np.ndarray, t_exit: float, inward: float, length: float, env_at, zr,
                need: float, cap: float) -> float:
-    """Fin de la bouche d'un bout débouchant, le long de l'axe (coordonnée depuis `a`) : de l'entrée de l'axe dans
-    l'enveloppe vers l'intérieur (`inward` = ±1), tant que l'axe est à moins de `need` du bord de l'enveloppe de sa
-    couche (le trou y touche la peau parce qu'il en sort), au plus `cap`."""
+    """Fin de la bouche d'un bout débouchant, le long de l'axe (coordonnée depuis `a`), de l'entrée de l'axe dans
+    l'enveloppe vers l'intérieur (`inward` = ±1). Une vraie bouche s'écarte de la peau : la distance axe–bord D
+    croît à peu près comme |t − t_exit|·sin(angle de sortie). La bouche s'arrête :
+    - dès que D ≥ `need` (le trou ne touche plus la peau) ;
+    - dès que D ne croît plus (palier sur _PLATEAU_STEPS pas : la SBAR longe la peau, elle n'en sort pas) ;
+    - au plus à OPEN_END + `need` / sin(angle de sortie estimé sur le premier mm), et jamais au-delà de `cap`."""
+    step = _REACH_STEP
+    grow = step * math.sin(math.radians(MOUTH_MIN_ANGLE))  # croissance minimale de D par pas
+    hist: list[float] = []
     t = t_exit
-    while abs(t - t_exit) < cap:
-        t += inward * _REACH_STEP
+    limit = cap
+    while abs(t - t_exit) < limit:
+        t += inward * step
         if not -OPEN_END <= t <= length + OPEN_END:
             return t
         q = a + t * d
         if not zr[0] < q[2] < zr[1]:
-            continue
+            continue  # sortie par l'emplanture ou le saumon : pas de peau latérale ici
         (env,) = env_at([round(float(q[2]) / _Z_ROUND) * _Z_ROUND])
         pt = Point(float(q[0]), float(q[1]))
-        if not env.is_empty and env.contains(pt) and env.boundary.distance(pt) >= need:
+        dist = env.boundary.distance(pt) if not env.is_empty and env.contains(pt) else 0.0
+        if dist >= need:
             return t
-    return t_exit + inward * cap
+        hist.append(dist)
+        k = len(hist)
+        if k == round(1.0 / step):  # angle de sortie estimé sur le premier mm
+            sin_a = max(hist[-1] / (k * step), math.sin(math.radians(MOUTH_MIN_ANGLE)))
+            limit = min(cap, OPEN_END + need / sin_a)
+        if k > _PLATEAU_STEPS and hist[-1] - hist[-1 - _PLATEAU_STEPS] < _PLATEAU_STEPS * grow:
+            return t  # palier : la SBAR longe la peau
+    return t_exit + inward * limit
 
 
 def _check_wall(
@@ -717,8 +733,8 @@ def _check_wall(
     zs: Sequence[float], envs: Sequence, inside, env_at, zr, line_width: float,
 ) -> None:
     """Le trou (jeu compris) ne doit toucher la peau (paroi < largeur de ligne) qu'à ses bouches : depuis l'entrée
-    de l'axe dans la peau à un bout débouchant, tant que l'axe reste à moins de (rayon max de la section + une
-    ligne) du bord — au plus la longueur d'une sortie rasante à MOUTH_MIN_ANGLE. Ailleurs (bouts fermés compris),
+    de l'axe dans la peau à un bout débouchant, tant que l'axe s'en écarte (`_mouth_end` : chaque bouche bornée
+    seule, par son angle de sortie ; une SBAR qui longe la peau n'a pas de bouche). Ailleurs (bouts fermés compris),
     la percée de la peau n'existe pas dans la CAO : TubeError (la validation ne la verrait pas, le trou étant
     retiré de sa référence). Tolérance d'une largeur de ligne au bord d'une bouche."""
     length = float(np.linalg.norm(b - a))
@@ -735,8 +751,6 @@ def _check_wall(
             lo = _mouth_end(a, d, t, 1.0, length, env_at, zr, need, cap)
         else:
             hi = _mouth_end(a, d, t, -1.0, length, env_at, zr, need, cap)
-    if lo >= hi:
-        return  # bouches jointives : tout le trou est bouche
     for z, env in zip(zs, envs):
         h = hole.layer(z)
         if h is None or env.is_empty:

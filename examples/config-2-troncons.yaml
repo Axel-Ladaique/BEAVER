@@ -1,4 +1,4 @@
 # Démo multi-plateaux : aile de 210 mm coupée en 2 tronçons de 105 mm (un plateau Bambu chacun).
-# Usage : uv run aerorib run aile.step -c examples/config-2-troncons.yaml --3mf --out out
+# Usage : uv run beaver run aile.step -c examples/config-2-troncons.yaml --3mf --out out
 segment:
   max_height: 120   # hauteur utile par tronçon, mm (défaut : hauteur du gabarit Bambu - marge)

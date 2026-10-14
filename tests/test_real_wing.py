@@ -3,11 +3,11 @@ from pathlib import Path
 import pytest
 from shapely.geometry import LineString, Polygon
 
-from aerorib.classify import classify
-from aerorib.config import load_config
-from aerorib.io_step import read_step
-from aerorib.pipeline import run_model
-from aerorib.slicing import slice_layers
+from beaver.classify import classify
+from beaver.config import load_config
+from beaver.io_step import read_step
+from beaver.pipeline import run_model
+from beaver.slicing import slice_layers
 
 FUSION = Path(__file__).parent / "fixtures" / "fusion_aile_4412_simple_sbar.step"
 FUSION_V2 = Path(__file__).parent / "fixtures" / "fusion_aile_4412_simple_sbar_v2.step"
@@ -92,9 +92,9 @@ def _bambu_wing(tmp_path, overrides):
     import zipfile
     import xml.etree.ElementTree as ET
 
-    from aerorib.bambu import read_template
-    from aerorib.config import resolve_template
-    from aerorib.export import export_results
+    from beaver.bambu import read_template
+    from beaver.config import resolve_template
+    from beaver.export import export_results
 
     cfg = load_config(overrides=overrides)
     run = run_model(classify(read_step(FUSION_V2), cfg), cfg)

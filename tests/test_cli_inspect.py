@@ -3,8 +3,8 @@ from pathlib import Path
 from build123d import Box, Cylinder, Location
 from typer.testing import CliRunner
 
-from aerorib.cli import app
-from aerorib.io_step import NamedBody, write_step
+from beaver.cli import app
+from beaver.io_step import NamedBody, write_step
 
 runner = CliRunner()
 
@@ -21,8 +21,8 @@ def test_inspect_lists_roles_and_spar(tmp_path: Path):
     )
     r = runner.invoke(app, ["inspect", str(f)])
     assert r.exit_code == 0, r.output
-    assert "skin    AERORIB/SKIN_wing" in r.output
-    assert "spar    AERORIB/SPAR_main" in r.output
+    assert "skin    BEAVER/SKIN_wing" in r.output
+    assert "spar    BEAVER/SPAR_main" in r.output
     assert "Ø 14.0 mm · axe (0, 0, 1) · longueur 200.0 mm" in r.output
 
 
@@ -36,8 +36,8 @@ def test_inspect_uses_config_roles(tmp_path: Path):
     cfg.write_text("roles: {Body2: spar}\n", encoding="utf-8")
     r = runner.invoke(app, ["inspect", str(f), "-c", str(cfg)])
     assert r.exit_code == 0, r.output
-    assert "spar    AERORIB/Body2" in r.output
-    assert "skin    AERORIB/Body1" in r.output
+    assert "spar    BEAVER/Body2" in r.output
+    assert "skin    BEAVER/Body1" in r.output
 
 
 def test_inspect_no_skin_fails(tmp_path: Path):
@@ -63,8 +63,8 @@ def test_inspect_shows_servo_and_gaine(tmp_path: Path):
     )
     r = runner.invoke(app, ["inspect", str(f)])
     assert r.exit_code == 0, r.output
-    assert "servo   AERORIB/SERVO_1" in r.output
+    assert "servo   BEAVER/SERVO_1" in r.output
     assert "boîte 32.0 × 20.0 × 46.5 mm" in r.output
-    assert "gaine   AERORIB/SBAR_CABLES" in r.output
+    assert "gaine   BEAVER/SBAR_CABLES" in r.output
     assert "marqueur de gaine 'CABLE'" in r.output
-    assert "spar    AERORIB/SPAR_main" in r.output
+    assert "spar    BEAVER/SPAR_main" in r.output

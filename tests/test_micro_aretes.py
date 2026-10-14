@@ -6,13 +6,13 @@ import numpy as np
 from OCP.BRep import BRep_Tool
 from OCP.TopLoc import TopLoc_Location
 
-from aerorib.bambu import read_template
-from aerorib.classify import classify
-from aerorib.config import load_config
-from aerorib.export import export_results
-from aerorib.features.ribs import _MIN_VERTEX_GAP, _end_vertices, _merge_close, _shrink_off
-from aerorib.pipeline import run_model
-from aerorib.testing.synthetic import wing_x_bodies
+from beaver.bambu import read_template
+from beaver.classify import classify
+from beaver.config import load_config
+from beaver.export import export_results
+from beaver.features.ribs import _MIN_VERTEX_GAP, _end_vertices, _merge_close, _shrink_off
+from beaver.pipeline import run_model
+from beaver.testing.synthetic import wing_x_bodies
 
 TEMPLATE = Path(__file__).parent / "fixtures" / "bambu_p1s_pla_aero.3mf"
 

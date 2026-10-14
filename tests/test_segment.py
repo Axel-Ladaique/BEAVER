@@ -3,9 +3,9 @@ import math
 import pytest
 from build123d import Align, Box, Pos
 
-from aerorib.segment import SegmentError, plan_cuts, split_part
+from beaver.segment import SegmentError, plan_cuts, split_part
 from build123d import Plane
-from aerorib.testing.synthetic import ribbed_wing
+from beaver.testing.synthetic import ribbed_wing
 
 
 def test_plan_cuts_auto():

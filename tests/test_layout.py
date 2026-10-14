@@ -9,14 +9,14 @@ import pytest
 import trimesh
 from shapely.geometry import box
 
-from aerorib import pipeline
-from aerorib.bambu import plate_origin, read_template, write_project
-from aerorib.classify import classify
-from aerorib.config import load_config
-from aerorib.export import export_results
-from aerorib.layout import fit_on_bed, format_rotations
-from aerorib.pipeline import run_model
-from aerorib.testing.synthetic import wing_x_bodies
+from beaver import pipeline
+from beaver.bambu import plate_origin, read_template, write_project
+from beaver.classify import classify
+from beaver.config import load_config
+from beaver.export import export_results
+from beaver.layout import fit_on_bed, format_rotations
+from beaver.pipeline import run_model
+from beaver.testing.synthetic import wing_x_bodies
 
 NS = {"c": "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"}
 FIXTURE = Path(__file__).parent / "fixtures" / "bambu_p1s_pla_aero.3mf"

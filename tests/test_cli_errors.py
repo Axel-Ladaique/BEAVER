@@ -6,8 +6,8 @@ import pytest
 from build123d import Box
 from typer.testing import CliRunner
 
-from aerorib.cli import app
-from aerorib.io_step import NamedBody, write_step
+from beaver.cli import app
+from beaver.io_step import NamedBody, write_step
 
 runner = CliRunner()
 
@@ -65,7 +65,7 @@ def test_check_directory(tmp_path: Path):
 def test_stdout_utf8_when_piped(tmp_path: Path, step: Path):
     """Sous Windows, stdout redirigé est en cp1252 : on force UTF-8 (✔ doit sortir)."""
     r = subprocess.run(
-        [sys.executable, "-m", "aerorib", "check", str(step)],
+        [sys.executable, "-m", "beaver", "check", str(step)],
         capture_output=True,
         env={**__import__("os").environ, "PYTHONIOENCODING": "cp1252"},
     )

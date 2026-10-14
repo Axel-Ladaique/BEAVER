@@ -7,13 +7,13 @@ import pytest
 import trimesh
 from fastapi.testclient import TestClient
 
-from aerorib import preview
-from aerorib.gui.server import create_app
-from aerorib.io_step import write_step
-from aerorib.testing.synthetic import wing_x_bodies
+from beaver import preview
+from beaver.gui.server import create_app
+from beaver.io_step import write_step
+from beaver.testing.synthetic import wing_x_bodies
 
 TOKEN = "jeton-test"
-H = {"X-AeroRib-Token": TOKEN}
+H = {"X-Beaver-Token": TOKEN}
 CFG = {
     "material_settings": {"layer_height": 1.0},
     "rib_layers": [{"spacing": 20}],
@@ -230,8 +230,8 @@ def _variante(i):
 
 def test_jobs_bornes_et_annulation(client, tmp_path, monkeypatch):
     import threading
-    from aerorib.gui.apercu import Apercu
-    from aerorib.gui.projects import ProjectStore
+    from beaver.gui.apercu import Apercu
+    from beaver.gui.projects import ProjectStore
 
     api = Apercu(ProjectStore(tmp_path / "projets"))
     gate = threading.Event()

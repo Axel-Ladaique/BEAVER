@@ -3,8 +3,8 @@ import pytest
 from build123d import Cylinder, Location
 from shapely.geometry import Polygon, box
 
-from aerorib.midsurface import MidSurface, camber_offset, mid_line
-from aerorib.testing.synthetic import naca4, naca_wing
+from beaver.midsurface import MidSurface, camber_offset, mid_line
+from beaver.testing.synthetic import naca4, naca_wing
 
 
 def test_mid_line_on_box():

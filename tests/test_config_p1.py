@@ -1,6 +1,6 @@
 import pytest
 
-from aerorib.config import BoreSettings, ConfigError, OrientationAxis, RibLayer, load_config
+from beaver.config import BoreSettings, ConfigError, OrientationAxis, RibLayer, load_config
 
 
 def test_p1_defaults():

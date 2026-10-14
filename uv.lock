@@ -3,55 +3,6 @@ revision = 5
 requires-python = ">=3.12"
 
 [[package]]
-name = "aerorib"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "build123d" },
-    { name = "fastapi" },
-    { name = "networkx" },
-    { name = "numpy" },
-    { name = "pydantic" },
-    { name = "python-multipart" },
-    { name = "pyyaml" },
-    { name = "rtree" },
-    { name = "scipy" },
-    { name = "shapely" },
-    { name = "trimesh" },
-    { name = "typer" },
-    { name = "uvicorn" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "httpx2" },
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "build123d", specifier = ">=0.13" },
-    { name = "fastapi", specifier = ">=0.143.0" },
-    { name = "networkx", specifier = ">=3.0" },
-    { name = "numpy", specifier = ">=1.26" },
-    { name = "pydantic", specifier = ">=2.6" },
-    { name = "python-multipart", specifier = ">=0.0.32" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "rtree", specifier = ">=1.0" },
-    { name = "scipy", specifier = ">=1.11" },
-    { name = "shapely", specifier = ">=2.0" },
-    { name = "trimesh", specifier = ">=4.0" },
-    { name = "typer", specifier = ">=0.12" },
-    { name = "uvicorn", specifier = ">=0.54.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "httpx2", specifier = ">=2.13.1" },
-    { name = "pytest", specifier = ">=8.0" },
-]
-
-[[package]]
 name = "annotated-doc"
 version = "0.0.5"
 source = { registry = "https://pypi.org/simple" }
@@ -111,6 +62,55 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/19/28/940946d9cc9f1489c3d3f0c6a8f2acaf2a1240ba1cf24df69ac385f9c0d7/bd_materials-0.2.4.tar.gz", hash = "sha256:daea82953c18cef04be9f8519c75518d230df1b78457f4a92a7da8725e533bb8", size = 90450, upload-time = "2026-07-30T12:20:12.414Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d3/fb/ea1f307dfcecb7a5e842d48031086dac70633fe61de0c0fb53ee6c8d7d35/bd_materials-0.2.4-py3-none-any.whl", hash = "sha256:27a43ba75e4eb115c03b0a3ce188ee8482228d019965d2e7d892ff9c0ad38742", size = 74803, upload-time = "2026-07-30T12:20:11.327Z" },
+]
+
+[[package]]
+name = "beaver"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "build123d" },
+    { name = "fastapi" },
+    { name = "networkx" },
+    { name = "numpy" },
+    { name = "pydantic" },
+    { name = "python-multipart" },
+    { name = "pyyaml" },
+    { name = "rtree" },
+    { name = "scipy" },
+    { name = "shapely" },
+    { name = "trimesh" },
+    { name = "typer" },
+    { name = "uvicorn" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "httpx2" },
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "build123d", specifier = ">=0.13" },
+    { name = "fastapi", specifier = ">=0.143.0" },
+    { name = "networkx", specifier = ">=3.0" },
+    { name = "numpy", specifier = ">=1.26" },
+    { name = "pydantic", specifier = ">=2.6" },
+    { name = "python-multipart", specifier = ">=0.0.32" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rtree", specifier = ">=1.0" },
+    { name = "scipy", specifier = ">=1.11" },
+    { name = "shapely", specifier = ">=2.0" },
+    { name = "trimesh", specifier = ">=4.0" },
+    { name = "typer", specifier = ">=0.12" },
+    { name = "uvicorn", specifier = ">=0.54.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "httpx2", specifier = ">=2.13.1" },
+    { name = "pytest", specifier = ">=8.0" },
 ]
 
 [[package]]

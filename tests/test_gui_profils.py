@@ -6,11 +6,11 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from aerorib.gui.server import create_app
-from aerorib.material_profiles import embedded_dir
+from beaver.gui.server import create_app
+from beaver.material_profiles import embedded_dir
 
 TOKEN = "jeton-test"
-H = {"X-AeroRib-Token": TOKEN}
+H = {"X-Beaver-Token": TOKEN}
 
 
 @pytest.fixture
@@ -21,7 +21,7 @@ def udir(tmp_path):
 @pytest.fixture
 def client(tmp_path, udir, monkeypatch):
     udir.mkdir()
-    monkeypatch.setenv("AERORIB_PROFILES", str(udir))  # le cœur lit le même dossier que l'API
+    monkeypatch.setenv("BEAVER_PROFILES", str(udir))  # le cœur lit le même dossier que l'API
     monkeypatch.chdir(tmp_path)
     with TestClient(create_app(tmp_path / "racine", TOKEN, profiles_dir=udir), base_url="http://127.0.0.1") as c:
         yield c
@@ -225,7 +225,7 @@ def test_ecriture_jamais_dans_le_paquet(client):
 def test_dossier_par_defaut_env(tmp_path, monkeypatch):
     d = tmp_path / "env_profils"
     d.mkdir()
-    monkeypatch.setenv("AERORIB_PROFILES", str(d))
+    monkeypatch.setenv("BEAVER_PROFILES", str(d))
     with TestClient(create_app(tmp_path / "r", TOKEN), base_url="http://127.0.0.1") as c:
         v = c.get("/api/profils/pla_aero", headers=H).json()["valeurs"]
         v["slit_width"] = 0.13
@@ -234,7 +234,7 @@ def test_dossier_par_defaut_env(tmp_path, monkeypatch):
 
 
 def test_dossier_par_defaut_cwd(tmp_path, monkeypatch):
-    monkeypatch.delenv("AERORIB_PROFILES", raising=False)
+    monkeypatch.delenv("BEAVER_PROFILES", raising=False)
     monkeypatch.chdir(tmp_path)
     with TestClient(create_app(tmp_path / "r", TOKEN), base_url="http://127.0.0.1") as c:
         c.post("/api/profils/asa_aero/copier", headers=H)
@@ -316,7 +316,7 @@ def test_entiers_equivalent_aux_flottants(client, udir):
 
 
 def test_memes_couches_que_le_coeur(client, udir, tmp_path):
-    from aerorib.material_profiles import load_profile
+    from beaver.material_profiles import load_profile
 
     cwd_profiles = tmp_path / "profiles"
     cwd_profiles.mkdir()

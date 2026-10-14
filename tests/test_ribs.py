@@ -5,9 +5,9 @@ import pytest
 from build123d import Box, Location
 from shapely.geometry import LineString, Point
 
-from aerorib.config import RibLayer
-from aerorib.features.bores import Bore
-from aerorib.features.ribs import (
+from beaver.config import RibLayer
+from beaver.features.bores import Bore
+from beaver.features.ribs import (
     _MAX_BAND_VERTICES,
     bore_zones_2d,
     diamond_plates,
@@ -16,7 +16,7 @@ from aerorib.features.ribs import (
     steep_samples,
     wall_limits,
 )
-from aerorib.midsurface import MidSurface
+from beaver.midsurface import MidSurface
 
 SS = np.linspace(-5, 100, 40)
 YM = np.zeros_like(SS)

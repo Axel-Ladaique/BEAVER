@@ -3,9 +3,9 @@ import math
 import pytest
 from build123d import Box, Cylinder, Location
 
-from aerorib.classify import ClassifyError, classify, detect_spar
-from aerorib.config import load_config
-from aerorib.io_step import NamedBody
+from beaver.classify import ClassifyError, classify, detect_spar
+from beaver.config import load_config
+from beaver.io_step import NamedBody
 
 
 def nb(*path, solid=None):
@@ -93,7 +93,7 @@ def test_detect_spar_none_for_box():
 def test_fusion_fixture_roles_and_spar():
     from pathlib import Path
 
-    from aerorib.io_step import read_step
+    from beaver.io_step import read_step
 
     fixture = Path(__file__).parent / "fixtures" / "fusion_aile_4412_simple_sbar.step"
     m = classify(read_step(fixture), load_config())

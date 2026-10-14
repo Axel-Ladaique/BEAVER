@@ -1,4 +1,4 @@
-"""Aperçu rapide sans booléens (aerorib.preview) comparé à la génération réelle sur l'aile synthétique."""
+"""Aperçu rapide sans booléens (beaver.preview) comparé à la génération réelle sur l'aile synthétique."""
 
 import io
 import json
@@ -11,14 +11,14 @@ import pytest
 import trimesh
 from shapely.ops import unary_union
 
-from aerorib import pipeline, preview
-from aerorib.config import load_config
-from aerorib.features import ribs
-from aerorib.io_step import write_step
-from aerorib.pipeline import generate_skin
-from aerorib.slicing import slice_layers
-from aerorib.testing.synthetic import wing_x_bodies
-from aerorib.validate import validate
+from beaver import pipeline, preview
+from beaver.config import load_config
+from beaver.features import ribs
+from beaver.io_step import write_step
+from beaver.pipeline import generate_skin
+from beaver.slicing import slice_layers
+from beaver.testing.synthetic import wing_x_bodies
+from beaver.validate import validate
 
 FIXTURE = Path(__file__).parent / "fixtures" / "bambu_p1s_pla_aero.3mf"
 Z = 40.5  # mi-hauteur, au centre d'une couche de 1 mm

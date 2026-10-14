@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from aerorib.config import Config, ConfigError, load_config
+from beaver.config import Config, ConfigError, load_config
 
 
 def test_defaults():

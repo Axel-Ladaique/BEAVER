@@ -6,12 +6,12 @@ import numpy as np
 import pytest
 from shapely.geometry import box
 
-from aerorib import pipeline
-from aerorib.config import load_config
-from aerorib.layout import fit_on_bed
-from aerorib.segment import MIN_SEGMENT, SegmentError, plan_pieces
-from aerorib.slicing import section_sampler
-from aerorib.testing.synthetic import swept_wing
+from beaver import pipeline
+from beaver.config import load_config
+from beaver.layout import fit_on_bed
+from beaver.segment import MIN_SEGMENT, SegmentError, plan_pieces
+from beaver.slicing import section_sampler
+from beaver.testing.synthetic import swept_wing
 
 FIXTURE = Path(__file__).parent / "fixtures" / "bambu_p1s_pla_aero.3mf"  # plateau 256 × 256, hauteur 250
 BED = (256.0, 256.0)
@@ -169,8 +169,8 @@ def test_non_fitting_placement_is_consistent_with_zero_angle():
 
 
 def test_preview_cuts_match_generation(tmp_path):
-    from aerorib import preview
-    from aerorib.io_step import NamedBody, write_step
+    from beaver import preview
+    from beaver.io_step import NamedBody, write_step
 
     step = write_step(tmp_path / "fleche.step", [NamedBody(("Aile_fleche",), swept_wing(chord=60, span=200, sweep_deg=60))])
     cfg = load_config(overrides={"bambu": {"template": str(FIXTURE)}, "orientation": {"axis": [0, 0, 1]}})
@@ -186,7 +186,7 @@ def test_preview_cuts_match_generation(tmp_path):
 
 
 def _never_fits(monkeypatch):
-    from aerorib.layout import Placement
+    from beaver.layout import Placement
 
     monkeypatch.setattr(pipeline, "fit_on_bed", lambda fp, bed, margin: Placement(30.0, False, -40.0, (300.0, 280.0)))
 
@@ -207,9 +207,9 @@ def test_piece_too_big_in_auto_mode_is_an_error(monkeypatch):
 
 
 def test_run_with_a_piece_too_big_is_not_printable(monkeypatch):
-    from aerorib.classify import classify
-    from aerorib.report import format_text, piece_rows
-    from aerorib.testing.synthetic import wide_wing_bodies
+    from beaver.classify import classify
+    from beaver.report import format_text, piece_rows
+    from beaver.testing.synthetic import wide_wing_bodies
 
     cfg = load_config(overrides={"bambu": {"template": str(FIXTURE)}, "material_settings": {"layer_height": 1.0},
                                  "rib_layers": [{"spacing": 500, "phase": 250}]})  # sans nervure

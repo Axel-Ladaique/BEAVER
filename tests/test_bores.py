@@ -1,11 +1,11 @@
 import pytest
 from build123d import Align, Box, Cylinder, GeomType, Location, fillet
 
-from aerorib.config import load_config
-from aerorib.midsurface import MidSurface
+from beaver.config import load_config
+from beaver.midsurface import MidSurface
 import numpy as np
 
-from aerorib.features.bores import (
+from beaver.features.bores import (
     Bore,
     BoreError,
     anchor_tools,

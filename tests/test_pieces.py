@@ -4,13 +4,13 @@ import math
 
 import pytest
 
-from aerorib.classify import classify
-from aerorib.config import load_config
-from aerorib.features.ribs import diamond_profiles, plate_lines
-from aerorib.midsurface import MidSurface
-from aerorib.orient import orient
-from aerorib.pipeline import rib_options, run_model, skins_anchor
-from aerorib.testing.synthetic import split_wing_bodies
+from beaver.classify import classify
+from beaver.config import load_config
+from beaver.features.ribs import diamond_profiles, plate_lines
+from beaver.midsurface import MidSurface
+from beaver.orient import orient
+from beaver.pipeline import rib_options, run_model, skins_anchor
+from beaver.testing.synthetic import split_wing_bodies
 
 FAST = load_config(overrides={"material_settings": {"layer_height": 1.0}, "rib_layers": [{"spacing": 20}]})
 JOINT_Z = 35.0  # pas un multiple de l'espacement : sans calage commun, les plans des deux corps seraient décalés
@@ -128,8 +128,8 @@ def test_spar_across_a_spanwise_joint_is_held_in_both_bodies(run_z):
     from shapely.geometry import Point
     from shapely.ops import unary_union
 
-    from aerorib.features.bores import bore_extent
-    from aerorib.slicing import slice_layers
+    from beaver.features.bores import bore_extent
+    from beaver.slicing import slice_layers
 
     lo, hi = (next(x for x in b.bores if x.cut_hole) for b in run_z.bodies)
     assert bore_extent(lo, 0.0, JOINT_Z)[1] > JOINT_Z and bore_extent(hi, JOINT_Z, 80.0)[0] < JOINT_Z
@@ -150,7 +150,7 @@ def test_split_in_chord_gives_one_printable_piece_per_body():
 
 def _no_plates(monkeypatch):
     """Génération rapide (sans plaque) ; renvoie les ancres reçues par `diamond_plates`."""
-    from aerorib import pipeline
+    from beaver import pipeline
 
     seen = []
 
@@ -190,8 +190,8 @@ def test_body_still_too_tall_is_cut_again_with_a_notice(monkeypatch):
 def test_servo_bay_goes_to_the_body_it_crosses(monkeypatch):
     from build123d import Box, Location
 
-    from aerorib.io_step import NamedBody
-    from aerorib.testing.synthetic import SERVO_BOXES
+    from beaver.io_step import NamedBody
+    from beaver.testing.synthetic import SERVO_BOXES
 
     _no_plates(monkeypatch)
     x0, x1, y0, y1, z0, z1 = SERVO_BOXES["extrados"]  # z de 40 à 75 : dans le corps haut seulement
@@ -208,8 +208,8 @@ def test_export_of_several_bodies(run_z, tmp_path):
     import zipfile
     from pathlib import Path
 
-    from aerorib.bambu import read_template
-    from aerorib.export import export_results
+    from beaver.bambu import read_template
+    from beaver.export import export_results
 
     template = read_template(Path(__file__).parent / "fixtures" / "bambu_p1s_pla_aero.3mf")
     paths = export_results(run_z, tmp_path, "aile", ["step", "stl", "3mf"], template=template)
@@ -230,14 +230,14 @@ def test_export_of_several_bodies(run_z, tmp_path):
 
 
 def _prep(tmp_path, bodies):
-    from aerorib import preview
-    from aerorib.io_step import write_step
+    from beaver import preview
+    from beaver.io_step import write_step
 
     return preview.prepare(write_step(tmp_path / "aile.step", bodies), FAST)
 
 
 def test_preview_of_several_bodies_matches_generation(run_z, tmp_path):
-    from aerorib import preview
+    from beaver import preview
 
     prep = _prep(tmp_path, split_wing_bodies("z", at=JOINT_Z))
     assert [p.name for p in prep.parts] == ["WING_1", "WING_2"]
@@ -265,7 +265,7 @@ def test_preview_of_several_bodies_matches_generation(run_z, tmp_path):
 
 
 def test_preview_section_shows_every_body_at_that_height(tmp_path):
-    from aerorib import preview
+    from beaver import preview
 
     prep = _prep(tmp_path, split_wing_bodies("chord"))
     plates = preview.plates_2d(prep, FAST)
@@ -277,9 +277,9 @@ def test_preview_section_shows_every_body_at_that_height(tmp_path):
 
 
 def test_spar_on_a_chord_joint_is_refused(tmp_path):
-    from aerorib import preview
-    from aerorib.io_step import write_step
-    from aerorib.pipeline import PipelineError
+    from beaver import preview
+    from beaver.io_step import write_step
+    from beaver.pipeline import PipelineError
 
     bodies = split_wing_bodies("chord", at=30, spar_x=30)
     msg = r"SBAR_8 : sur la jonction entre WING_1 et WING_2 .* déplacer le longeron ou la coupe"
@@ -292,7 +292,7 @@ def test_spar_on_a_chord_joint_is_refused(tmp_path):
 def test_gap_between_chord_bodies_warns_about_orientation():
     from build123d import Location
 
-    from aerorib.io_step import NamedBody
+    from beaver.io_step import NamedBody
 
     one, two, spar = split_wing_bodies("chord")
     _, o, _ = _oriented([one, two, spar])

@@ -1,5 +1,5 @@
-# Exemple de configuration AeroRib — les réglages géométriques sont ceux du profil pla_aero (commentés ci-dessous)
-# (src/aerorib/profiles/ ; `aerorib profils` les liste, `aerorib profils --copier pla_aero` pour les éditer).
+# Exemple de configuration BEAVER — les réglages géométriques sont ceux du profil pla_aero (commentés ci-dessous)
+# (src/beaver/profiles/ ; `beaver profils` les liste, `beaver profils --copier pla_aero` pour les éditer).
 material: pla_aero          # pla_aero | asa_aero
 printer: p1s
 orientation: auto           # auto (axe du 1er longeron) ou {axis: [1, 0, 0]}

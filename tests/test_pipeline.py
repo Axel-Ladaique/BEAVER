@@ -5,13 +5,13 @@ from build123d import Cylinder, Location
 from shapely.geometry import LineString, Point, Polygon, box
 from shapely.ops import unary_union
 
-from aerorib import pipeline
-from aerorib.classify import classify
-from aerorib.config import load_config
-from aerorib.io_step import NamedBody
-from aerorib.pipeline import PipelineError, generate_skin, run_model, spar_obstruction
-from aerorib.slicing import slice_layers
-from aerorib.testing.synthetic import naca_wing, wing_x_bodies
+from beaver import pipeline
+from beaver.classify import classify
+from beaver.config import load_config
+from beaver.io_step import NamedBody
+from beaver.pipeline import PipelineError, generate_skin, run_model, spar_obstruction
+from beaver.slicing import slice_layers
+from beaver.testing.synthetic import naca_wing, wing_x_bodies
 
 FAST = load_config(overrides={"material_settings": {"layer_height": 1.0}, "rib_layers": [{"spacing": 20}]})
 FAST_LINK = load_config(
@@ -281,7 +281,7 @@ def test_fill_refused_for_tilted_passage(no_ribs):
 
 
 def test_passages_searched_once(no_ribs, monkeypatch):
-    from aerorib.features import bores as bores_mod
+    from beaver.features import bores as bores_mod
 
     calls = []
     real = bores_mod.find_passages
@@ -357,7 +357,7 @@ def test_fill_refused_with_thin_positive_wall_keeps_wall_wording(no_ribs, monkey
 
 def test_partial_layer_skips_plates_of_deeper_layers(monkeypatch):
     # phase 0 : une nervure de peau sur trois tombe sur une principale (contenue dedans) → pas recoupée
-    from aerorib.features import ribs
+    from beaver.features import ribs
 
     seen = {}
 
@@ -379,7 +379,7 @@ def test_partial_layer_skips_plates_of_deeper_layers(monkeypatch):
 def test_main_solid_retire_les_eclats_negligeables():
     from build123d import Box, Compound, Pos
 
-    from aerorib.pipeline import main_solid
+    from beaver.pipeline import main_solid
 
     big = Box(10, 10, 10).solid()
     sliver = (Pos(50, 0, 0) * Box(0.05, 1.0, 0.1)).solid()
@@ -391,7 +391,7 @@ def test_main_solid_retire_les_eclats_negligeables():
 def test_main_solid_refuse_deux_vrais_morceaux():
     from build123d import Box, Compound, Pos
 
-    from aerorib.pipeline import PipelineError, main_solid
+    from beaver.pipeline import PipelineError, main_solid
 
     a = Box(10, 10, 10).solid()
     b = (Pos(50, 0, 0) * Box(10, 10, 10)).solid()
@@ -404,7 +404,7 @@ def test_walls_removing_every_plate_are_reported(monkeypatch):
     # mais sans nervure) ; avertissement dans le résultat (CLI, résumé de la GUI)
     import numpy as np
 
-    from aerorib.features import ribs
+    from beaver.features import ribs
 
     monkeypatch.setattr(ribs, "steep_samples", lambda mid, x, z, **k: np.ones(len(x), dtype=bool))
     run = run_model(classify(wing_x_bodies(), FAST_LINK), FAST_LINK)

@@ -5,9 +5,9 @@ import numpy as np
 import pytest
 from build123d import Box, Compound, Cylinder, Location
 
-from aerorib.io_step import read_step
-from aerorib.slicing import layer_heights, slice_layers, to_mesh
-from aerorib.testing.synthetic import ribbed_wing
+from beaver.io_step import read_step
+from beaver.slicing import layer_heights, slice_layers, to_mesh
+from beaver.testing.synthetic import ribbed_wing
 
 
 def test_layer_heights():

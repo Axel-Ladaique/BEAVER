@@ -7,10 +7,10 @@ import numpy as np
 import pytest
 from shapely.geometry import LineString
 
-from aerorib import preview
-from aerorib.classify import classify
-from aerorib.config import load_config
-from aerorib.features.servo import (
+from beaver import preview
+from beaver.classify import classify
+from beaver.config import load_config
+from beaver.features.servo import (
     SKIN_MARGIN,
     ServoError,
     hole_meets_pocket,
@@ -18,13 +18,13 @@ from aerorib.features.servo import (
     pocket_zones_2d,
     servo_bays,
 )
-from aerorib.io_step import read_step, write_step
-from aerorib.midsurface import MidSurface
-from aerorib.orient import orient
-from aerorib.pipeline import PipelineError, run_model
-from aerorib.report import format_bays
-from aerorib.slicing import to_mesh
-from aerorib.testing.synthetic import servo_wing_bodies
+from beaver.io_step import read_step, write_step
+from beaver.midsurface import MidSurface
+from beaver.orient import orient
+from beaver.pipeline import PipelineError, run_model
+from beaver.report import format_bays
+from beaver.slicing import to_mesh
+from beaver.testing.synthetic import servo_wing_bodies
 
 FIXTURES = Path(__file__).parent / "fixtures"
 OVER = {"material_settings": {"layer_height": 1.0}, "rib_layers": [{"spacing": 20}], "passages": {"mode": "link"}}
@@ -280,7 +280,7 @@ def test_cable_entering_bay_is_printable(run_of):
     # le fond reste doublé hors de la bande de la gaine : fente sous le fond sur toute la corde sauf le pont
     from shapely.geometry import LineString
 
-    from aerorib.slicing import slice_layers
+    from beaver.slicing import slice_layers
 
     def floor_slit(z):
         (layer,) = slice_layers(body.result, [z], 0.02)
@@ -308,8 +308,8 @@ def test_preview_equals_generation_with_cable(run_of):
 
 
 def test_hole_at_box_edge_loses_a_branch_with_warning():
-    from aerorib.features.bores import Bore
-    from aerorib.features.servo import reinforce_warnings
+    from beaver.features.bores import Bore
+    from beaver.features.servo import reinforce_warnings
 
     cfg = load_config(overrides=OVER)
     (bay,), skin, mid = _bays(servo_wing_bodies("extrados"), cfg)
@@ -327,7 +327,7 @@ def test_cable_breaching_skin_elsewhere_is_still_reported():
     ailleurs le long de la gaine : ici une encoche de l'intrados près de l'emplanture, que le trou traverse."""
     from build123d import Box, Location
 
-    from aerorib.io_step import NamedBody
+    from beaver.io_step import NamedBody
 
     wing, servo, tube = servo_wing_bodies("extrados", cable=True)
     notch = Box(12, 9.5, 12).moved(Location((32, -5.25, 14)))  # intrados ramené à y = -0,5 (bas du trou : -1,15)
@@ -347,7 +347,7 @@ def test_servo_wing_is_printable(servo_run):
     (bay,) = body.bays
     assert bay.side == (1 if side == "extrados" else -1)
     # la poche est bien ouverte : à mi-baie, plus de matière dans la boîte
-    from aerorib.slicing import slice_layers
+    from beaver.slicing import slice_layers
 
     (layer,) = slice_layers(body.result, [(bay.z0 + bay.z1) / 2], cfg.validation.tessellation_tol)
     from shapely.geometry import box
@@ -363,7 +363,7 @@ def _opening_mouths(body, bay, cfg) -> int:
     from shapely.geometry import box
     from shapely.ops import unary_union
 
-    from aerorib.slicing import slice_layers
+    from beaver.slicing import slice_layers
 
     z = (bay.z0 + bay.z1) / 2
     (orig,), (res,) = (slice_layers(s, [z], cfg.validation.tessellation_tol) for s in (body.original, body.result))
@@ -386,7 +386,7 @@ def test_reinforcement_doubles_the_pocket_walls(run_of):
     # paroi supplémentaire parallèle à chaque paroi latérale : matière | fente | matière, puis la poche
     from shapely.geometry import Point
 
-    from aerorib.slicing import slice_layers
+    from beaver.slicing import slice_layers
 
     (layer,) = slice_layers(body.result, [(bay.z0 + bay.z1) / 2], cfg.validation.tessellation_tol)
     y = bay.y_floor + 1.0
@@ -503,8 +503,8 @@ def test_servo_fixture_end_to_end():
 def test_bridge_bands_snap_between_layers():
     """Bornes des tranches de ponts calées sur zmin + k·hauteur de couche (mi-chemin entre deux couches) : aucune
     couche ne tombe sur une borne, l'aperçu et la génération choisissent la même tranche (une seule par couche)."""
-    from aerorib.features.bores import Bore
-    from aerorib.slicing import layer_heights
+    from beaver.features.bores import Bore
+    from beaver.slicing import layer_heights
 
     lh = 0.3
     cfg = load_config(overrides={**OVER, "material_settings": {"layer_height": lh}})
@@ -524,7 +524,7 @@ def test_bridge_bands_snap_between_layers():
             k = (z - bay.zmin) / lh
             assert k == pytest.approx(round(k), abs=1e-6), z
     # étendue de la fente du trou arrondie vers l'extérieur : juste sous son bout, le pont contourne encore le trou
-    from aerorib.features.bores import bore_extent
+    from beaver.features.bores import bore_extent
 
     _, top = bore_extent(hole, bay.zmin, bay.zmax)
     assert 0.1 < (top - bay.zmin) / lh % 1 < 0.5  # le plus proche serait en dessous : le cas à couvrir
@@ -590,7 +590,7 @@ def test_section_draws_the_reinforcement_slit(run_of):
 
 
 def test_html_report_lists_bays_and_conduits(run_of, tmp_path):
-    from aerorib.export import export_results
+    from beaver.export import export_results
 
     _, run = run_of("gaine")
     (path,) = [p for p in export_results(run, tmp_path, "aile", []) if p.suffix == ".html"]
@@ -629,7 +629,7 @@ def _rib_gaps(step, cfg, zs):
     fente de renfort / la poche."""
     from shapely.ops import unary_union
 
-    from aerorib.features.servo import reinforce_section
+    from beaver.features.servo import reinforce_section
 
     prep = preview.prepare(step, cfg)
     plates = preview.plates_2d(prep, cfg)
@@ -662,7 +662,7 @@ def test_fixture_layers_by_the_cable_bridge_are_printable():
     fine »). Une nervure basse coupée par l'anneau de la gaine finissait en pointe oblique à ≈ 1 mm sous le bout
     de la branche en J (pont autour de la gaine) : l'érosion d'une demi-ligne (onglets) y séparait le contour.
     Les nervures gardent BRIDGE_STRIP autour des ponts."""
-    from aerorib.features.servo import BRIDGE_STRIP
+    from beaver.features.servo import BRIDGE_STRIP
 
     step = FIXTURES / "aile_4412_servo_extrados.step"
     for strip in (None, 0.6, 1.0):
@@ -688,7 +688,7 @@ def test_bridge_zones_are_bounded():
     étendue en x du pont ± BRIDGE_STRIP, sans déborder en x de la zone de la poche."""
     from dataclasses import replace
 
-    from aerorib.features.servo import BRIDGE_STRIP
+    from beaver.features.servo import BRIDGE_STRIP
 
     cfg = load_config(overrides=OVER)
     (bay,), skin, _ = _bays(servo_wing_bodies("extrados"), cfg)

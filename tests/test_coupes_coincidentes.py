@@ -9,13 +9,13 @@ import numpy as np
 import pytest
 from build123d import Cylinder, Location, Shape
 
-from aerorib.classify import classify
-from aerorib.config import BoreSettings, load_config
-from aerorib.io_step import NamedBody, read_step
-from aerorib.pipeline import critical_planes, rib_crossings, run_model
-from aerorib.segment import CUT_CLEARANCE, CutFailure, SegmentError, cut_chain, plan_pieces, split_part
-from aerorib.slicing import layer_heights
-from aerorib.testing.synthetic import naca_wing, ribbed_wing
+from beaver.classify import classify
+from beaver.config import BoreSettings, load_config
+from beaver.io_step import NamedBody, read_step
+from beaver.pipeline import critical_planes, rib_crossings, run_model
+from beaver.segment import CUT_CLEARANCE, CutFailure, SegmentError, cut_chain, plan_pieces, split_part
+from beaver.slicing import layer_heights
+from beaver.testing.synthetic import naca_wing, ribbed_wing
 
 FIXTURES = Path(__file__).parent / "fixtures"
 TEMPLATE = FIXTURES / "bambu_p1s_pla_aero.3mf"
@@ -56,7 +56,7 @@ def test_explicit_cut_moved_with_notice():
 
 
 def test_critical_planes_bore_ends():
-    from aerorib.features.bores import Bore
+    from beaver.features.bores import Bore
 
     b = Bore("SBAR", 30, 0, 4.2, 1.0, 1.0, 1, True, 0.0, 40.0, 0.15, 0.2)
     zs = critical_planes([b], [], [], 0.0, 80.0)

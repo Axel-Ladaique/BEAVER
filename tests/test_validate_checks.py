@@ -3,8 +3,8 @@ import multiprocessing
 import pytest
 from shapely.geometry import Point, Polygon, box
 
-from aerorib.slicing import Layer
-from aerorib.validate import (
+from beaver.slicing import Layer
+from beaver.validate import (
     check_connectivity,
     check_material_width,
     check_narrow_slits,
@@ -122,7 +122,7 @@ def test_material_width_reports_each_polygon_once():
 def _worker_daemon(q):
     import os
 
-    from aerorib.validate import PARALLEL_ENV, _check_layer, _run_checks
+    from beaver.validate import PARALLEL_ENV, _check_layer, _run_checks
 
     os.environ[PARALLEL_ENV] = "1"
     jobs = [(float(i), (BASE,), None, 0.4, 0.4, 2.0, 0.1) for i in range(4)]

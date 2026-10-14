@@ -3,10 +3,10 @@ from concurrent.futures.process import BrokenProcessPool
 
 import pytest
 
-from aerorib import validate as validate_mod
-from aerorib.config import load_config
-from aerorib.testing.synthetic import broken_wing, naca_wing, ribbed_wing
-from aerorib.validate import validate
+from beaver import validate as validate_mod
+from beaver.config import load_config
+from beaver.testing.synthetic import broken_wing, naca_wing, ribbed_wing
+from beaver.validate import validate
 
 ZS = [5.0, 50.0, 95.0]
 CFG = load_config()

@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from aerorib.gui.server import STATIC_DIR
+from beaver.gui.server import STATIC_DIR
 
 NODE = shutil.which("node")
 pytestmark = pytest.mark.skipif(NODE is None, reason="node absent : tests JS ignorés")

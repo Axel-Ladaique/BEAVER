@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from aerorib.cli import app
-from aerorib.io_step import write_step
-from aerorib.testing.synthetic import wing_x_bodies
+from beaver.cli import app
+from beaver.io_step import write_step
+from beaver.testing.synthetic import wing_x_bodies
 
 runner = CliRunner()
 FIXTURE = Path(__file__).parent / "fixtures" / "bambu_p1s_pla_aero.3mf"
@@ -53,7 +53,7 @@ def test_open_calls_popen_once(tmp_path, monkeypatch):
 
 
 def test_open_skipped_when_not_printable(tmp_path, monkeypatch):
-    from aerorib.pipeline import RunResult
+    from beaver.pipeline import RunResult
 
     calls = []
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: calls.append(a[0]))
@@ -97,7 +97,7 @@ def test_no_template_for_asa(tmp_path):
 # --- open_in_bambu : branches par plateforme (sans lancer de vrai processus) ---
 from types import SimpleNamespace  # noqa: E402
 
-from aerorib import bambu  # noqa: E402
+from beaver import bambu  # noqa: E402
 
 
 def _platform(monkeypatch, name):
@@ -172,7 +172,7 @@ def test_open_macos_app_or_default(tmp_path, monkeypatch, installed, expected):
 
 
 def test_export_bambu_error_is_clean(tmp_path, monkeypatch):
-    from aerorib import export
+    from beaver import export
 
     def boom(*a, **k):
         raise bambu.BambuError("projet impossible à écrire")

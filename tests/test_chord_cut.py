@@ -8,14 +8,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from aerorib import pipeline
-from aerorib.classify import classify
-from aerorib.config import load_config
-from aerorib.features.chord_cut import MAX_PIECES, Obstacle, bay_obstacles, plan_layout
-from aerorib.layout import fit_on_bed
-from aerorib.segment import MIN_SEGMENT, SegmentError, plan_pieces
-from aerorib.slicing import section_sampler
-from aerorib.testing.synthetic import swept_wing, wide_wing_bodies
+from beaver import pipeline
+from beaver.classify import classify
+from beaver.config import load_config
+from beaver.features.chord_cut import MAX_PIECES, Obstacle, bay_obstacles, plan_layout
+from beaver.layout import fit_on_bed
+from beaver.segment import MIN_SEGMENT, SegmentError, plan_pieces
+from beaver.slicing import section_sampler
+from beaver.testing.synthetic import swept_wing, wide_wing_bodies
 
 FIXTURE = Path(__file__).parent / "fixtures" / "bambu_p1s_pla_aero.3mf"  # plateau 256 × 256, hauteur 250
 P1S = (256.0, 256.0)
@@ -232,7 +232,7 @@ def test_segment_part_z_and_chord():
 
 
 def test_bay_obstacle_extent():
-    from aerorib.features.servo import ServoBay
+    from beaver.features.servo import ServoBay
 
     bay = ServoBay("SERVO_1", 1, 190.0, 215.0, 10.0, 45.0, 40.0, 75.0, 20.0, 5.0, 0.25, 50.0, 0.0, 120.0, 37.0,
                    rf_offset=1.0, rf_width=0.4)
@@ -282,8 +282,8 @@ def test_wide_wing_plane_off_the_spar(wide_run):
 
 @pytest.mark.slow
 def test_wide_wing_export(wide_run, tmp_path):
-    from aerorib.bambu import read_template
-    from aerorib.export import export_results
+    from beaver.bambu import read_template
+    from beaver.export import export_results
 
     _, run, _ = wide_run
     paths = export_results(run, tmp_path, "aile", ["step", "stl", "3mf"], template=read_template(FIXTURE))
@@ -319,7 +319,7 @@ def test_wide_wing_bay_in_the_way():
 def _face_layers(result):
     from shapely.geometry import box as sbox
 
-    from aerorib.validate import Layer, check_skin
+    from beaver.validate import Layer, check_skin
 
     orig = Layer(1.0, (sbox(0, -10, 100, 10),))  # face de coupe en x = 100
     exempt = (sbox(99.95, -1e5, 100.05, 1e5), 0.15)  # bande ±0,05 ; fente de nervure ≈ 0,15 mm en couche
@@ -351,7 +351,7 @@ def test_cut_face_notch_still_reported():
 def test_notched_chord_piece_fails_validation():
     from build123d import Box, Pos
 
-    from aerorib.validate import validate
+    from beaver.validate import validate
 
     wing = swept_wing(chord=400, span=40, code="4412")
     cfg = _cfg()
@@ -365,7 +365,7 @@ def test_notched_chord_piece_fails_validation():
 
 
 def test_failing_piece_fails_merged_report():
-    from aerorib.validate import Issue, Report
+    from beaver.validate import Issue, Report
 
     stats = {"layers": 120.0, "height_mm": 120.0, "path_length_m": 1.0, "mass_g": 2.0}
     good = Report((), stats)
@@ -383,7 +383,7 @@ def test_failing_piece_fails_merged_report():
 
 
 def test_merged_report_draws_at_most_max_failed_layers():
-    from aerorib.validate import MAX_FAILED_LAYERS, Issue, Report
+    from beaver.validate import MAX_FAILED_LAYERS, Issue, Report
 
     stats = {"layers": 120.0, "height_mm": 120.0, "path_length_m": 1.0, "mass_g": 2.0}
 
@@ -397,7 +397,7 @@ def test_merged_report_draws_at_most_max_failed_layers():
 
 
 def test_notice_names_the_bed_of_the_template():
-    from aerorib.features.chord_cut import plan_layout
+    from beaver.features.chord_cut import plan_layout
 
     wing = swept_wing(chord=400, span=60, code="4412")
     plan = _plan(wing, 60)
@@ -409,8 +409,8 @@ def test_notice_names_the_bed_of_the_template():
 
 
 def _wide_preview(tmp_path, cfg, bodies=None):
-    from aerorib import preview
-    from aerorib.io_step import write_step
+    from beaver import preview
+    from beaver.io_step import write_step
 
     prep = preview.prepare(write_step(tmp_path / "large.step", bodies or wide_wing_bodies()), cfg)
     plates = preview.plates_2d(prep, cfg)

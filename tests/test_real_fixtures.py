@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from aerorib.classify import classify
-from aerorib.config import load_config
-from aerorib.io_step import read_step
+from beaver.classify import classify
+from beaver.config import load_config
+from beaver.io_step import read_step
 
 FIXTURES = Path(__file__).parent / "fixtures"
 FILES = sorted(p for p in FIXTURES.iterdir() if p.suffix.lower() in {".step", ".stp"})

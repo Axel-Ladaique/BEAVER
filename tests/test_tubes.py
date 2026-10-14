@@ -8,15 +8,15 @@ import numpy as np
 import pytest
 from shapely.geometry import Point
 
-from aerorib import pipeline
-from aerorib.classify import classify
-from aerorib.config import load_config
-from aerorib.features.tubes import Prism, Region, band, beyond, is_transversal, teardrop
-from aerorib.io_step import NamedBody
+from beaver import pipeline
+from beaver.classify import classify
+from beaver.config import load_config
+from beaver.features.tubes import Prism, Region, band, beyond, is_transversal, teardrop
+from beaver.io_step import NamedBody
 from build123d import Location
-from aerorib.slicing import Layer, slice_layers, to_mesh
-from aerorib.testing.synthetic import cross_wing_bodies, naca4, rod, split_wing_bodies
-from aerorib.validate import check_connectivity, slicer_closing
+from beaver.slicing import Layer, slice_layers, to_mesh
+from beaver.testing.synthetic import cross_wing_bodies, naca4, rod, split_wing_bodies
+from beaver.validate import check_connectivity, slicer_closing
 
 FIXTURE = Path(__file__).parent / "fixtures" / "bambu_p1s_pla_aero.3mf"  # plateau 256 × 256
 FAST = load_config(overrides={"material_settings": {"layer_height": 1.0}, "rib_layers": [{"spacing": 20}]})
@@ -113,7 +113,7 @@ def test_transversal_detection_and_ambiguous_tilt():
 
 
 def test_longest_spar_gives_the_span_when_spars_are_not_parallel():
-    from aerorib.orient import choose_axis
+    from beaver.orient import choose_axis
 
     axis, source = choose_axis(classify(cross_wing_bodies((40, 3, 40), (70, 3, 40)), FAST), FAST)
     assert np.allclose(np.abs(axis), [0, 0, 1]) and "SBAR_8" in source
@@ -194,9 +194,9 @@ def test_both_ends_open_message_says_which_ends_to_close():
 def test_geometry_errors_in_tubes_are_translated(tmp_path, monkeypatch):
     from shapely.errors import GEOSException
 
-    from aerorib import preview
-    from aerorib.features import tubes
-    from aerorib.io_step import write_step
+    from beaver import preview
+    from beaver.features import tubes
+    from beaver.io_step import write_step
 
     def boom(*a, **k):
         raise GEOSException("TopologyException: side location conflict")
@@ -247,7 +247,7 @@ def test_sbar_across_a_cad_chord_joint_opens_on_each_body():
 
 
 def test_report_line():
-    from aerorib.report import format_bores
+    from beaver.report import format_bores
 
     class T:
         name, radius, tilt = "SBAR_T", 2.15, 90.0
@@ -305,8 +305,8 @@ def test_sbar_across_a_chord_cut_with_ribs():
 
 
 def test_preview_matches_generation(tmp_path):
-    from aerorib import preview
-    from aerorib.io_step import read_step, write_step
+    from beaver import preview
+    from beaver.io_step import read_step, write_step
 
     path = write_step(tmp_path / "t.step", cross_wing_bodies((40, CAMBER(55), 40), (70, CAMBER(55), 40), d=4))
     (b,) = _run(read_step(path)).bodies  # même fichier que l'aperçu
@@ -331,8 +331,8 @@ def test_preview_matches_generation(tmp_path):
 
 
 def test_preview_of_a_chord_cut_sbar(tmp_path):
-    from aerorib import preview
-    from aerorib.io_step import write_step
+    from beaver import preview
+    from beaver.io_step import write_step
 
     cfg, bodies = _wide([{"spacing": 500, "phase": 250}])
     prep = preview.prepare(write_step(tmp_path / "w.step", bodies), cfg)
@@ -341,8 +341,8 @@ def test_preview_of_a_chord_cut_sbar(tmp_path):
 
 
 def test_unsolvable_sbar_reported_in_preview(tmp_path):
-    from aerorib import preview
-    from aerorib.io_step import write_step
+    from beaver import preview
+    from beaver.io_step import write_step
 
     prep = preview.prepare(write_step(tmp_path / "b.step", _through()), AXIS_Z)
     with pytest.raises(preview.PreviewError, match="SBAR_T : à z = .* couper la couche en deux"):
@@ -373,8 +373,8 @@ def _ceiling_overhang_ok(prism, overhang: float, dz: float = 0.05) -> list[float
 
 @pytest.mark.parametrize("tilt", [45.0, 48.0])
 def test_closed_upper_end_ceiling_within_asa_overhang(tmp_path, tilt):
-    from aerorib import preview
-    from aerorib.io_step import write_step
+    from beaver import preview
+    from beaver.io_step import write_step
 
     asa = load_config(overrides={
         "material_settings": {"layer_height": 1.0, "max_overhang_deg": 40.0}, "rib_layers": [{"spacing": 20}],
@@ -398,7 +398,7 @@ def test_closed_upper_end_ceiling_within_asa_overhang(tmp_path, tilt):
 def test_ignored_settings_and_bay_crossing_warn():
     from types import SimpleNamespace
 
-    from aerorib.features.tubes import tube_warnings
+    from beaver.features.tubes import tube_warnings
 
     cfg = load_config(overrides={"spars": {"sbar_t": {"anchor": True, "slit_side": "bottom", "clearance": 0.2}}})
     t = SimpleNamespace(name="SBAR_T", start=(-5.0, 0.0, 60.0), end=(105.0, 0.0, 60.0), radius=2.2, sleeve=0.8)
@@ -411,8 +411,8 @@ def test_ignored_settings_and_bay_crossing_warn():
 
 
 def test_ignored_anchor_warns_in_preview_and_generation(tmp_path):
-    from aerorib import preview
-    from aerorib.io_step import write_step
+    from beaver import preview
+    from beaver.io_step import write_step
 
     cfg = load_config(overrides={
         "material_settings": {"layer_height": 1.0}, "rib_layers": [{"spacing": 20}], "spars": {"SBAR_T": {"anchor": True}},
@@ -427,8 +427,8 @@ def test_ignored_anchor_warns_in_preview_and_generation(tmp_path):
 
 
 def test_preview_section_is_split_into_the_chord_pieces(tmp_path):
-    from aerorib import preview
-    from aerorib.io_step import write_step
+    from beaver import preview
+    from beaver.io_step import write_step
 
     cfg, bodies = _wide([{"spacing": 500, "phase": 250}])
     prep = preview.prepare(write_step(tmp_path / "w.step", bodies), cfg)
@@ -452,8 +452,8 @@ def test_sbar_hugging_the_skin_is_refused(tmp_path):
     trou ouvre la peau sur toute sa longueur. La couche reste d'un seul tenant (l'analyse vase mode l'accepte, trou
     « débouchant ») et le trou est retiré de la référence de validation : la fente dans la peau serait livrée ✔.
     Refus clair (même cas qu'un longeron vertical près de la peau, déjà signalé)."""
-    from aerorib import preview
-    from aerorib.io_step import write_step
+    from beaver import preview
+    from beaver.io_step import write_step
 
     bodies = _slotted_bodies((10.0, 20.0 - 2.1, 40.0), (40.0, 20.0 - 2.1, 40.0))
     msg = (r"SBAR_T : trop près de la peau \(paroi < largeur de ligne 0\.42 mm\) à z = .* — l'éloigner de la peau "
@@ -539,7 +539,7 @@ def test_short_sbar_open_at_both_ends_gets_no_blanket_excuse(y, refused):
     tout le trou était excusé. Au milieu de l'épaisseur (y = 10), rien à redire."""
     from shapely.geometry import box
 
-    from aerorib.features.tubes import TubeError, _check_wall, _prism
+    from beaver.features.tubes import TubeError, _check_wall, _prism
 
     env = box(0.0, 0.0, 30.0, 20.0)
     zr = (0.0, 80.0)

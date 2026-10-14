@@ -3,23 +3,23 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from aerorib.cli import app
-from aerorib.config import ConfigError, load_config, resolve_template
+from beaver.cli import app
+from beaver.config import ConfigError, load_config, resolve_template
 
 runner = CliRunner()
 
 
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
-    """Ni ./profiles ni AERORIB_PROFILES de la machine ne doivent influencer les tests."""
+    """Ni ./profiles ni BEAVER_PROFILES de la machine ne doivent influencer les tests."""
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("AERORIB_PROFILES", raising=False)
+    monkeypatch.delenv("BEAVER_PROFILES", raising=False)
 
 
 def user_profile(tmp_path: Path, monkeypatch, name: str, text: str) -> Path:
     d = tmp_path / "profiles"
     d.mkdir(exist_ok=True)
-    monkeypatch.setenv("AERORIB_PROFILES", str(d))
+    monkeypatch.setenv("BEAVER_PROFILES", str(d))
     f = d / f"{name}.yaml"
     f.write_text(text, encoding="utf-8")
     return f
@@ -85,12 +85,12 @@ def test_env_wins_over_cwd(tmp_path, monkeypatch):
     other = tmp_path / "autre"
     other.mkdir()
     (other / "pla_aero.yaml").write_text("split: {gap: 0.95}\n", encoding="utf-8")
-    monkeypatch.setenv("AERORIB_PROFILES", str(other))
+    monkeypatch.setenv("BEAVER_PROFILES", str(other))
     assert load_config().split.gap == 0.95
 
 
 def test_env_dir_missing(tmp_path, monkeypatch):
-    monkeypatch.setenv("AERORIB_PROFILES", str(tmp_path / "nope"))
+    monkeypatch.setenv("BEAVER_PROFILES", str(tmp_path / "nope"))
     with pytest.raises(ConfigError, match="dossier de profils introuvable"):
         load_config()
     r = runner.invoke(app, ["profils"])

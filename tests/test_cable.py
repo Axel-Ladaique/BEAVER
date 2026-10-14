@@ -4,15 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from aerorib import preview
-from aerorib.classify import classify
-from aerorib.cli import format_bores
-from aerorib.config import load_config
-from aerorib.features.bores import spar_bores
-from aerorib.io_step import NamedBody, read_step, write_step
-from aerorib.orient import orient
-from aerorib.pipeline import run_model
-from aerorib.testing.synthetic import wing_x_bodies
+from beaver import preview
+from beaver.classify import classify
+from beaver.cli import format_bores
+from beaver.config import load_config
+from beaver.features.bores import spar_bores
+from beaver.io_step import NamedBody, read_step, write_step
+from beaver.orient import orient
+from beaver.pipeline import run_model
+from beaver.testing.synthetic import wing_x_bodies
 
 FIXTURES = Path(__file__).parent / "fixtures"
 OVER = {"material_settings": {"layer_height": 1.0}, "rib_layers": [{"spacing": 20}], "passages": {"mode": "link"}}
@@ -94,7 +94,7 @@ def test_cable_wing_validates_and_slit_reaches_skin():
 
 
 def test_real_servo_fixture_cable_is_light():
-    from aerorib.orient import orient
+    from beaver.orient import orient
 
     cfg = load_config()
     model = classify(read_step(FIXTURES / "aile_4412_servo_extrados.step"), cfg)

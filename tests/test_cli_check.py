@@ -2,9 +2,9 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from aerorib.cli import app
-from aerorib.io_step import NamedBody, write_step
-from aerorib.testing.synthetic import broken_wing, naca_wing, ribbed_wing
+from beaver.cli import app
+from beaver.io_step import NamedBody, write_step
+from beaver.testing.synthetic import broken_wing, naca_wing, ribbed_wing
 
 runner = CliRunner()
 

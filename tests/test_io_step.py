@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from build123d import Box, Compound, Cylinder, Location, export_step
 
-from aerorib.io_step import NamedBody, StepReadError, _brep_names, read_step, write_step
+from beaver.io_step import NamedBody, StepReadError, _brep_names, read_step, write_step
 
 
 def _spar():
@@ -17,7 +17,7 @@ def test_roundtrip_flat_assembly(tmp_path: Path):
         [NamedBody(("SKIN_wing",), skin), NamedBody(("SPAR_main",), _spar())],
     )
     bodies = read_step(out)
-    assert [b.path for b in bodies] == [("AERORIB", "SKIN_wing"), ("AERORIB", "SPAR_main")]
+    assert [b.path for b in bodies] == [("BEAVER", "SKIN_wing"), ("BEAVER", "SPAR_main")]
     assert [b.name for b in bodies] == ["SKIN_wing", "SPAR_main"]
     assert bodies[0].solid.volume == pytest.approx(100 * 20 * 200, rel=1e-6)
 
@@ -98,7 +98,7 @@ def test_roundtrip_identical_bodies_same_place(tmp_path: Path):
 
 
 def test_decode_step_string():
-    from aerorib.io_step import _decode_step_string as dec
+    from beaver.io_step import _decode_step_string as dec
 
     assert dec(r"Aile_l\X2\00E9\X0\g\X2\00E8\X0\re") == "Aile_légère"
     assert dec(r"\X2\00D8\X0\14") == "Ø14"
@@ -137,7 +137,7 @@ def test_roundtrip_accented_names(tmp_path: Path):
 
 
 def test_ambiguous_face_count_is_flagged():
-    from aerorib.io_step import _assign_brep_names
+    from beaver.io_step import _assign_brep_names
 
     found = [((), Box(1, 1, 1), True), ((), Box(2, 2, 2), True)]
     bodies = _assign_brep_names(found, [("A", 6), ("B", 6)])
@@ -147,7 +147,7 @@ def test_ambiguous_face_count_is_flagged():
 
 
 def test_unambiguous_match_has_no_note():
-    from aerorib.io_step import _assign_brep_names
+    from beaver.io_step import _assign_brep_names
 
     bodies = _assign_brep_names([((), Box(1, 1, 1), True)], [("A", 6), ("B", 9)])
     assert bodies[0].name == "A" and bodies[0].note == ""
@@ -156,7 +156,7 @@ def test_unambiguous_match_has_no_note():
 def test_inspect_shows_ambiguity_note(tmp_path: Path):
     from typer.testing import CliRunner
 
-    from aerorib.cli import app
+    from beaver.cli import app
 
     # deux boîtes de 6 faces écrites sans libellé : le nom est deviné
     root = Compound(children=[Box(1, 1, 1), Box(2, 2, 2).moved(Location((9, 0, 0)))])
@@ -179,7 +179,7 @@ SERVO_FIXTURE = Path(__file__).parent / "fixtures" / "aile_4412_servo_extrados.s
 
 
 def test_brep_signatures_from_text():
-    from aerorib.io_step import _brep_entries
+    from beaver.io_step import _brep_entries
 
     entries = {e.name: e for e in _brep_entries(SERVO_FIXTURE)}
     assert set(entries) == {"SBAR_14mm_1", "WING_1", "SBAR_2", "SERVO_1", "SBAR_CABLES_SERVO"}
@@ -193,7 +193,7 @@ def test_brep_signatures_from_text():
 
 
 def test_signature_resolves_same_face_count():
-    from aerorib.io_step import _assign_brep_names, _BrepEntry, solid_signature
+    from beaver.io_step import _assign_brep_names, _BrepEntry, solid_signature
 
     small, big = Cylinder(5, 10), Cylinder(6, 10).moved(Location((20, 0, 0)))
     found = [((), small, True), ((), big, True)]
@@ -207,7 +207,7 @@ def test_signature_resolves_same_face_count():
 
 
 def test_signature_unit_scaling_inch(tmp_path: Path):
-    from aerorib.io_step import _brep_entries
+    from beaver.io_step import _brep_entries
 
     src = SERVO_FIXTURE.read_text(encoding="utf-8")
     inch = src.replace(
@@ -222,8 +222,8 @@ def test_signature_unit_scaling_inch(tmp_path: Path):
 
 
 def test_servo_fixture_names_by_signature():
-    from aerorib.classify import classify
-    from aerorib.config import load_config
+    from beaver.classify import classify
+    from beaver.config import load_config
 
     bodies = read_step(SERVO_FIXTURE)
     assert all(b.note == "" for b in bodies), [b.note for b in bodies]

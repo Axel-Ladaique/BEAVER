@@ -4,14 +4,14 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from aerorib.gui import projects, server
-from aerorib.gui.projects import ProjectError, ProjectStore
-from aerorib.gui.server import create_app
-from aerorib.io_step import write_step
-from aerorib.testing.synthetic import wing_x_bodies
+from beaver.gui import projects, server
+from beaver.gui.projects import ProjectError, ProjectStore
+from beaver.gui.server import create_app
+from beaver.io_step import write_step
+from beaver.testing.synthetic import wing_x_bodies
 
 TOKEN = "jeton-test"
-H = {"X-AeroRib-Token": TOKEN}
+H = {"X-Beaver-Token": TOKEN}
 
 
 @pytest.fixture(scope="module")

@@ -1,8 +1,8 @@
 """Générations en arrière-plan (processus séparé) et historique des essais.
 
 Les travaux lents ou en échec sont simulés par des variables d'environnement lues dans le processus fils
-(le monkeypatch ne franchit pas la frontière spawn) : AERORIB_TEST_DELAI (secondes d'attente avant le calcul)
-et AERORIB_TEST_PLANTAGE (le fils meurt sans message final).
+(le monkeypatch ne franchit pas la frontière spawn) : BEAVER_TEST_DELAI (secondes d'attente avant le calcul)
+et BEAVER_TEST_PLANTAGE (le fils meurt sans message final).
 """
 
 import json
@@ -19,13 +19,13 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from aerorib.gui import travaux
-from aerorib.gui.server import create_app
-from aerorib.io_step import write_step
-from aerorib.testing.synthetic import wing_x_bodies
+from beaver.gui import travaux
+from beaver.gui.server import create_app
+from beaver.io_step import write_step
+from beaver.testing.synthetic import wing_x_bodies
 
 TOKEN = "jeton-test"
-H = {"X-AeroRib-Token": TOKEN}
+H = {"X-Beaver-Token": TOKEN}
 FAST = "material_settings: {layer_height: 1.0}\nrib_layers: [{spacing: 20}]\npassages: {mode: link}\n"
 FAST_ASA = "material: asa_aero\nbambu: {template: null}\nmaterial_settings: {layer_height: 1.0}\nrib_layers: [{spacing: 25}]\npassages: {mode: link}\n"
 
@@ -188,7 +188,7 @@ def test_generation_complete(genere):
 
 def test_generation_avec_pool_de_validation(client, monkeypatch):
     """Seuil abaissé à 1 couche : la validation ouvre un pool depuis le fils de génération."""
-    monkeypatch.setenv("AERORIB_PARALLEL_MIN_LAYERS", "1")
+    monkeypatch.setenv("BEAVER_PARALLEL_MIN_LAYERS", "1")
     r = client.post("/api/projets/aile1/generations", headers=H)
     assert r.status_code == 202, r.text
     d = _attendre_fin(client, r.json()["id"])
@@ -200,8 +200,8 @@ def test_generation_avec_pool_de_validation(client, monkeypatch):
 @pytest.mark.skipif(sys.platform == "win32", reason="groupes de processus POSIX (pgrep)")
 def test_annulation_pendant_validation_tue_le_pool(client, monkeypatch):
     """Annuler pendant la validation parallèle tue tout l'arbre : fils, pool de validation et tracker."""
-    monkeypatch.setenv("AERORIB_PARALLEL_MIN_LAYERS", "1")
-    monkeypatch.setenv("AERORIB_TEST_DELAI_VALIDATION", "30")  # chaque couche validée attend : pool occupé
+    monkeypatch.setenv("BEAVER_PARALLEL_MIN_LAYERS", "1")
+    monkeypatch.setenv("BEAVER_TEST_DELAI_VALIDATION", "30")  # chaque couche validée attend : pool occupé
     r = client.post("/api/projets/aile1/generations", headers=H)
     assert r.status_code == 202, r.text
     job = r.json()
@@ -261,7 +261,7 @@ def test_diff_entre_essais(genere):
 
 
 def test_ouvrir_bambu_et_dossier(genere, monkeypatch):
-    from aerorib import bambu
+    from beaver import bambu
 
     c, essai = genere["client"], genere["a"]["essai"]
     ouverts = []
@@ -291,7 +291,7 @@ def test_ouvrir_dossier_commande_par_systeme(monkeypatch, tmp_path):
 
 # --- concurrence, annulation, plantage ---------------------------------------------------------------
 def test_deuxieme_lancement_409_puis_annulation(client, monkeypatch, tmp_path):
-    monkeypatch.setenv("AERORIB_TEST_DELAI", "60")
+    monkeypatch.setenv("BEAVER_TEST_DELAI", "60")
     monkeypatch.setattr(travaux, "HEARTBEAT", 0.3)
     r = client.post("/api/projets/aile1/generations", headers=H)
     assert r.status_code == 202, r.text
@@ -333,7 +333,7 @@ def test_deuxieme_lancement_409_puis_annulation(client, monkeypatch, tmp_path):
 
 
 def test_essais_meme_seconde_sans_collision(client, monkeypatch):
-    monkeypatch.setenv("AERORIB_TEST_DELAI", "60")
+    monkeypatch.setenv("BEAVER_TEST_DELAI", "60")
     figee = travaux.datetime(2026, 10, 11, 12, 0, 0)
     monkeypatch.setattr(travaux, "_maintenant", lambda: figee)
     essais = []
@@ -348,7 +348,7 @@ def test_essais_meme_seconde_sans_collision(client, monkeypatch):
 @pytest.mark.skipif(sys.platform == "win32", reason="SIGINT POSIX (Ctrl+C du terminal)")
 def test_ctrl_c_annule_proprement(client, monkeypatch, tmp_path):
     """Ctrl+C atteint aussi le fils : il doit l'ignorer ; l'extinction du serveur annule l'essai."""
-    monkeypatch.setenv("AERORIB_TEST_DELAI", "60")
+    monkeypatch.setenv("BEAVER_TEST_DELAI", "60")
     r = client.post("/api/projets/aile1/generations", headers=H)
     job = r.json()
     manager = client.app.state.travaux
@@ -374,7 +374,7 @@ def test_ctrl_c_annule_proprement(client, monkeypatch, tmp_path):
 
 def test_fils_tue_pendant_extinction_annule(client, monkeypatch):
     """Un fils qui meurt sans message final pendant l'extinction (ou d'un signal d'arrêt) : « annulé »."""
-    monkeypatch.setenv("AERORIB_TEST_DELAI", "60")
+    monkeypatch.setenv("BEAVER_TEST_DELAI", "60")
     job = client.post("/api/projets/aile1/generations", headers=H).json()
     proc = client.app.state.travaux.get(job["id"]).process
     proc.terminate()  # SIGTERM extérieur, ni annulation ni extinction demandée
@@ -383,7 +383,7 @@ def test_fils_tue_pendant_extinction_annule(client, monkeypatch):
 
 
 def test_processus_mort_sans_message_final(client, monkeypatch):
-    monkeypatch.setenv("AERORIB_TEST_PLANTAGE", "1")
+    monkeypatch.setenv("BEAVER_TEST_PLANTAGE", "1")
     r = client.post("/api/projets/aile1/generations", headers=H)
     st = _attendre_fin(client, r.json()["id"], timeout=60)
     assert st["statut"] == "erreur"
@@ -403,7 +403,7 @@ def test_generation_projet_inconnu_ou_config_invalide(client, tmp_path):
     assert client.get("/api/generations/inconnu", headers=H).status_code == 404
     assert client.post("/api/generations/inconnu/annuler", headers=H).status_code == 404
     assert client.get("/api/generations/inconnu/flux", headers=H).status_code == 404
-    assert client.get("/api/generations/inconnu", headers={"X-AeroRib-Token": "faux"}).status_code == 401
+    assert client.get("/api/generations/inconnu", headers={"X-Beaver-Token": "faux"}).status_code == 401
 
 
 # --- historique sans travail réel --------------------------------------------------------------------

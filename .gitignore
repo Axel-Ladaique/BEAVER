@@ -6,3 +6,5 @@ out/
 *.stl
 !tests/fixtures/**
 .DS_Store
+.superpowers/
+projets/

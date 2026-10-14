@@ -2,8 +2,8 @@ from pathlib import Path
 
 from shapely.geometry import box
 
-from aerorib.report import format_text, write_html
-from aerorib.validate import Issue, Report
+from beaver.report import format_text, write_html
+from beaver.validate import Issue, Report
 
 STATS = {"layers": 500.0, "height_mm": 100.0, "path_length_m": 153.2, "mass_g": 11.04}
 
@@ -64,7 +64,7 @@ def test_html_lists_details_escaped(tmp_path: Path):
 def _body_with_pieces():
     from types import SimpleNamespace
 
-    from aerorib.layout import Placement
+    from beaver.layout import Placement
 
     ok, bad = Report((), STATS, {}), failing()
     return SimpleNamespace(
@@ -75,7 +75,7 @@ def _body_with_pieces():
 
 
 def test_piece_rows_number_plates_and_keep_rotation():
-    from aerorib.report import piece_rows
+    from beaver.report import piece_rows
 
     rows = piece_rows(_body_with_pieces(), first_plate=3)
     assert [(r["nom"], r["plateau"], r["rotation"], r["ok"]) for r in rows] == [("A", 3, 0.0, True), ("B<1>", 4, -37.5, False)]
@@ -84,7 +84,7 @@ def test_piece_rows_number_plates_and_keep_rotation():
 
 
 def test_html_pieces_table_and_notices(tmp_path: Path):
-    from aerorib.report import piece_rows
+    from beaver.report import piece_rows
 
     out = write_html(Report((), STATS, {}), tmp_path / "r.html", title="aile", pieces=piece_rows(_body_with_pieces()),
                      notices=["découpe automatique : coupe dans la corde en 2 morceaux"])

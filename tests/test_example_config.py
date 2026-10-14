@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from aerorib.config import RibLayer, load_config
+from beaver.config import RibLayer, load_config
 
 EXAMPLES = Path(__file__).parents[1] / "examples"
 EXAMPLE = EXAMPLES / "config-exemple.yaml"
@@ -31,7 +31,7 @@ def _leaves(d, prefix=()):
 def test_example_config_does_not_override_profile_keys():
     import yaml
 
-    from aerorib.material_profiles import load_profile
+    from beaver.material_profiles import load_profile
 
     posed = set(_leaves(yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))))
     profile, _files = load_profile("pla_aero")

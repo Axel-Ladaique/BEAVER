@@ -1,27 +1,30 @@
-# AeroRib
+# BEAVER — Bambu Engine for Aero Vase-mode Embedded Ribs
 
-Transforme une pièce CAO (STEP) en pièce imprimable en **vase mode** sur Bambu Lab :
-nervures internes, logements de longerons, découpe en tronçons.
+BEAVER transforme une pièce CAO (STEP, typiquement une aile) en pièce imprimable en **vase mode** sur Bambu Lab :
+nervures internes, logements de longerons, découpe en tronçons et projet Bambu Studio prêt à trancher.
+L'outil s'appelait auparavant AeroRib : la commande `aerorib` fonctionne toujours comme alias de `beaver`
+(de même, les variables d'environnement `AERORIB_*` restent lues en repli des `BEAVER_*`).
 Voir la spec : `docs/specs/2026-10-09-aerorib-design.md`.
 
 ## Installation
 
 1. Installer [uv](https://docs.astral.sh/uv/) : `brew install uv` (macOS) ou `winget install astral-sh.uv` (Windows).
-2. Dans ce dossier : `uv sync`
+2. Récupérer le dépôt : `git clone https://github.com/Axel-Ladaique/BEAVER && cd BEAVER`
+3. Dans ce dossier : `uv sync`
 
 ## Analyser et vérifier une pièce
 
 ```bash
-uv run aerorib inspect piece.step              # corps trouvés et rôles
-uv run aerorib check piece.step                # imprimable en vase mode ?
-uv run aerorib check piece.step --original origine.step --html rapport.html
+uv run beaver inspect piece.step              # corps trouvés et rôles
+uv run beaver check piece.step                # imprimable en vase mode ?
+uv run beaver check piece.step --original origine.step --html rapport.html
 ```
 
 ## Générer les nervures
 
 ```bash
-uv run aerorib run piece.step -c examples/config-exemple.yaml --out out
-uv run aerorib check piece.step --orient     # oriente la pièce selon le longeron avant de la vérifier
+uv run beaver run piece.step -c examples/config-exemple.yaml --out out
+uv run beaver check piece.step --orient     # oriente la pièce selon le longeron avant de la vérifier
 ```
 
 `run` produit, pour le corps `SKIN`/`Aile`/…, une pièce avec nervures internes en diagonale
@@ -88,7 +91,7 @@ rib_layers:
 ```
 
 ```bash
-uv run aerorib run piece.step -c examples/config-doubles-nervures.yaml --out out
+uv run beaver run piece.step -c examples/config-doubles-nervures.yaml --out out
 ```
 
 - `depth: 3` : la nervure ne descend qu'à 3 mm sous la peau (mesurés selon l'épaisseur de la pièce,
@@ -108,9 +111,9 @@ uv run aerorib run piece.step -c examples/config-doubles-nervures.yaml --out out
 ## Projet Bambu (3MF multi-plateaux)
 
 ```bash
-uv run aerorib run piece.step --3mf --out out              # écrit aussi out/<nom>.3mf
-uv run aerorib run piece.step --open                       # idem, puis ouvre le projet dans Bambu Studio
-uv run aerorib run piece.step -c examples/config-2-troncons.yaml --3mf --out out
+uv run beaver run piece.step --3mf --out out              # écrit aussi out/<nom>.3mf
+uv run beaver run piece.step --open                       # idem, puis ouvre le projet dans Bambu Studio
+uv run beaver run piece.step -c examples/config-2-troncons.yaml --3mf --out out
 ```
 
 - Le `.3mf` part d'un **gabarit** : un projet Bambu Studio enregistré avec imprimante, filament et vase mode
@@ -229,19 +232,19 @@ Où ils vivent (priorité croissante) :
 
 1. profils **embarqués** dans le paquet (`pla_aero`, `asa_aero`) ;
 2. dossier `./profiles/` du répertoire de travail ;
-3. dossier désigné par la variable d'environnement `AERORIB_PROFILES`.
+3. dossier désigné par la variable d'environnement `BEAVER_PROFILES`.
 
 Un profil utilisateur est **fusionné sur** le profil embarqué de même nom : n'y écrire que ce qui change
 (un profil qui ne contient que `material_settings: {line_width: 0.45}` suffit). Sans équivalent embarqué,
 c'est un nouveau profil, utilisé seul.
 
 ```bash
-uv run aerorib profils                    # liste les profils (origine, fichiers, gabarit)
-uv run aerorib profils --copier asa_aero  # copie le profil embarqué dans ./profiles/ pour l'éditer
+uv run beaver profils                    # liste les profils (origine, fichiers, gabarit)
+uv run beaver profils --copier asa_aero  # copie le profil embarqué dans ./profiles/ pour l'éditer
 ```
 
 L'**ASA Aero** a ses gabarits Bambu embarqués (`p1s_asa_aero.3mf`, `h2s_asa_aero.3mf`, filament Bambu ASA-Aero). Ce gabarit
-n'est pas en vase mode : à l'écriture du `.3mf`, AeroRib **impose les réglages vase mode** (`spiral_mode`,
+n'est pas en vase mode : à l'écriture du `.3mf`, BEAVER **impose les réglages vase mode** (`spiral_mode`,
 `wall_loops`, `top_shell_layers`, densités de remplissage…) et affiche un avertissement ; les réglages filament
 et imprimante restent ceux de l'ASA. Pour un gabarit déjà en vase mode (PLA Aero), le fichier est recopié à
 l'identique.
@@ -251,12 +254,12 @@ l'identique.
 Une interface web **locale** pilote le même cœur que la ligne de commande (aucune géométrie propre à la GUI).
 
 ```bash
-uv run aerorib gui                                  # projets dans ./projets, port libre, ouvre le navigateur
-uv run aerorib gui --dossier projets --port 0 --sans-navigateur
+uv run beaver gui                                  # projets dans ./projets, port libre, ouvre le navigateur
+uv run beaver gui --dossier projets --port 0 --sans-navigateur
 ```
 
-La commande affiche `AeroRib : interface disponible sur http://127.0.0.1:<port>/?token=<jeton>`. Sans le jeton
-de l'URL, l'API répond 401. **Double-clic** : `lancer-aerorib.command` (macOS) ou `lancer-aerorib.bat` (Windows),
+La commande affiche `BEAVER : interface disponible sur http://127.0.0.1:<port>/?token=<jeton>`. Sans le jeton
+de l'URL, l'API répond 401. **Double-clic** : `lancer-beaver.command` (macOS) ou `lancer-beaver.bat` (Windows),
 à la racine du dépôt (`uv` doit être installé). `Ctrl+C` dans le terminal arrête le serveur et annule la
 génération en cours.
 
@@ -267,7 +270,7 @@ Onglets :
 - **Aperçu** : section à une hauteur réglable, vue de dessus, chiffres estimés (plaques, masse, durée), 3D approchée.
 - **Générer** : progression en direct, annulation, résumé, liens vers les fichiers, « Ouvrir dans Bambu ».
 - **Historique** : liste des essais, comparaison des réglages de deux essais.
-- **Profils** : édition de PLA Aero / ASA Aero. Les fichiers utilisateur vont dans `./profiles` ou `AERORIB_PROFILES` ;
+- **Profils** : édition de PLA Aero / ASA Aero. Les fichiers utilisateur vont dans `./profiles` ou `BEAVER_PROFILES` ;
   seules les valeurs qui diffèrent sont écrites. Le gabarit Bambu est affiché en lecture seule. Enregistrer un profil
   depuis la GUI **perd les commentaires** de son fichier YAML.
 

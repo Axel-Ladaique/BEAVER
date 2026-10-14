@@ -9,7 +9,7 @@ from urllib.parse import urljoin, urlparse
 import pytest
 from fastapi.testclient import TestClient
 
-from aerorib.gui.server import STATIC_DIR, create_app
+from beaver.gui.server import STATIC_DIR, create_app
 
 TOKEN = "jeton-test"
 THREE = "https://cdn.jsdelivr.net/npm/three@0.160.0/"
@@ -171,7 +171,7 @@ def test_extension_js_forcee_en_javascript(monkeypatch, tmp_path):
     import mimetypes
 
     monkeypatch.setitem(mimetypes.types_map, ".js", "text/plain")
-    from aerorib.gui import server
+    from beaver.gui import server
 
     server._types_mime()
     c = TestClient(create_app(tmp_path, TOKEN), base_url="http://127.0.0.1")
@@ -179,6 +179,6 @@ def test_extension_js_forcee_en_javascript(monkeypatch, tmp_path):
 
 
 def test_fichiers_statiques_revalides(client):
-    """Après une mise à jour d'AeroRib, le navigateur ne doit pas garder d'anciens modules en cache."""
+    """Après une mise à jour d'BEAVER, le navigateur ne doit pas garder d'anciens modules en cache."""
     for url in ("/", "/js/app.js", "/style.css"):
         assert client.get(url).headers.get("cache-control") == "no-cache", url

@@ -8,10 +8,10 @@ from fastapi.testclient import TestClient
 from starlette.routing import Mount
 from typer.testing import CliRunner
 
-from aerorib import __version__
-from aerorib.cli import app
-from aerorib.gui import server
-from aerorib.gui.server import create_app
+from beaver import __version__
+from beaver.cli import app
+from beaver.gui import server
+from beaver.gui.server import create_app
 
 TOKEN = "jeton-test"
 
@@ -21,7 +21,7 @@ def _client(tmp_path):
 
 
 def test_sante_avec_jeton_en_tete(tmp_path):
-    r = _client(tmp_path).get("/api/sante", headers={"X-AeroRib-Token": TOKEN})
+    r = _client(tmp_path).get("/api/sante", headers={"X-Beaver-Token": TOKEN})
     assert r.status_code == 200
     assert r.json() == {"ok": True, "version": __version__}
 
@@ -32,7 +32,7 @@ def test_sante_avec_jeton_parametre(tmp_path):
 
 def test_sante_sans_jeton_ou_mauvais(tmp_path):
     c = _client(tmp_path)
-    for r in (c.get("/api/sante"), c.get("/api/sante", headers={"X-AeroRib-Token": "x"})):
+    for r in (c.get("/api/sante"), c.get("/api/sante", headers={"X-Beaver-Token": "x"})):
         assert r.status_code == 401
         assert r.json() == {"erreur": "jeton manquant ou invalide"}
 
@@ -40,7 +40,7 @@ def test_sante_sans_jeton_ou_mauvais(tmp_path):
 def test_racine_sert_html(tmp_path):
     r = _client(tmp_path).get("/")
     assert r.status_code == 200
-    assert "AeroRib" in r.text
+    assert "BEAVER" in r.text
 
 
 def test_config_uvicorn_127(tmp_path):
@@ -106,7 +106,7 @@ def test_route_api_ajoutee_protegee(tmp_path):
 
     c = TestClient(create_app(tmp_path, TOKEN, routers=[extra]), base_url="http://127.0.0.1")
     assert c.get("/api/autre").status_code == 401
-    assert c.get("/api/autre", headers={"X-AeroRib-Token": TOKEN}).status_code == 200
+    assert c.get("/api/autre", headers={"X-Beaver-Token": TOKEN}).status_code == 200
 
 
 def test_toutes_les_routes_api_exigent_le_jeton(tmp_path):
@@ -129,9 +129,9 @@ def test_montage_statique_en_dernier(tmp_path):
 
 def test_route_api_inconnue_404_francais(tmp_path):
     c = _client(tmp_path)
-    r = c.get("/api/inconnu", headers={"X-AeroRib-Token": TOKEN})
+    r = c.get("/api/inconnu", headers={"X-Beaver-Token": TOKEN})
     assert r.status_code == 404 and r.json() == {"erreur": "route inconnue"}
-    r = c.delete("/api/projets/x", headers={"X-AeroRib-Token": TOKEN})
+    r = c.delete("/api/projets/x", headers={"X-Beaver-Token": TOKEN})
     assert r.status_code in (404, 405) and "erreur" in r.json()
 
 
@@ -139,7 +139,7 @@ def test_route_extra_non_masquee_par_le_repli(tmp_path):
     extra = APIRouter(prefix="/api")
     extra.add_api_route("/zzz", lambda: {"ok": 1})
     c = TestClient(create_app(tmp_path, TOKEN, routers=[extra]), base_url="http://127.0.0.1")
-    assert c.get("/api/zzz", headers={"X-AeroRib-Token": TOKEN}).json() == {"ok": 1}
+    assert c.get("/api/zzz", headers={"X-Beaver-Token": TOKEN}).json() == {"ok": 1}
 
 
 def test_bind_erreur_autre_que_port_occupe(monkeypatch):
@@ -165,7 +165,7 @@ def test_api_inconnue_sans_jeton(tmp_path):
 def test_jeton_faux_en_tete_et_parametre(tmp_path):
     c = _client(tmp_path)
     assert c.get("/api/sante", params={"token": "faux"}).status_code == 401
-    assert c.get("/api/sante", headers={"X-AeroRib-Token": "faux"}).status_code == 401
+    assert c.get("/api/sante", headers={"X-Beaver-Token": "faux"}).status_code == 401
 
 
 def test_index_sans_jeton_et_referrer(tmp_path):
@@ -188,7 +188,7 @@ def test_commande_gui_help():
 def test_commande_gui_appelle_run_gui(tmp_path, monkeypatch):
     calls = {}
     monkeypatch.setattr(
-        "aerorib.gui.server.run_gui", lambda root, port, open_browser: calls.update(r=root, p=port, o=open_browser)
+        "beaver.gui.server.run_gui", lambda root, port, open_browser: calls.update(r=root, p=port, o=open_browser)
     )
     r = CliRunner().invoke(app, ["gui", "--dossier", str(tmp_path), "--port", "1234", "--sans-navigateur"])
     assert r.exit_code == 0
@@ -205,7 +205,7 @@ def test_exception_imprevue_500_json_francais(tmp_path):
 
     c = TestClient(create_app(tmp_path, TOKEN, routers=[extra]), base_url="http://127.0.0.1",
                    raise_server_exceptions=False)
-    r = c.put("/api/boum", headers={"X-AeroRib-Token": TOKEN})
+    r = c.put("/api/boum", headers={"X-Beaver-Token": TOKEN})
     assert r.status_code == 500 and r.headers["content-type"].startswith("application/json")
     erreur = r.json()["erreur"]
     assert erreur.startswith("erreur interne : PermissionError")
@@ -214,7 +214,7 @@ def test_exception_imprevue_500_json_francais(tmp_path):
 
 def test_arret_signale_la_preparation_en_cours(tmp_path, monkeypatch, capsys):
     """Ctrl+C pendant une préparation d'aperçu : l'attente de fin est annoncée en français."""
-    from aerorib.gui import apercu
+    from beaver.gui import apercu
 
     record = {"opened": []}
     _fake_server(monkeypatch, record)
@@ -226,7 +226,7 @@ def test_arret_signale_la_preparation_en_cours(tmp_path, monkeypatch, capsys):
 def test_preparation_en_cours_suivie(monkeypatch):
     import threading
 
-    from aerorib.gui import apercu
+    from beaver.gui import apercu
 
     go = threading.Event()
     monkeypatch.setattr(apercu.preview, "prepare_status", lambda step, cfg: go.wait(10) and ("prep", False))
@@ -243,6 +243,6 @@ def test_preparation_en_cours_suivie(monkeypatch):
 
 def test_entetes_de_securite(tmp_path):
     c = _client(tmp_path)
-    for r in (c.get("/"), c.get("/api/sante", headers={"X-AeroRib-Token": TOKEN}), c.get("/api/sante")):
+    for r in (c.get("/"), c.get("/api/sante", headers={"X-Beaver-Token": TOKEN}), c.get("/api/sante")):
         assert r.headers["x-content-type-options"] == "nosniff"
         assert r.headers["content-security-policy"] == "frame-ancestors 'none'"

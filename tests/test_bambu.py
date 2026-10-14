@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import trimesh
 
-from aerorib.bambu import BambuError, plate_origin, read_template, write_project
+from beaver.bambu import BambuError, plate_origin, read_template, write_project
 
 FIXTURE = Path(__file__).parent / "fixtures" / "bambu_p1s_pla_aero.3mf"
 NS = {"c": "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"}
@@ -167,8 +167,8 @@ def test_write_project_template_without_settings_is_error(tmp_path):
 
 
 # --- réglages vase mode imposés -------------------------------------------------------------------
-ASA = Path(__file__).parents[1] / "src" / "aerorib" / "templates" / "p1s_asa_aero.3mf"
-PLA = Path(__file__).parents[1] / "src" / "aerorib" / "templates" / "p1s_pla_aero.3mf"
+ASA = Path(__file__).parents[1] / "src" / "beaver" / "templates" / "p1s_asa_aero.3mf"
+PLA = Path(__file__).parents[1] / "src" / "beaver" / "templates" / "p1s_pla_aero.3mf"
 
 
 def _settings_bytes(path: Path) -> bytes:
@@ -177,7 +177,7 @@ def _settings_bytes(path: Path) -> bytes:
 
 
 def test_pla_settings_byte_identical(tmp_path):
-    from aerorib.bambu import vase_warning
+    from beaver.bambu import vase_warning
 
     t = read_template(PLA)
     assert vase_warning(t) is None
@@ -188,7 +188,7 @@ def test_pla_settings_byte_identical(tmp_path):
 def test_asa_vase_forced_keeps_filament(tmp_path):
     import json
 
-    from aerorib.bambu import VASE_SETTINGS, vase_warning
+    from beaver.bambu import VASE_SETTINGS, vase_warning
 
     t = read_template(ASA)
     assert t.settings["spiral_mode"] == "0"  # read_template lit le fichier d'origine
@@ -208,10 +208,10 @@ def test_asa_vase_forced_keeps_filament(tmp_path):
 def test_asa_template_resolves_and_run_writes_3mf(tmp_path):
     from typer.testing import CliRunner
 
-    from aerorib.cli import app
-    from aerorib.config import load_config, resolve_template
-    from aerorib.io_step import write_step
-    from aerorib.testing.synthetic import wing_x_bodies
+    from beaver.cli import app
+    from beaver.config import load_config, resolve_template
+    from beaver.io_step import write_step
+    from beaver.testing.synthetic import wing_x_bodies
 
     assert resolve_template(load_config(overrides={"material": "asa_aero"})).name == "p1s_asa_aero.3mf"
     src = write_step(tmp_path / "aile.step", wing_x_bodies())

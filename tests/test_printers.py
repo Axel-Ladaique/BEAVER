@@ -5,13 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from aerorib.bambu import read_template
-from aerorib.classify import classify
-from aerorib.config import TEMPLATES_DIR, load_config, resolve_template
-from aerorib.export import export_results
-from aerorib.io_step import read_step, write_step
-from aerorib.pipeline import _print_volume, run_model
-from aerorib.testing.synthetic import wing_x_bodies
+from beaver.bambu import read_template
+from beaver.classify import classify
+from beaver.config import TEMPLATES_DIR, load_config, resolve_template
+from beaver.export import export_results
+from beaver.io_step import read_step, write_step
+from beaver.pipeline import _print_volume, run_model
+from beaver.testing.synthetic import wing_x_bodies
 
 FAST = {"material_settings": {"layer_height": 1.0}, "rib_layers": [{"spacing": 20}],
         "passages": {"mode": "link"}, "segment": {"max_height": 30}}
@@ -43,7 +43,7 @@ def test_h2s_usable_volume_from_template():
 
 
 def test_h2s_default_segment_height_is_template_minus_margin():
-    from aerorib.pipeline import usable_height
+    from beaver.pipeline import usable_height
 
     cfg = load_config(overrides={"printer": "h2s"})
     assert usable_height(cfg) == pytest.approx(340 - cfg.segment.margin)
@@ -83,7 +83,7 @@ def test_p1s_pla_unchanged_vs_explicit_template(tmp_path):
 
 
 def test_unknown_printer_message():
-    from aerorib.config import ConfigError
+    from beaver.config import ConfigError
 
     with pytest.raises(ConfigError, match="imprimante inconnue 'x9' \\(connues : h2s, p1s\\)"):
         load_config(overrides={"printer": "x9"})
@@ -118,8 +118,8 @@ def test_print_volume_label_comes_from_the_template():
 
 
 def test_notices_name_the_template_printer():
-    from aerorib.pipeline import body_notice, segment_part
-    from aerorib.testing.synthetic import swept_wing
+    from beaver.pipeline import body_notice, segment_part
+    from beaver.testing.synthetic import swept_wing
 
     seg = segment_part("B", swept_wing(chord=400, span=60), _pinned(), lambda m: None)
     (n,) = seg.notices
@@ -130,9 +130,9 @@ def test_notices_name_the_template_printer():
 
 @pytest.mark.parametrize("mode", ["auto", "off"])
 def test_preview_shows_template_mismatch(tmp_path, mode):
-    from aerorib import preview
-    from aerorib.io_step import NamedBody
-    from aerorib.testing.synthetic import swept_wing
+    from beaver import preview
+    from beaver.io_step import NamedBody
+    from beaver.testing.synthetic import swept_wing
 
     step = write_step(tmp_path / "large.step", [NamedBody(("Aile_large",), swept_wing(chord=400, span=60))])
     cfg = _pinned(mode=mode)

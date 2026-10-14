@@ -1,5 +1,7 @@
 # AeroRib — Générateur de structure interne pour impression vase mode
 
+> Note : l'outil a été renommé BEAVER (commande `beaver`, `aerorib` conservé comme alias) ; ce document est historique.
+
 - **Date :** 2026-10-09
 - **Statut :** spécification validée en discussion, en relecture
 - **Auteur :** Axel Ladaique (avec Claude)

@@ -7,20 +7,20 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from aerorib import preview
-from aerorib.gui.server import create_app
+from beaver import preview
+from beaver.gui.server import create_app
 
 FUSION_V2 = Path(__file__).parent / "fixtures" / "fusion_aile_4412_simple_sbar_v2.step"
 SERVO = Path(__file__).parent / "fixtures" / "aile_4412_servo_extrados.step"
 TOKEN = "jeton-test"
-H = {"X-AeroRib-Token": TOKEN}
+H = {"X-Beaver-Token": TOKEN}
 TIMEOUT = 15 * 60  # la machine peut être chargée
 
 
 @pytest.mark.slow
 def test_aile_fusion_v2_apercu_et_generation(tmp_path, monkeypatch):
     (tmp_path / "profils").mkdir()
-    monkeypatch.setenv("AERORIB_PROFILES", str(tmp_path / "profils"))
+    monkeypatch.setenv("BEAVER_PROFILES", str(tmp_path / "profils"))
     preview.clear_cache()
     app = create_app(tmp_path / "projets", TOKEN)
     c = TestClient(app, base_url="http://127.0.0.1")
@@ -68,7 +68,7 @@ def test_aile_fusion_v2_apercu_et_generation(tmp_path, monkeypatch):
 def test_aile_servo_apercu_et_generation(tmp_path, monkeypatch):
     """Fixture servo : la baie est dans la vue de dessus de l'aperçu, puis listée dans l'essai (statut ok)."""
     (tmp_path / "profils").mkdir()
-    monkeypatch.setenv("AERORIB_PROFILES", str(tmp_path / "profils"))
+    monkeypatch.setenv("BEAVER_PROFILES", str(tmp_path / "profils"))
     preview.clear_cache()
     app = create_app(tmp_path / "projets", TOKEN)
     c = TestClient(app, base_url="http://127.0.0.1")
@@ -117,11 +117,11 @@ def test_aile_servo_apercu_et_generation(tmp_path, monkeypatch):
 def test_aile_large_decoupe_visible_dans_l_apercu_puis_generation(tmp_path, monkeypatch):
     """Aile synthétique à grande corde (P1S) : l'aperçu montre les deux morceaux, le plan de coupe dans la corde et la
     décision automatique ; la génération donne le même plan (essai ok, 2 morceaux, notice présente)."""
-    from aerorib.io_step import write_step
-    from aerorib.testing.synthetic import wide_wing_bodies
+    from beaver.io_step import write_step
+    from beaver.testing.synthetic import wide_wing_bodies
 
     (tmp_path / "profils").mkdir()
-    monkeypatch.setenv("AERORIB_PROFILES", str(tmp_path / "profils"))
+    monkeypatch.setenv("BEAVER_PROFILES", str(tmp_path / "profils"))
     step = write_step(tmp_path / "large.step", wide_wing_bodies())
     rapide = {"material_settings": {"layer_height": 1.0}, "rib_layers": [{"spacing": 20}]}
     preview.clear_cache()

@@ -4,15 +4,15 @@ import pytest
 from build123d import Box, Location
 from typer.testing import CliRunner
 
-from aerorib import cli
-from aerorib.cli import app
-from aerorib.export import safe_name
-from aerorib.features.bores import Bore, Passage
-from aerorib.orient import Orientation
-from aerorib.pipeline import BodyResult, RunResult
-from aerorib.validate import Report
-from aerorib.io_step import read_step, write_step
-from aerorib.testing.synthetic import wing_x_bodies
+from beaver import cli
+from beaver.cli import app
+from beaver.export import safe_name
+from beaver.features.bores import Bore, Passage
+from beaver.orient import Orientation
+from beaver.pipeline import BodyResult, RunResult
+from beaver.validate import Report
+from beaver.io_step import read_step, write_step
+from beaver.testing.synthetic import wing_x_bodies
 
 runner = CliRunner()
 
@@ -109,7 +109,7 @@ def test_run_internal_error_is_clean(tmp_path: Path, monkeypatch, exc):
 
 
 def _fake_chord_run(*args, **kwargs) -> RunResult:
-    from aerorib.layout import Placement
+    from beaver.layout import Placement
 
     part = Box(20, 10, 10).solids()[0]
     a, b = Box(10, 10, 10).solids()[0], Box(10, 10, 10).moved(Location((10, 0, 0))).solids()[0]

@@ -2,13 +2,13 @@ import numpy as np
 import pytest
 from build123d import Cone, Location
 
-from aerorib.classify import classify
-from aerorib.config import load_config
-from aerorib.io_step import NamedBody
-from aerorib.midsurface import camber_offset
-from aerorib.orient import _needs_flip, choose_axis, orient, orientation_location
-from aerorib.slicing import slice_layers
-from aerorib.testing.synthetic import naca_wing
+from beaver.classify import classify
+from beaver.config import load_config
+from beaver.io_step import NamedBody
+from beaver.midsurface import camber_offset
+from beaver.orient import _needs_flip, choose_axis, orient, orientation_location
+from beaver.slicing import slice_layers
+from beaver.testing.synthetic import naca_wing
 
 X_SPAN = Location((0, 0, 0), (0, 90, 0))  # envergure Z → X (comme l'aile Fusion)
 
@@ -80,7 +80,7 @@ def test_flip_branch_is_exercised():
 
 
 def test_degenerate_root_section_has_french_error(monkeypatch):
-    import aerorib.orient as orient_mod
+    import beaver.orient as orient_mod
     from build123d import Box
 
     # section d'emplanture dégénérée (tous les sommets confondus) : corde de longueur nulle
@@ -96,7 +96,7 @@ def _wing_with_conduits(*ends: str, root: str | None = None):
     """Aile droite le long de X (longeron pleine envergure) + gaines courtes de 20 mm aux bouts demandés."""
     from build123d import Cylinder
 
-    from aerorib.testing.synthetic import wing_x_bodies
+    from beaver.testing.synthetic import wing_x_bodies
 
     bodies = wing_x_bodies()
     z_of = {"lo": 10.0, "hi": 70.0}  # envergure 80 mm, avant rotation vers X
@@ -151,7 +151,7 @@ def test_conduits_at_both_ends_or_none_keep_section_rule():
 
 
 def test_orientation_root_config_and_prepare_key():
-    from aerorib.preview import prepare_key
+    from beaver.preview import prepare_key
 
     assert load_config().orientation == "auto"
     keys = {prepare_key(load_config(overrides={"orientation": {"root": r}})) for r in ("auto", "debut", "fin")}
@@ -165,7 +165,7 @@ FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures"
 
 
 def _oriented(step, **ov):
-    from aerorib.io_step import read_step
+    from beaver.io_step import read_step
 
     cfg = load_config(overrides=ov or None)
     model = classify(read_step(FIXTURES / step), cfg)

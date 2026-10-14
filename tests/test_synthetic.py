@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from aerorib.testing.synthetic import broken_wing, naca4, naca_wing, ribbed_wing
+from beaver.testing.synthetic import broken_wing, naca4, naca_wing, ribbed_wing
 
 
 def test_naca4_shape():

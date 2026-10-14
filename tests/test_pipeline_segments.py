@@ -8,14 +8,14 @@ import xml.etree.ElementTree as ET
 
 from build123d import Box, Pos
 
-from aerorib import pipeline
-from aerorib.bambu import BambuError, read_template
-from aerorib.classify import classify
-from aerorib.config import load_config
-from aerorib.export import export_results
-from aerorib.io_step import read_step
-from aerorib.pipeline import PipelineError, run_model
-from aerorib.testing.synthetic import wing_x_bodies
+from beaver import pipeline
+from beaver.bambu import BambuError, read_template
+from beaver.classify import classify
+from beaver.config import load_config
+from beaver.export import export_results
+from beaver.io_step import read_step
+from beaver.pipeline import PipelineError, run_model
+from beaver.testing.synthetic import wing_x_bodies
 
 NS = {"c": "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"}
 FIXTURE = Path(__file__).parent / "fixtures" / "bambu_p1s_pla_aero.3mf"

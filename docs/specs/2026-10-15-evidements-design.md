@@ -18,7 +18,7 @@ Les nervures principales (moitié extrados et moitié intrados, séparées par l
 - Zones toujours **pleines** (pas d'évidement) : autour des longerons/gaines/SBAR transversales (zone + bande), des baies servo (zone + bande), près des coupes en Z et dans la corde (± une largeur de pont), et là où la nervure est déjà peu profonde (évidement < 1 mm inutile).
 
 ## Conception
-### Réglages (`ribs.hollow`, par couche de nervures ou global — global par défaut, surcharge possible par couche)
+### Réglages (`ribs_hollow`, par couche de nervures ou global — global par défaut, surcharge possible par couche)
 - `mode: off | croisements | pas` — défaut **`off`** (aucune pièce existante ne change ; l'utilisateur l'active dans Réglages ou la config, `croisements` recommandé).
 - `bridge_width` (mm, défaut 4.0) : largeur pleine hauteur d'un pont (mesurée le long de la plaque, en abscisse s du plan de la plaque ; soit bridge_width·cos(angle) en z d'impression).
 - `pitch` (mm, mode `pas`, défaut 30.0) : distance entre ponts.

@@ -108,6 +108,56 @@ uv run beaver run piece.step -c examples/config-doubles-nervures.yaml --out out
   de 6 min 30 à une vingtaine de minutes selon la charge du Mac (contre 1 à 3 min avec le seul réseau principal),
   et un `.step` d'environ 420 Mo (le `.stl` reste à ~4 Mo).
 
+## Évidements des nervures
+
+Les nervures principales (moitié extrados et moitié intrados, séparées par la bande centrale) n'ont pas besoin de
+descendre jusqu'à la bande sur toute leur longueur. Avec les évidements, elles ne gardent leur pleine hauteur qu'à
+des **ponts** ; entre deux ponts, la nervure est moins haute : une **échancrure côté bande centrale**. Jamais de
+trou fermé dans la nervure : en vase mode, chaque couche doit rester un seul contour, et une fente isolée de la peau
+serait un trou. La validation reste l'arbitre.
+
+**Désactivés par défaut** (`mode: off`) : aucune pièce existante ne change. À activer dans la section
+« Évidements » des réglages de l'interface ou dans la config :
+
+```yaml
+ribs_hollow:
+  mode: croisements   # off (défaut) | croisements | pas
+  bridge_width: 4.0   # mm, longueur pleine hauteur de chaque pont, le long de la nervure
+  pitch: 30.0         # mm, mode pas : distance entre deux ponts
+  keep_ratio: 0.3     # hauteur gardée sous la peau = 30 % de la demi-épaisseur locale…
+  keep_min: 2.0       # …et au moins 2 mm
+  ramp_factor: 1.0    # ≤ 1 : rampes plus douces que le surplomb max
+```
+
+- **Deux modes** :
+  - `croisements` (recommandé) : un pont à chaque nœud du losange, là où la nervure croise une nervure de l'autre
+    famille de la même couche ; au pas `spacing / (2·sin angle)` le long de la nervure (≈ 21 mm à 45°, spacing 30).
+  - `pas` : ponts à pas régulier `pitch` le long de la nervure, calés sur la boîte de la pièce comme le motif (rendu
+    régulier d'un morceau à l'autre).
+- **Hauteur gardée** : sous la peau, `keep_ratio` × la demi-épaisseur locale de l'aile, au moins `keep_min` ; jamais
+  plus profond que la nervure pleine. Une couche peu profonde (`depth` en mm) n'est évidée que si elle descend plus
+  bas que cette hauteur gardée.
+- **Pentes** : les flancs des échancrures sont des rampes à l'angle de surplomb de la matière (45° PLA, 40° ASA),
+  mesurées en z d'impression : d'une couche à l'autre, le fond de fente n'avance jamais vers la bande de plus que
+  le surplomb admis. Rampe sous chaque pont, marche verticale au-dessus (le fond recule en montant : pas de
+  surplomb) ; au pied du pont, contre la bande, une petite marche verticale (« marche, pas rampe ») pour ne pas
+  pincer la bande. `ramp_factor` < 1 adoucit les rampes (ex. 0,5 : pente moitié du surplomb max) si l'imprimante
+  peine sur les surplombs.
+- **Zones toujours pleines** : autour des longerons, gaines et SBAR transversales (zone sans nervure et sa bande),
+  des baies de servo, à ± `bridge_width` des coupes en Z et des coupes dans la corde, à l'emplanture et au saumon,
+  et là où l'évidement gagnerait moins de 1 mm.
+- **Surcharge par couche** : `rib_layers[*].hollow` reprend les mêmes clés et remplace le réglage global clé à
+  clé (ex. `{name: peau, spacing: 10, depth: 3, hollow: {mode: off}}` pour garder pleines les nervures fines de
+  peau). Dans l'interface, ce champ est une saisie JSON avancée dans la carte de la couche.
+- **Gain mesuré** sur l'aile v2 (`fusion_aile_4412_simple_sbar_v2.step`, config par défaut) : 61,1 g et 909 m sans
+  évidement ; `croisements` 51,3 g et 763 m (−16 %) ; `pas` 49,8 g et 741 m (−18 %), imprimable dans les deux cas.
+  Le gain est surtout réel avec un espacement ≥ 30 mm (à 20 mm, ponts et rampes laissent peu à évider).
+- **Aperçu** : la coupe et la vue 3D montrent les nervures échancrées ; « Chiffres estimés » affiche le gain
+  (« évidements : −16 % de masse (51,3 g au lieu de 61,1 g) »). Rapport et sortie `beaver run` : ligne
+  « évidements : ponts aux croisements, ponts 4 mm, 30 % de la demi-épaisseur — gain estimé ≈ … g ».
+- **Conseil** : avant une aile entière, imprimer un petit tronçon évidé (`segment.cuts_at` ou une pièce courte)
+  pour vérifier les rampes et les ponts sur votre imprimante et votre matière.
+
 ## Projet Bambu (3MF multi-plateaux)
 
 ```bash

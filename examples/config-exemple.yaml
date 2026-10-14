@@ -18,6 +18,15 @@ orientation: auto           # auto (axe du 1er longeron) ou {axis: [1, 0, 0]}
 # Doubles nervures (voir config-doubles-nervures.yaml) : ajouter un second niveau, fin et peu profond,
 # qui tient la peau ; phase = un demi-pas pour que ses nervures tombent entre les principales.
 #  - {name: peau, spacing: 10, depth: 3, phase: 5}   # depth ≥ 2 × largeur de ligne (0,84 mm)
+# Évidements des nervures (désactivés par défaut, voir README « Évidements des nervures ») : échancrures côté
+# bande centrale entre des ponts pleine hauteur ; surcharge possible par couche (rib_layers[*].hollow).
+# ribs_hollow:
+#   mode: croisements         # off (défaut) | croisements (ponts aux nœuds du losange) | pas (pas régulier)
+#   bridge_width: 4.0         # mm, longueur pleine hauteur d'un pont
+#   pitch: 30.0               # mm, mode pas
+#   keep_ratio: 0.3           # hauteur gardée sous la peau = part de la demi-épaisseur…
+#   keep_min: 2.0             # …au moins 2 mm
+#   ramp_factor: 1.0          # < 1 : rampes plus douces que le surplomb max
 # Réglages des longerons (défauts : clearance 0.15, sleeve 0.8, strip 2.0, slit_side top, slit_width 0.15,
 # anchor true, anchor_gap 1.0). L'attache (anchor) est une fente borgne du trou vers la peau opposée à la
 # fente, arrêtée à anchor_gap (≥ largeur de ligne) de la peau : elle accroche le manchon des deux côtés.

@@ -8,7 +8,7 @@ from beaver.config import ConfigError, HollowSettings, load_config
 def test_hollow_defaults_off():
     cfg = load_config()
     h = cfg.ribs_hollow
-    assert (h.mode, h.bridge_width, h.pitch, h.keep_ratio, h.keep_min) == ("off", 4.0, 30.0, 0.3, 2.0)
+    assert (h.mode, h.bridge_width, h.pitch, h.keep_ratio, h.keep_min, h.ramp_factor) == ("off", 4.0, 30.0, 0.3, 2.0, 1.0)
     assert cfg.layer_hollow(cfg.rib_layers[0]) == h
 
 
@@ -34,6 +34,8 @@ def test_hollow_global_and_layer_override():
         ({"keep_ratio": 1.5}, r"keep_ratio : proportion gardée entre 0 et 1"),
         ({"keep_min": 0.5}, r"keep_min 0.5 mm < 2 × largeur de ligne"),
         ({"mode": "pas", "pitch": 4, "bridge_width": 4}, r"pitch 4.0 mm ≤ largeur de pont"),
+        ({"ramp_factor": 0}, r"ramp_factor : facteur de pente des rampes entre 0 et 1"),
+        ({"ramp_factor": 1.2}, r"ramp_factor : facteur de pente des rampes entre 0 et 1"),
     ],
 )
 def test_hollow_settings_errors_in_french(over, msg):

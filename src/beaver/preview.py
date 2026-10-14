@@ -53,6 +53,9 @@ from beaver.pipeline import (
     PipelineError,
     check_fill,
     check_spars_assigned,
+    cut_guides,
+    cut_plan,
+    hollow_on,
     rib_options,
     servos_for,
     skin_tubes,
@@ -357,6 +360,26 @@ def _prepare_skin(
 _MEMO = 8  # résultats gardés par préparation (SBAR transversales, plans de découpe)
 
 
+def guides(prep: Prepared, cfg: Config):
+    """Coupes du plan de découpe autour desquelles les évidements s'arrêtent, exactement celles de `generate_skin`
+    (même plan, `pipeline.cut_plan`, sur le même maillage) ; None sans évidement."""
+    if not hollow_on(cfg):
+        return None
+    key = ("coupes", cfg.model_dump_json())
+    with prep.mesh_lock:
+        if key in prep.memo:
+            return prep.memo[key]
+        plan = cut_plan(
+            prep.skin, cfg, prep.bores, prep.bays, prep.mesh, [f for _, f in prep.filled],
+            (prep.anchor if prep.anchor is not None else prep.bb).min.Z,
+        )
+        out = cut_guides(plan, prep.zrange[0])
+        prep.memo[key] = out
+        while len(prep.memo) > _MEMO:
+            prep.memo.pop(next(iter(prep.memo)))
+        return out
+
+
 def tubes(prep: Prepared, cfg: Config) -> tuple[Tube, ...]:
     """SBAR transversales d'une peau, exactement celles de `generate_skin` (même maillage, même plan de découpe)."""
     if not prep.tube_spars:
@@ -424,7 +447,7 @@ def plates_2d(prep: Prepared, cfg: Config) -> list[Plate2D]:
     bb = prep.bb
     out = []
     for i, layer in enumerate(cfg.rib_layers):
-        opts = rib_options(cfg, bb, i, prep.bays, prep.anchor, tubes(prep, cfg))
+        opts = rib_options(cfg, bb, i, prep.bays, prep.anchor, tubes(prep, cfg), guides(prep, cfg))
         for p in diamond_profiles(bb, prep.mid, list(prep.bores), layer, **opts):
             out.append(
                 Plate2D(i, layer.name, p.family, p.c, p.d0, p.d1, bb.min.Z, p.top, layer.depth, cfg.slit_width, p.polygon)

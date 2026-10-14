@@ -9,6 +9,7 @@ from shapely.geometry import LineString, box
 
 from beaver.config import RibLayer, load_config
 from beaver.features.ribs import (
+    CutGuides,
     HollowEdge,
     HollowSpec,
     bridge_positions,
@@ -109,7 +110,7 @@ def test_full_around_zones_and_ends():
     assert tip(top, 30.0) == pytest.approx(7.0, abs=0.06)
     ends = [(0.0, 1.0), (90.0, 1.0)]
     ss = np.unique(np.concatenate([SS, [a + k * h for a, h in ends for k in (-1, 0, 1)]]))
-    th = np.where(ss <= 90.0, 20.0, 20.0)
+    th = np.full_like(ss, 20.0)
     top = side(plate_profiles_2d(ss, np.zeros_like(ss), th, [], **KW, ends=ends, hollow=hollow(bridges=())), True)
     for s in (0.0, 3.0, 4.9, 85.1, 87.0, 89.9):  # fenêtre de bout ± (h + largeur de pont)
         assert tip(top, s) == pytest.approx(0.3, abs=0.05), s
@@ -139,7 +140,7 @@ def test_bridges_at_crossings_with_the_other_family():
     d0 = d1 = math.sin(math.radians(45))
     spec = HollowSpec(mode="croisements", **SPEC)
     for sign, c in lines[:5]:
-        s_b = bridge_positions(spec, sign, c, sign * d0, d1, lines, s_ref=0.0, s_lo=-5.0, s_hi=130.0)
+        s_b = bridge_positions(spec, sign, c, sign * d0, lines, s_ref=0.0, s_lo=-5.0, s_hi=130.0)
         assert len(s_b) >= 4
         assert np.allclose(np.diff(s_b), 20.0 / (2 * d0))  # pas des croisements le long de la plaque
         for s in s_b:  # une plaque de l'autre famille passe par ce point (x, z), plan médian
@@ -149,7 +150,7 @@ def test_bridges_at_crossings_with_the_other_family():
 
 def test_bridges_at_regular_pitch_anchored_on_global_box():
     spec = HollowSpec(mode="pas", **SPEC)
-    s_b = bridge_positions(spec, 1, 0.0, 0.7, 0.7, [], s_ref=-12.0, s_lo=-5.0, s_hi=100.0)
+    s_b = bridge_positions(spec, 1, 0.0, 0.7, [], s_ref=-12.0, s_lo=-5.0, s_hi=100.0)
     assert np.allclose(s_b, [-12.0 + 30.0 * k for k in range(1, 4)])  # -12 : hors de la plaque
 
 
@@ -190,15 +191,85 @@ def test_rib_options_carry_layer_hollow():
     bb, _ = _box_mid()
     h = rib_options(cfg, bb, 0)["hollow"]
     assert h == HollowSpec(mode="pas", bridge_width=4.0, pitch=25.0, keep_ratio=0.3, keep_min=2.0,
-                           max_overhang_deg=cfg.preset.max_overhang_deg)
+                           max_overhang_deg=cfg.preset.max_overhang_deg, ramp_factor=1.0)
     assert rib_options(cfg, bb, 1)["hollow"] is None
 
 
-def test_bridge_steps_are_critical_planes_for_z_cuts():
+@pytest.mark.parametrize("mode, period", [("croisements", 15.0), ("pas", 30.0 * math.cos(math.radians(45)))])
+def test_bridge_steps_are_critical_planes_for_z_cuts(mode, period):
     off = load_config(overrides={"rib_layers": [{"spacing": 30}]})
-    on = load_config(overrides={"rib_layers": [{"spacing": 30}], "ribs_hollow": {"mode": "croisements"}})
+    on = load_config(overrides={"rib_layers": [{"spacing": 30}], "ribs_hollow": {"mode": mode}})
     base = rib_crossings(off, 0.0, 0.0, 100.0)
     planes = rib_crossings(on, 0.0, 0.0, 100.0)
-    step = 4.0 * math.cos(math.radians(45)) / 2  # haut du pont (marche) : croisement + w·d1/2
+    lift = 4.0 * math.cos(math.radians(45)) / 2  # marches au pied et au-dessus du pont : pont ∓ w·d1/2
     assert set(base) <= set(planes)
-    assert any(abs(p - (base[1] + step)) < 1e-9 for p in planes)
+    for k in (1, 2, 3):
+        for off_ in (-lift, lift):
+            assert any(abs(p - (k * period + off_)) < 1e-9 for p in planes), (k, off_)
+
+
+def _tips_along(prof, top=True):
+    """Fonds de fente d'une plaque (distance à y = 0) tous les 0,05 mm de s."""
+    s0, _, s1, _ = prof.polygon.bounds
+    ss = np.arange(s0 + 0.1, s1 - 0.1, 0.05)
+    t = [tip(prof.polygon, s, top) for s in ss]
+    keep = [i for i, v in enumerate(t) if v is not None]
+    return ss[keep], np.abs(np.array([t[i] for i in keep]))
+
+
+@pytest.mark.parametrize("factor", [1.0, 0.5])
+def test_diamond_ramp_slope_is_overhang_in_print_z(factor):
+    """Pente des rampes de `diamond_profiles` : tan(surplomb) × ramp_factor par mm de z d'impression (d1 = cos 45°)."""
+    bb, mid = _box_mid()
+    spec = HollowSpec(mode="croisements", **SPEC, ramp_factor=factor)
+    tops = [p for p in diamond_profiles(bb, mid, [], RibLayer(spacing=40.0), **OPTS, hollow=spec) if p.top]
+    prof = max(tops, key=lambda p: p.polygon.bounds[2] - p.polygon.bounds[0])  # la plus longue : plusieurs ponts
+    ss, tips = _tips_along(prof)
+    adv = -np.diff(tips) / (np.diff(ss) * prof.d1)  # avance vers la bande par mm de z
+    steps = -np.diff(tips) > 0.1  # marches au pied des ponts (clearance)
+    assert adv[~steps].max() == pytest.approx(math.tan(math.radians(45)) * factor, rel=0.02)
+
+
+def test_crossings_with_global_anchor_are_full_on_both_plates():
+    bb, mid = _box_mid()
+
+    class Anchor:  # boîte globale décalée (aile en plusieurs corps)
+        class min:
+            X, Y, Z = -7.3, -10.0, -23.0
+
+        class max:
+            X, Y, Z = 100.0, 10.0, 80.0
+
+    layer = RibLayer(spacing=40.0, phase=2.5)
+    spec = HollowSpec(mode="croisements", **SPEC)
+    profs = [p for p in diamond_profiles(bb, mid, [], layer, **OPTS, hollow=spec, anchor=Anchor) if p.top]
+    assert {p.family for p in profs} == {1, -1}
+    nodes = 0
+    for a in (p for p in profs if p.family == 1):
+        for b in (p for p in profs if p.family == -1):
+            s = (b.c - a.c) / (2 * a.d0)  # même s sur les deux plaques (même zmin)
+            if not (8.0 < s < 100.0):  # loin des bouts (pleins de toute façon)
+                continue
+            for p in (a, b):
+                t = tip(p.polygon, s)
+                if t is not None:
+                    nodes += 1
+                    assert t == pytest.approx(0.3, abs=0.06)
+            mid_s = s + 20.0 / (2 * a.d0) / 2  # entre deux croisements : évidé
+            t = tip(a.polygon, mid_s)
+            if t is not None and 8.0 < mid_s < 100.0:
+                assert t > 3.0
+    assert nodes >= 6
+
+
+def test_cut_guides_windows():
+    g = CutGuides(z=(40.0,), lines=((10.0, 0.0, 0.0, 30.0),))
+    d = math.sin(math.radians(45))
+    # plaque x = 0 + s·d, z = s·d : coupe en Z à s = 40/d ; plan x = 10 (z ≤ 30) à s = 10/d (z = 10, dans le tronçon)
+    flat = lambda w: [v for iv in w for v in iv]  # noqa: E731
+    assert flat(g.windows(0.0, d, d, 0.0, 4.0, -5.0, 150.0)) == pytest.approx([40 / d - 4, 40 / d + 4, 10 / d - 4, 10 / d + 4])
+    # plan rencontré hors de son tronçon (z = 50 > 30 + 4) : pas de fenêtre
+    assert flat(g.windows(-40.0, d, d, 0.0, 4.0, -5.0, 150.0)) == pytest.approx([40 / d - 4, 40 / d + 4])
+    # plaque parallèle au plan de coupe (x = 10 + z) et proche : toute la plaque pleine
+    par = CutGuides(lines=((10.0 + 1.0, 1.0, 0.0, 100.0),))
+    assert par.windows(10.0, d, d, 0.0, 4.0, -5.0, 150.0) == ((-6.0, 151.0),)

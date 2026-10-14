@@ -34,7 +34,7 @@ from beaver.features.bores import (
     spar_bores,
 )
 from beaver.features.chord_cut import LayoutPlan, bay_obstacles, bore_obstacles, cut_lines, cut_segment, plan_layout
-from beaver.features.ribs import HollowSpec, diamond_plates, emptied_by_walls, plate_lines
+from beaver.features.ribs import CutGuides, HollowSpec, diamond_plates, emptied_by_walls, plate_lines
 from beaver.features.tubes import Region, Tube, band, beyond, is_transversal, spar_tubes, tube_warnings
 from beaver.features.servo import (
     ServoBay, ServoError, hole_meets_pocket, pocket_profile, pocket_solid, reinforce_solids, reinforce_warnings, servo_bays,
@@ -175,16 +175,19 @@ def fill_skin(skin: Solid, passages: list[tuple[str, Passage]], tol: float) -> S
 
 
 def rib_options(
-    cfg: Config, bb, i: int, bays: Sequence[ServoBay] = (), anchor=None, tubes: Sequence[Tube] = ()
+    cfg: Config, bb, i: int, bays: Sequence[ServoBay] = (), anchor=None, tubes: Sequence[Tube] = (),
+    cuts: CutGuides | None = None,
 ) -> dict:
     """Paramètres de `diamond_plates` / `diamond_profiles` pour le niveau i : un seul jeu pour la génération et
     l'aperçu, qui doivent produire exactement les mêmes plaques (`bays` : baies de servo à contourner ; `anchor` :
-    boîte de calage du motif, la boîte globale des peaux quand le modèle en a plusieurs, voir `plate_lines`)."""
+    boîte de calage du motif, la boîte globale des peaux quand le modèle en a plusieurs, voir `plate_lines` ; `cuts` :
+    coupes du plan de découpe, `cut_guides`, autour desquelles les évidements s'arrêtent)."""
     layer = cfg.rib_layers[i]
     return dict(
         angle_deg=cfg.rib_angle(layer), gap=cfg.split.gap, slit=cfg.slit_width, min_depth=cfg.split.min_rib_depth,
         line_width=cfg.preset.line_width, max_mouth=cfg.validation.max_mouth_width, exclude=deeper_lines(cfg, bb, i, anchor),
         bays=tuple(bays), pocket_strip=cfg.servo_strip(), anchor=anchor, tubes=tuple(tubes), hollow=hollow_spec(cfg, i),
+        cuts=cuts,
     )
 
 
@@ -193,7 +196,27 @@ def hollow_spec(cfg: Config, i: int) -> HollowSpec | None:
     h = cfg.layer_hollow(cfg.rib_layers[i])
     if h.mode == "off":
         return None
-    return HollowSpec(h.mode, h.bridge_width, h.pitch, h.keep_ratio, h.keep_min, cfg.preset.max_overhang_deg)
+    return HollowSpec(
+        h.mode, h.bridge_width, h.pitch, h.keep_ratio, h.keep_min, cfg.preset.max_overhang_deg, h.ramp_factor
+    )
+
+
+def hollow_on(cfg: Config) -> bool:
+    """Au moins une couche de nervures évidée."""
+    return any(hollow_spec(cfg, i) is not None for i in range(len(cfg.rib_layers)))
+
+
+def cut_guides(plan: LayoutPlan | None, z_root: float) -> CutGuides | None:
+    """Coupes d'un plan de découpe en z absolus (`z_root` : bas de la pièce, boîte optimale) : plans z = cte et plans
+    dans la corde x = x0 + pente·z limités à leur tronçon (`ribs.CutGuides`)."""
+    if plan is None:
+        return None
+    lines = []
+    for sp in plan.segments:
+        for p in sp.planes:
+            m = (p.xb - p.xa) / (p.zb - p.za)
+            lines.append((p.xa - (z_root + p.za) * m, m, z_root + sp.z0, z_root + sp.z1))
+    return CutGuides(tuple(z_root + c for c in plan.cuts), tuple(lines))
 
 
 def wall_warnings(
@@ -333,7 +356,8 @@ def rib_crossings(cfg: Config, origin: float, zmin: float, zmax: float) -> list[
     arêtes de croisement (parallèles à Y) sont dans ces plans : une coupe en Z posée dessus fait échouer le booléen
     (aile ×3, coupe à 420 mm). `origin` : bas de la boîte de calage du motif (`skins_anchor`, sinon la peau).
 
-    Évidements : marche verticale au-dessus de chaque pont (arête parallèle à Y à z = pont + bridge_width·d1/2),
+    Évidements : marches verticales au pied et au-dessus de chaque pont (arêtes parallèles à Y à z = pont ±
+    bridge_width·d1/2),
     pont aux croisements ou tous les `pitch` le long de la plaque à partir de `origin` (`ribs.bridge_positions`)."""
     out = []
     for i, layer in enumerate(cfg.rib_layers):
@@ -352,9 +376,10 @@ def rib_crossings(cfg: Config, origin: float, zmin: float, zmax: float) -> list[
         lift = hollow.bridge_width * math.cos(ang) / 2
         if hollow.mode == "pas":
             step = hollow.pitch * math.cos(ang)
-        j0, j1 = math.ceil((zmin - lift - origin) / step - 1e-9), math.floor((zmax - lift - origin) / step + 1e-9)
-        if j1 - j0 <= 100_000:
-            out += [origin + j * step + lift for j in range(j0, j1 + 1)]
+        for off in (-lift, lift):  # marche au pied du pont (fin de rampe) et au-dessus
+            j0, j1 = math.ceil((zmin - off - origin) / step - 1e-9), math.floor((zmax - off - origin) / step + 1e-9)
+            if j1 - j0 <= 100_000:
+                out += [origin + j * step + off for j in range(j0, j1 + 1)]
     return out
 
 
@@ -384,6 +409,24 @@ def layout_for(
     )
 
 
+def cut_plan(
+    skin: Solid, cfg: Config, bores, bays, mesh=None, filled: Sequence[Passage] = (), rib_origin: float | None = None,
+) -> LayoutPlan | None:
+    """Plan de découpe d'une peau orientée (avant rebouchage), calculé avant les nervures : il ne dépend que des
+    sections de la peau, des trous, baies, rebouchages et du calage du motif. Le même plan sert aux SBAR
+    transversales, aux évidements (zones pleines aux coupes) et à la découpe (`Generated.plan`) ; l'aperçu fait le
+    même calcul sur le même maillage. None : découpe désactivée, ou plan impossible (SegmentError, signalée par la
+    découpe)."""
+    if cfg.segment.mode == "off":
+        return None
+    mesh = to_mesh(skin, cfg.validation.tessellation_tol) if mesh is None else mesh
+    obb = skin.bounding_box(optimal=True)
+    try:
+        return layout_for(obb.max.Z - obb.min.Z, obb.min.Z, mesh_sections(mesh), cfg, bores, bays, filled, rib_origin)
+    except SegmentError:
+        return None
+
+
 def skin_tubes(
     skin: Solid, transversal, cfg: Config, cables, bores, bays, mesh=None, filled: Sequence[Passage] = (),
     rib_origin: float | None = None,
@@ -395,14 +438,7 @@ def skin_tubes(
     tol = cfg.validation.tessellation_tol
     mesh = to_mesh(skin, tol) if mesh is None else mesh
     obb = skin.bounding_box(optimal=True)
-    plan = None
-    if cfg.segment.mode != "off":
-        try:
-            plan = layout_for(
-                obb.max.Z - obb.min.Z, obb.min.Z, mesh_sections(mesh), cfg, bores, bays, filled, rib_origin,
-            )
-        except SegmentError:
-            plan = None
+    plan = cut_plan(skin, cfg, bores, bays, mesh, filled, rib_origin)
     bb = skin.bounding_box()
     others = lambda z: [g for b in bores for g in bore_layer(b, z, bb)]  # noqa: E731
     return spar_tubes(transversal, cfg, mesh, bb, cables, chord_regions(plan, obb.min.Z), others), plan
@@ -433,10 +469,15 @@ def generate_skin(
     except (BoreError, ServoError) as exc:
         raise PipelineError(str(exc)) from exc
     tubes = [t for t, _ in held]
+    guides = None
+    if hollow_on(cfg):  # évidements : nervures pleines autour des coupes, plan calculé avant (le même sert à la découpe)
+        if plan is None:
+            plan = cut_plan(skin, cfg, bores, bays, filled=[f for _, f in to_fill], rib_origin=rib_origin_of(skin, anchor))
+        guides = cut_guides(plan, skin.bounding_box(optimal=True).min.Z)
     skin = fill_skin(skin, to_fill, tol)
     plates, counts = [], []
     for i, layer in enumerate(cfg.rib_layers):
-        layer_plates = diamond_plates(bb, mid, bores, layer, **rib_options(cfg, bb, i, bays, anchor, tubes))
+        layer_plates = diamond_plates(bb, mid, bores, layer, **rib_options(cfg, bb, i, bays, anchor, tubes, guides))
         plates += layer_plates
         counts.append(len(layer_plates))
     warns = [*wall_warnings(bb, mid, bores, cfg, counts, bays, anchor, tubes), *reinforce_warnings(bays),

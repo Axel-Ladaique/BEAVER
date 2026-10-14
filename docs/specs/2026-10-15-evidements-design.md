@@ -20,14 +20,14 @@ Les nervures principales (moitié extrados et moitié intrados, séparées par l
 ## Conception
 ### Réglages (`ribs.hollow`, par couche de nervures ou global — global par défaut, surcharge possible par couche)
 - `mode: off | croisements | pas` — défaut **`off`** (aucune pièce existante ne change ; l'utilisateur l'active dans Réglages ou la config, `croisements` recommandé).
-- `bridge_width` (mm, défaut 4.0) : largeur pleine hauteur d'un pont (mesurée le long de la plaque, en x dans la couche).
+- `bridge_width` (mm, défaut 4.0) : largeur pleine hauteur d'un pont (mesurée le long de la plaque, en abscisse s du plan de la plaque ; soit bridge_width·cos(angle) en z d'impression).
 - `pitch` (mm, mode `pas`, défaut 30.0) : distance entre ponts.
 - `keep_ratio` (défaut 0.3) : hauteur de nervure gardée sous la peau = `keep_ratio × demi-épaisseur locale`, au moins `keep_min` (défaut 2.0 mm), au plus la hauteur pleine.
-- Pente des flancs : `max_overhang_deg` de la matière (pas de réglage séparé).
+- Pente des flancs : `max_overhang_deg` de la matière, multipliée par `ramp_factor` (≤ 1, défaut 1) pour des rampes plus douces.
 
 ### Géométrie (dans `features/ribs.py`, profils 2D (s, y) des plaques)
 - Pour chaque plaque, positions des ponts le long de s :
-  - `croisements` : abscisses s des croisements avec les plaques de l'autre famille (même couche de nervures), qui sont régulières (pas = spacing / sin(2·angle) le long de la plaque, décalage selon `offset`) ;
+  - `croisements` : abscisses s des croisements avec les plaques de l'autre famille (même couche de nervures), qui sont régulières (pas = spacing / (2·sin(angle)) le long de la plaque, c.-à-d. spacing / (2·tan(angle)) en z ; décalage selon `phase` et la boîte de calage) ;
   - `pas` : s = s0 + k·pitch (ancré sur la boîte globale comme le motif, pour un rendu régulier entre morceaux).
 - Bord intérieur de la plaque (côté bande) : pleine hauteur sur [s_pont ± bridge_width/2], profondeur évidée ailleurs, raccords en rampe à l'angle de surplomb (en z d'impression).
 - Les profils restent des polygones simples (pas de trou) ⇒ zones, ombres, découpe, aperçu inchangés dans leur principe ; preview = génération (même fonction).

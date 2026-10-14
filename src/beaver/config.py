@@ -111,6 +111,8 @@ class HollowSettings(_Strict):
     # hauteur gardée sous la peau = keep_ratio × demi-épaisseur locale, au moins keep_min (mm)
     keep_ratio: float = Field(default=0.3, json_schema_extra={"exclusiveMinimum": 0, "maximum": 1})
     keep_min: float = Field(default=2.0, json_schema_extra={"exclusiveMinimum": 0})
+    # ≤ 1 : flancs plus doux que le surplomb max matière (pente des rampes × ramp_factor)
+    ramp_factor: float = Field(default=1.0, json_schema_extra={"exclusiveMinimum": 0, "maximum": 1})
 
     @field_validator("mode", mode="before")
     @classmethod
@@ -138,6 +140,15 @@ class HollowSettings(_Strict):
     def _ratio(cls, v: float) -> float:
         if not 0 < v <= 1:
             raise ValueError(f"keep_ratio : proportion gardée entre 0 et 1 attendue (0 exclu), reçu {v}")
+        return v
+
+    @field_validator("ramp_factor")
+    @classmethod
+    def _ramp(cls, v: float) -> float:
+        if not 0 < v <= 1:
+            raise ValueError(
+                f"ramp_factor : facteur de pente des rampes entre 0 et 1 attendu (0 exclu, 1 = surplomb max), reçu {v}"
+            )
         return v
 
     @field_validator("keep_min")

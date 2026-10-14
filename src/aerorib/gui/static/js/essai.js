@@ -1,6 +1,7 @@
 // Résumé d'un essai (onglets Générer et Historique) : chiffres, messages, tableau des corps, fichiers, actions.
 
 import { api, seg, urlAvecJeton } from "./api.js";
+import { encadreNotices, tableauMorceauxEssai } from "./decoupe.js";
 import { badgeStatut, duree, el, message, nombre, vider } from "./dom.js";
 
 /** Liens et boutons d'un essai terminé . */
@@ -43,7 +44,7 @@ export function carteEssai(projet, essai, r) {
   if (r.message) carte.append(el("p", { texte: r.message }));
   if (r.nervures !== undefined) {
     carte.append(el("div", { classe: "chiffres" }, [
-      ["nervures (plaques)", r.nervures], ["tronçons", r.troncons], ["masse", r.masse !== undefined ? `${nombre(r.masse, 1)} g` : "—"],
+      ["nervures (plaques)", r.nervures], ["tronçons", r.troncons], ["morceaux (plateaux)", r.morceaux], ["masse", r.masse !== undefined ? `${nombre(r.masse, 1)} g` : "—"],
       ["trajet", r.trajet !== undefined ? `${nombre(r.trajet, 1)} m` : "—"], ["durée", duree(r.duree)],
       ["orientation", r.orientation || "—"],
     ].map(([e, v]) => el("div", { classe: "chiffre" }, [
@@ -56,6 +57,8 @@ export function carteEssai(projet, essai, r) {
       el("ul", { classe: "liste-messages" }, r.erreurs.map((x) => el("li", { texte: x }))),
     ]));
   }
+  const notices = encadreNotices(r.notices);
+  if (notices) carte.append(notices);
   if (r.avertissements && r.avertissements.length) {
     carte.append(el("div", { classe: "message attention" }, [
       el("strong", { texte: "Avertissements" }),
@@ -77,6 +80,12 @@ export function carteEssai(projet, essai, r) {
         avecBaies ? el("td", { texte: c.baies || "" }) : null,
       ]))),
     ]));
+  }
+  const morceaux = tableauMorceauxEssai(r.corps);
+  // tableau utile dès qu'une pièce est découpée ou tournée sur le plateau
+  const lignes = (r.corps || []).flatMap((c) => c.liste_morceaux || []);
+  if (morceaux && (lignes.length > (r.corps || []).length || lignes.some((m) => m.rotation))) {
+    carte.append(el("h4", { texte: "Morceaux imprimés" }), morceaux);
   }
   if (r.statut !== "en cours") {
     carte.append(el("div", { classe: "actions liens" }, actionsEssai(projet, essai, r, (m) => vider(erreurs).append(message(m)))), erreurs);

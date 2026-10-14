@@ -162,6 +162,8 @@ class Apercu:
             if w not in warns:
                 warns.append(w)
         out["avertissements"] = warns
+        # décisions automatiques de découpe : informations, distinctes des avertissements
+        out["notices"] = list(views["planform"].notices)
         return out
 
     def stl(self, nom: str, which: str):

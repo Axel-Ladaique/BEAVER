@@ -380,3 +380,85 @@ def test_failing_piece_fails_merged_report():
     # deux tronçons en Z, chacun coupé en deux : couches des deux tronçons
     split = pipeline.merge_reports([good] * 4, ["T1-A", "T1-B", "T2-A", "T2-B"], [0, 0, 120, 120], 240.0)
     assert split.stats["layers"] == 240
+
+
+def test_merged_report_draws_at_most_max_failed_layers():
+    from aerorib.validate import MAX_FAILED_LAYERS, Issue, Report
+
+    stats = {"layers": 120.0, "height_mm": 120.0, "path_length_m": 1.0, "mass_g": 2.0}
+
+    def bad(z0):
+        zs = [z0 + i for i in range(MAX_FAILED_LAYERS)]
+        return Report(tuple(Issue("skin", "error", z, "peau entamée") for z in zs), stats, {z: () for z in zs})
+
+    merged = pipeline.merge_reports([bad(0.5), bad(0.75)], ["A", "B"], [0.0, 0.0], 120.0)
+    assert len(merged.errors) == 2 * MAX_FAILED_LAYERS  # tous les défauts restent listés
+    assert len(merged.failed_layers) == MAX_FAILED_LAYERS and min(merged.failed_layers) == 0.5
+
+
+def test_notice_names_the_bed_of_the_template():
+    from aerorib.features.chord_cut import plan_layout
+
+    wing = swept_wing(chord=400, span=60, code="4412")
+    plan = _plan(wing, 60)
+    (n,) = pipeline.layout_notices(plan, _cfg(), (256.0, 256.0))
+    assert "plateau P1S (256 × 256 mm) même en diagonale" in n
+
+
+# --- aperçu : plan de découpe visible, identique à la génération -----------------------------------------------
+
+
+def _wide_preview(tmp_path, cfg, bodies=None):
+    from aerorib import preview
+    from aerorib.io_step import write_step
+
+    prep = preview.prepare(write_step(tmp_path / "large.step", bodies or wide_wing_bodies()), cfg)
+    plates = preview.plates_2d(prep, cfg)
+    return preview.planform(prep, plates, cfg).to_dict(), preview.estimates(prep, plates, cfg)
+
+
+def test_preview_shows_the_cut_plan(tmp_path):
+    plan, est = _wide_preview(tmp_path, _cfg())
+    a, b = plan["morceaux"]
+    assert (a["nom"], b["nom"]) == ("A", "B") and (a["plateau"], b["plateau"]) == (1, 2)
+    assert a["corps"] == b["corps"] == "Aile_large" and a["tient"] and b["tient"]
+    assert (a["z0"], a["z1"]) == (pytest.approx(0.0, abs=1e-3), pytest.approx(120.0, abs=1e-3))
+    (p,) = plan["plans_corde"]
+    assert p["troncon"] == "T1" and p["evite"] == ["SBAR_8"] and p["inclinaison"] == pytest.approx(0, abs=0.1)
+    # plan décalé hors du longeron (trou + manchon + bande) ; les deux morceaux se rejoignent sur le plan
+    (spar,) = [t for t in plan["trous"] if t["type"] == "longeron"]
+    assert abs(p["x0"] - spar["x"]) > spar["manchon"]
+    assert a["droite"] == b["gauche"] == [p["x0"], p["x1"]]
+    assert a["x1"] == pytest.approx(p["x0"]) and b["x0"] == pytest.approx(p["x0"])
+    assert max(a["largeur"], a["profondeur"]) <= 246 and max(b["largeur"], b["profondeur"]) <= 246
+    (n,) = plan["notices"]
+    assert n.startswith("découpe automatique : coupe dans la corde en 2 morceaux") and "SBAR_8" in n
+    assert plan["coupes"] == [] and plan["avertissements"] == []
+    assert est["morceaux"] == 2 and len(est["troncons"]) == 1
+
+
+def test_preview_chord_cut_off_is_refused_like_generation(tmp_path):
+    plan, est = _wide_preview(tmp_path, _cfg(segment={"chord": "off"}))
+    assert plan["morceaux"] == [] and est["morceaux"] is None and est["troncons"] is None
+    (w,) = plan["avertissements"]
+    assert "découpe en tronçons impossible" in w and "segment.chord: off" in w
+
+
+@pytest.mark.slow
+def test_preview_cut_plan_matches_generation(wide_run, tmp_path):
+    cfg, run, _ = wide_run
+    (b,) = run.bodies
+    plan, est = _wide_preview(tmp_path, cfg)
+    pieces = plan["morceaux"]
+    assert [p["nom"] for p in pieces] == list(b.names)
+    assert [(p["z0"], p["z1"]) for p in pieces] == [pytest.approx(s, abs=1e-3) for s in b.spans]
+    assert plan["notices"] == list(b.notices)
+    assert est["morceaux"] == len(b.segments) and est["plaques"] == b.plates
+    # chaque morceau généré s'étend en corde entre les plans de l'aperçu (même plan de coupe) ; `wide_run` part des
+    # corps en mémoire, l'aperçu du STEP écrit : repères comparés depuis le bord d'attaque de chaque peau
+    dx = b.original.bounding_box(optimal=True).min.X - pieces[0]["x0"]
+    for p, solid in zip(pieces, b.segments):
+        bb = solid.bounding_box(optimal=True)
+        assert (bb.min.X - dx, bb.max.X - dx) == (pytest.approx(p["x0"], abs=0.05), pytest.approx(p["x1"], abs=0.05))
+    for p, pl in zip(pieces, b.placements):
+        assert p["tient"] == pl.fits and p["rotation"] == pytest.approx(pl.angle_deg, abs=1.0)

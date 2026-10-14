@@ -66,6 +66,7 @@ async function charger() {
       el("td", {}, [badgeStatut(e.statut)]),
       el("td", { classe: "nombre", texte: valeurTexte(e.nervures) }),
       el("td", { classe: "nombre", texte: valeurTexte(e.troncons) }),
+      el("td", { classe: "nombre", texte: valeurTexte(e.morceaux) }),
       el("td", { classe: "nombre", texte: e.masse !== null && e.masse !== undefined ? `${nombre(e.masse, 1)} g` : "—" }),
       el("td", { classe: "nombre", texte: e.trajet !== null && e.trajet !== undefined ? `${nombre(e.trajet, 1)} m` : "—" }),
       el("td", { classe: "nombre", texte: duree(e.duree) }),
@@ -88,6 +89,7 @@ async function charger() {
     el("thead", {}, [el("tr", {}, [
       el("th", { texte: "Comparer" }), el("th", { texte: "Date" }), el("th", { texte: "Statut" }),
       el("th", { classe: "nombre", texte: "Nervures" }), el("th", { classe: "nombre", texte: "Tronçons" }),
+      el("th", { classe: "nombre", texte: "Morceaux" }),
       el("th", { classe: "nombre", texte: "Masse" }), el("th", { classe: "nombre", texte: "Trajet" }),
       el("th", { classe: "nombre", texte: "Durée" }), el("th", { texte: "Alertes" }), el("th", { texte: "Actions" }),
     ])]),

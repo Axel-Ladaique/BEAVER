@@ -142,7 +142,7 @@ def _run_job(step: str, config_path: str, out_dir: str, queue) -> None:
 
         from aerorib.bambu import BambuError, read_template, vase_warning
         from aerorib.classify import ClassifyError, classify
-        from aerorib.report import format_bays, format_bores
+        from aerorib.report import format_bays, format_bores, piece_rows
         from aerorib.config import ConfigError, load_config, material_label, resolve_template
         from aerorib.export import export_results
         from aerorib.io_step import StepReadError, read_step
@@ -172,6 +172,7 @@ def _run_job(step: str, config_path: str, out_dir: str, queue) -> None:
             return
         erreurs: list[str] = []
         corps = []
+        plateau = 1  # un morceau par plateau du projet 3MF, dans l'ordre des corps
         for b in result.bodies:
             errs, warns = _issues(b.report)
             erreurs += [f"{b.name} : {e}" for e in errs]
@@ -185,7 +186,10 @@ def _run_job(step: str, config_path: str, out_dir: str, queue) -> None:
                 "couches": int(s["layers"]), "hauteur": round(s["height_mm"], 2),
                 "trous": format_bores(b.bores, b.filled, b.tubes).strip().removeprefix("trous : "),
                 "baies": format_bays(b.bays, b.z_heights).strip().removeprefix("baies : "),
+                # morceaux imprimés : nom, étendue en Z, emprise, rotation sur le plateau, plateau, validation
+                "liste_morceaux": piece_rows(b, plateau),
             })
+            plateau += max(len(b.segments), 1)
         rapports = sorted(p.name for p in out.glob("*-rapport.html"))
         finish(
             "ok" if result.ok else "non imprimable",
@@ -532,6 +536,7 @@ class History:
                 "duree": r.get("duree"),
                 "nervures": r.get("nervures"),
                 "troncons": r.get("troncons"),
+                "morceaux": r.get("morceaux"),
                 "masse": r.get("masse"),
                 "trajet": r.get("trajet"),
                 "nb_erreurs": len(r.get("erreurs") or []),

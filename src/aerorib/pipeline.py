@@ -32,14 +32,14 @@ from aerorib.features.bores import (
 )
 from aerorib.features.chord_cut import LayoutPlan, bay_obstacles, bore_obstacles, cut_lines, cut_segment, plan_layout
 from aerorib.features.ribs import diamond_plates, emptied_by_walls, plate_lines
-from aerorib.features.tubes import Region, Tube, band, beyond, is_transversal, spar_tubes
+from aerorib.features.tubes import Region, Tube, band, beyond, is_transversal, spar_tubes, tube_warnings
 from aerorib.features.servo import ServoBay, ServoError, hole_meets_pocket, pocket_solid, reinforce_solids, reinforce_warnings, servo_bays
 from aerorib.layout import Placement, fit_on_bed, format_rotation
 from aerorib.midsurface import MidSurface
 from aerorib.orient import Orientation, orient
 from aerorib.segment import SegmentError, split_part
 from aerorib.slicing import mesh_sections, section_sampler, slice_layers, to_mesh
-from aerorib.validate import Report, validate
+from aerorib.validate import MAX_FAILED_LAYERS, Report, validate
 
 
 class PipelineError(ValueError):
@@ -352,7 +352,8 @@ def generate_skin(
         layer_plates = diamond_plates(bb, mid, bores, layer, **rib_options(cfg, bb, i, bays, anchor, tubes))
         plates += layer_plates
         counts.append(len(layer_plates))
-    warns = wall_warnings(bb, mid, bores, cfg, counts, bays, anchor, tubes) + reinforce_warnings(bays)
+    warns = [*wall_warnings(bb, mid, bores, cfg, counts, bays, anchor, tubes), *reinforce_warnings(bays),
+             *tube_warnings(tubes, cfg, bays)]
     # gaines et longerons qui entrent dans une baie : simplement découpés par la poche
     # poches et fentes de renfort : ouvertures voulues de la peau
     pockets = [t for b in bays for t in (pocket_solid(b), *reinforce_solids(b))]
@@ -440,6 +441,46 @@ def _segment(
     return seg.pieces, seg.warnings
 
 
+def layout_notices(plan: LayoutPlan, cfg: Config, bed: tuple[float, float]) -> list[str]:
+    """Décisions automatiques de découpe (informations pour l'utilisateur), mêmes textes en génération et dans
+    l'aperçu ; `bed` : plateau du gabarit (largeur, profondeur)."""
+    notices = []
+    n_z = len(plan.z.cuts) + 1
+    if plan.z.reason:
+        notices.append(f"découpe automatique : {n_z} tronçons en Z ({plan.z.reason})")
+    if plan.extra_z:
+        notices.append(
+            f"découpe automatique : {len(plan.segments)} tronçons en Z pour limiter l'inclinaison de la coupe dans "
+            f"la corde (surplomb max {cfg.preset.max_overhang_deg:g}°)"
+        )
+    plateau = f"plateau {cfg.printer.upper()} ({bed[0]:.0f} × {bed[1]:.0f} mm)"
+    need = plan.z.chord
+    for i, sp in enumerate(plan.segments, 1):
+        if not sp.planes:
+            continue
+        where = f"T{i} : " if len(plan.segments) > 1 else ""
+        if need is not None and need.z0 <= sp.z1 and need.z1 >= sp.z0 and sp.size is not None:
+            why = f"section {sp.size[0]:.0f} × {sp.size[1]:.0f} mm > {plateau} même en diagonale"
+        else:
+            why = f"tronçon trop grand pour le {plateau} même tourné"
+        line = f"découpe automatique : {where}coupe dans la corde en {sp.k} morceaux ({why})"
+        for p in sp.planes:
+            if p.shift:
+                toward = "le bord de fuite" if (p.shift > 0) == sp.le_at_min else "le bord d'attaque"
+                line += (f" ; plan décalé de {abs(p.shift):.1f} mm vers {toward} pour éviter "
+                         + ", ".join(p.avoided or ("un obstacle",)))
+        notices.append(line)
+    return notices
+
+
+def body_notice(n_pieces: int, cfg: Config) -> str:
+    """Corps d'aile (plusieurs corps dans le STEP) encore découpé pour tenir dans le volume d'impression."""
+    return (
+        f"corps d'aile déjà découpé dans la CAO, encore découpé en {n_pieces} morceaux pour tenir dans le volume "
+        f"d'impression ({cfg.printer.upper()})"
+    )
+
+
 def segment_part(
     body_name: str, result: Solid, cfg: Config, progress: Callable[[str], None], skin: Solid | None = None,
     original: Solid | None = None, bores: Sequence[Bore] = (), bays: Sequence[ServoBay] = (),
@@ -474,7 +515,6 @@ def segment_part(
         progress(f"⚠ {w_}")
     z0 = bb.min.Z
     height = bb.max.Z - z0
-    printer = cfg.printer.upper()
     try:
         if plan is None:  # plan déjà calculé par generate_skin quand il y a des SBAR transversales
             sample = section_sampler(skin if skin is not None else result, cfg.validation.tessellation_tol)
@@ -499,31 +539,7 @@ def segment_part(
                     checks += [(ref[j], _face_exempt(cut_lines(sp, j, CUT_FACE_TOL), gap)) for j in order]
     except SegmentError as exc:
         raise PipelineError(f"{body_name} : {exc}") from exc
-    notices = []
-    n_z = len(plan.z.cuts) + 1
-    if plan.z.reason:
-        notices.append(f"découpe automatique : {n_z} tronçons en Z ({plan.z.reason})")
-    if plan.extra_z:
-        notices.append(
-            f"découpe automatique : {len(plan.segments)} tronçons en Z pour limiter l'inclinaison de la coupe dans "
-            f"la corde (surplomb max {cfg.preset.max_overhang_deg:g}°)"
-        )
-    need = plan.z.chord
-    for i, sp in enumerate(plan.segments, 1):
-        if not sp.planes:
-            continue
-        where = f"T{i} : " if len(plan.segments) > 1 else ""
-        if need is not None and need.z0 <= sp.z1 and need.z1 >= sp.z0 and sp.size is not None:
-            why = f"section {sp.size[0]:.0f} × {sp.size[1]:.0f} mm > plateau {printer} même en diagonale"
-        else:
-            why = f"tronçon trop grand pour le plateau {printer} même tourné"
-        line = f"découpe automatique : {where}coupe dans la corde en {sp.k} morceaux ({why})"
-        for p in sp.planes:
-            if p.shift:
-                toward = "le bord de fuite" if (p.shift > 0) == sp.le_at_min else "le bord d'attaque"
-                line += (f" ; plan décalé de {abs(p.shift):.1f} mm vers {toward} pour éviter "
-                         + ", ".join(p.avoided or ("un obstacle",)))
-        notices.append(line)
+    notices = layout_notices(plan, cfg, (W, D))
     n_seg = len(plan.segments)
     if n_seg > 1:
         progress(f"{body_name} : découpe en {n_seg} tronçons")
@@ -550,6 +566,8 @@ def merge_reports(reports: Sequence[Report], names: Sequence[str], offsets: Sequ
         "path_length_m": sum(r.stats["path_length_m"] for r in reports),
         "mass_g": sum(r.stats["mass_g"] for r in reports),
     }
+    # au plus MAX_FAILED_LAYERS couches dessinées, comme pour une pièce validée d'un seul tenant (les plus basses)
+    failed = {z: failed[z] for z in sorted(failed)[:MAX_FAILED_LAYERS]}
     return Report(tuple(issues), stats, failed)
 
 
@@ -714,8 +732,7 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
         notices = seg.notices
         if several and len(seg.pieces) > 1:
             notices = (
-                f"corps d'aile déjà découpé dans la CAO, encore découpé en {len(seg.pieces)} morceaux pour tenir dans "
-                f"le volume d'impression ({cfg.printer.upper()})",
+                body_notice(len(seg.pieces), cfg),
                 *notices,
             )
             progress(f"{s.body.name} : {notices[0]}")

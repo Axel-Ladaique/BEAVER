@@ -3,6 +3,7 @@
 
 import { appel, ErreurApi, seg } from "../api.js";
 import { debounce, el, message, nombre, duree, svg, vider } from "../dom.js";
+import { couleurMorceau, couleursMorceaux, encadreNotices, nomMorceau, panneauDecoupe, quadsDeCoupe } from "../decoupe.js";
 
 const RELANCE_MS = 1000; // préparation en cours : nouvel essai
 const CURSEUR_MS = 120;
@@ -99,6 +100,10 @@ function rendre() {
   vider(ui.coupe).append(dessinCoupe(r.section));
   vider(ui.dessus).append(dessinDessus(r.planform, r.section.z));
   vider(ui.chiffres).append(...chiffres(r.estimates));
+  vider(ui.notices);
+  const notices = encadreNotices(r.notices);
+  if (notices) ui.notices.append(notices);
+  vider(ui.decoupe).append(...panneauDecoupe(r.planform));
   vider(ui.avertissements);
   if (r.avertissements && r.avertissements.length) {
     ui.avertissements.append(el("div", { classe: "message attention", role: "status" }, [
@@ -203,6 +208,10 @@ export function dessinDessus(plan, zCourant) {
   });
   s.append(svg("title", { texte: "Vue de dessus : cliquer pour placer la coupe à cette hauteur" }));
   s.append(svg("rect", { x: zmin, y: -xmax, width: zmax - zmin, height: xmax - xmin, classe: "contour-aile", "stroke-width": 1, ...TRAIT }));
+  const morceaux = plan.morceaux || [];
+  const plusieurs = new Set(morceaux.map((m) => m.corps)).size > 1;
+  // étendue en corde inconnue (aucune section lue) : pas de zone, le nom reste dans la liste « Découpe »
+  if (morceaux.length > 1) morceaux.forEach((m, i) => { if (Number.isFinite(m.x0)) s.append(zoneMorceau(m, i, plusieurs)); });
   for (const [x0, z0, x1, z1, couche, famille] of plan.segments) {
     s.append(svg("line", {
       x1: z0, y1: -x0, x2: z1, y2: -x1, classe: famille > 0 ? "reseau-a" : "reseau-b",
@@ -226,10 +235,23 @@ export function dessinDessus(plan, zCourant) {
     s.append(g);
   }
   for (const b of plan.baies || []) s.append(dessinBaie(b));
+  for (const t of plan.sbar_transversales || []) s.append(dessinSbar(t));
   for (const c of plan.coupes || []) {
     s.append(svg("line", { x1: c, y1: -xmax - b.h, x2: c, y2: -xmin + b.h, classe: "coupe-troncon", "stroke-width": 1.5, ...TRAIT }, [
-      svg("title", { texte: `Coupe de tronçon à z = ${nombre(c, 1)} mm` }),
+      svg("title", { texte: `Coupe en Z (tronçon) à z = ${nombre(c, 1)} mm` }),
     ]));
+  }
+  for (const p of plan.plans_corde || []) s.append(dessinPlanCorde(p));
+  if (morceaux.length > 1) {
+    const taille = Math.max(b.w, b.h) * 0.06;
+    morceaux.forEach((m, i) => {
+      if (!Number.isFinite(m.x0)) return;
+      const [x, z] = m.centre;
+      s.append(svg("text", {
+        x: z, y: -x, classe: "etiquette-morceau", "text-anchor": "middle", "dominant-baseline": "middle",
+        style: `font-size: ${taille}px; fill: ${couleurMorceau(i)}`, texte: nomMorceau(m, plusieurs),
+      }));
+    });
   }
   s.append(svg("line", { x1: zCourant, y1: -xmax - b.h, x2: zCourant, y2: -xmin + b.h, classe: "niveau-z", "stroke-width": 1.5, ...TRAIT }, [
     svg("title", { texte: `Coupe affichée : z = ${nombre(zCourant, 1)} mm` }),
@@ -241,6 +263,43 @@ export function dessinDessus(plan, zCourant) {
     choisirZ(Math.min(Math.max(p.x, zmin), zmax));
   });
   return s;
+}
+
+/** Morceau vu de dessus : zone teintée entre ses plans de coupe (ou ses bords en corde), avec son titre. */
+export function zoneMorceau(m, i, plusieurs = false) {
+  const g0 = m.gauche ? m.gauche : [m.x0, m.x0];
+  const d0 = m.droite ? m.droite : [m.x1, m.x1];
+  const pts = [[m.z0, -g0[0]], [m.z1, -g0[1]], [m.z1, -d0[1]], [m.z0, -d0[0]]];
+  const rot = m.rotation ? `, tourné de ${nombre(Math.abs(m.rotation), 0)}° sur le plateau` : "";
+  const titre = `Morceau ${nomMorceau(m, plusieurs)} : z = ${nombre(m.z0, 1)} – ${nombre(m.z1, 1)} mm, emprise `
+    + `${nombre(m.largeur, 0)} × ${nombre(m.profondeur, 0)} mm${rot}, plateau ${m.plateau}${m.tient ? "" : " — ne tient pas sur le plateau"}`;
+  return svg("polygon", {
+    points: pts.map(([a, c]) => `${a},${c}`).join(" "), classe: "morceau-dessus", fill: couleurMorceau(i),
+  }, [svg("title", { texte: titre })]);
+}
+
+/** Coupe dans la corde vue de dessus : segment de x(z0) à x(z1) sur son tronçon (trait plein). */
+export function dessinPlanCorde(p) {
+  const evite = p.evite && p.evite.length
+    ? `, décalée de ${nombre(Math.abs(p.decalage), 1)} mm pour éviter ${p.evite.join(", ")}` : "";
+  const titre = `Coupe dans la corde (${p.corps ? `${p.corps}, ` : ""}${p.troncon}) : x = ${nombre(p.x0, 1)} mm à `
+    + `z = ${nombre(p.z0, 1)} mm → x = ${nombre(p.x1, 1)} mm à z = ${nombre(p.z1, 1)} mm, `
+    + `inclinaison ${nombre(p.inclinaison, 1)}°${evite}`;
+  return svg("line", { x1: p.z0, y1: -p.x0, x2: p.z1, y2: -p.x1, classe: "coupe-corde", "stroke-width": 2.5, ...TRAIT }, [
+    svg("title", { texte: titre }),
+  ]);
+}
+
+/** SBAR transversale vue de dessus : bande de la largeur du trou le long de son axe, axe en pointillés. */
+export function dessinSbar(t) {
+  const fente = t.fente ? ", reliée à la peau par une fente" : ", débouchante";
+  const titre = `SBAR transversale « ${t.nom} »${t.gaine ? " (gaine)" : ""} : Ø ${nombre(t.d, 1)} mm, `
+    + `axe à ${nombre(t.angle, 0)}° de l'envergure${fente}`;
+  return svg("g", { classe: "sbar-dessus" }, [
+    svg("title", { texte: titre }),
+    svg("line", { x1: t.z0, y1: -t.x0, x2: t.z1, y2: -t.x1, classe: "sbar-bande", "stroke-width": 2 * t.r, "stroke-linecap": "round" }),
+    svg("line", { x1: t.z0, y1: -t.x0, x2: t.z1, y2: -t.x1, classe: "sbar-axe", "stroke-width": 1, ...TRAIT }),
+  ]);
 }
 
 /** Baie de servo vue de dessus : ouverture dans la peau (rampes plus claires) et boîte utile en trait plein. */
@@ -277,6 +336,8 @@ function chiffres(e) {
     tuile(e.troncons ? String(e.troncons.length) : "—", e.troncons
       ? `tronçon(s) : ${e.troncons.map((h) => `${nombre(h, 1)} mm`).join(" · ")}`
       : "tronçons : découpe impossible (voir avertissements)"),
+    tuile(e.morceaux ? String(e.morceaux) : "—", e.morceaux ? "morceau(x) imprimé(s), un par plateau"
+      : "morceaux : découpe impossible (voir avertissements)"),
     tuile(String(e.couches), "couches"),
     tuile(`${nombre(e.trajet_m, 1)} m`, "trajet estimé", "moyenne sur un échantillon de couches"),
     tuile(`${nombre(e.masse_g, 1)} g`, "masse estimée", "trajet × largeur de ligne × hauteur de couche × densité"),
@@ -374,11 +435,28 @@ async function charger3d() {
   try {
     ui.etat3d.textContent = "Maillage de la peau…";
     const peau = chargeur.parse(await stl(nom, "peau"));
+    const plan = etat.resultat ? etat.resultat.planform : null;
+    const morceaux = plan && plan.morceaux && plan.morceaux.length > 1 ? plan.morceaux : null;
+    if (morceaux) peau.setAttribute("color", new THREE.BufferAttribute(couleursMorceaux(peau.attributes.position.array, morceaux), 3));
     const mPeau = new THREE.Mesh(peau, new THREE.MeshStandardMaterial({
-      color: 0x9fb3c8, transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide,
+      color: morceaux ? 0xffffff : 0x9fb3c8, vertexColors: Boolean(morceaux), transparent: true,
+      opacity: morceaux ? 0.4 : 0.22, depthWrite: false, side: THREE.DoubleSide,
     }));
     v.scene.add(mPeau);
     v.maillages.push(mPeau);
+    peau.computeBoundingBox();
+    if (plan) {
+      for (const q of quadsDeCoupe(plan, peau.boundingBox.min.y - 2, peau.boundingBox.max.y + 2)) {
+        const g = new THREE.BufferGeometry();
+        g.setAttribute("position", new THREE.Float32BufferAttribute([...q[0], ...q[1], ...q[2], ...q[0], ...q[2], ...q[3]], 3));
+        g.computeVertexNormals();
+        const mPlan = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
+          color: 0xbf3989, transparent: true, opacity: 0.28, depthWrite: false, side: THREE.DoubleSide,
+        }));
+        v.scene.add(mPlan);
+        v.maillages.push(mPlan);
+      }
+    }
     peau.computeBoundingSphere();
     const { center, radius } = peau.boundingSphere;
     v.controls.target.copy(center);
@@ -392,13 +470,19 @@ async function charger3d() {
     etat.configVue3d = JSON.stringify(etat.config);
     try {
       const plaques = chargeur.parse(await stl(nom, "plaques"));
-      const mPlaques = new THREE.Mesh(plaques, new THREE.MeshStandardMaterial({ color: 0x1f6feb, side: THREE.DoubleSide }));
+      if (morceaux) plaques.setAttribute("color", new THREE.BufferAttribute(couleursMorceaux(plaques.attributes.position.array, morceaux), 3));
+      const mPlaques = new THREE.Mesh(plaques, new THREE.MeshStandardMaterial({
+        color: morceaux ? 0xffffff : 0x1f6feb, vertexColors: Boolean(morceaux), side: THREE.DoubleSide,
+      }));
       v.scene.add(mPlaques);
       v.maillages.push(mPlaques);
     } catch (e) {
       ui.erreur3d.append(message(`Plaques non affichées : ${e.message}`, "attention"));
     }
-    ui.etat3d.textContent = "Peau transparente, plaques des nervures en bleu (sans découpe). Glisser pour tourner, molette pour zoomer.";
+    ui.etat3d.textContent = (morceaux
+      ? "Peau et plaques colorées par morceau (couleurs de la liste « Découpe »), plans de coupe en rose translucide"
+      : "Peau transparente, plaques des nervures en bleu")
+      + " (sans découpe booléenne). Glisser pour tourner, molette pour zoomer.";
     ui.note3d.hidden = true;
     v.rendre3d();
   } catch (e) {
@@ -433,6 +517,8 @@ function construire() {
   ui.dessus = el("div");
   ui.chiffres = el("div", { classe: "chiffres" });
   ui.avertissements = el("div");
+  ui.notices = el("div");
+  ui.decoupe = el("div");
   ui.bouton3d = el("button", { type: "button", texte: "Afficher la vue 3D", onclick: ouvrir3d });
   ui.etat3d = el("span", { classe: "etat-apercu", role: "status" });
   ui.erreur3d = el("div");
@@ -444,6 +530,7 @@ function construire() {
       el("h2", { texte: "Aperçu instantané" }),
       ui.etat,
       ui.erreur,
+      ui.notices,
       ui.avertissements,
       el("div", { classe: "apercu-vues" }, [
         el("div", {}, [
@@ -467,11 +554,16 @@ function construire() {
             el("span", {}, [el("span", { classe: "pastille", style: "background: var(--reseau-b)" }), "réseau −angle"]),
             el("span", {}, [el("span", { classe: "pastille pastille-trou" }), "longeron / passage / gaine de câble (manchon en pointillés)"]),
             el("span", {}, [el("span", { classe: "pastille pastille-baie" }), "baie de servo (rampes plus claires)"]),
-            el("span", {}, [el("span", { classe: "pastille", style: "border-top: 2px dashed var(--texte)" }), "coupe de tronçon"]),
+            el("span", {}, [el("span", { classe: "pastille", style: "border-top: 2px dashed var(--texte)" }), "coupe en Z (tronçon)"]),
+            el("span", {}, [el("span", { classe: "pastille", style: "border-top: 3px solid var(--coupe-corde)" }), "coupe dans la corde"]),
+            el("span", {}, [el("span", { classe: "pastille pastille-sbar" }), "SBAR transversale (axe en pointillés)"]),
+            el("span", {}, [el("span", { classe: "pastille pastille-morceaux" }), "morceaux (nom : T1-A…, survoler)"]),
             el("span", {}, [el("span", { classe: "pastille", style: "border-top: 2px dashed var(--attention)" }), "coupe affichée"]),
           ]),
         ]),
       ]),
+      el("h3", { texte: "Découpe (volume d'impression)" }),
+      ui.decoupe,
       el("h3", { texte: "Chiffres estimés" }),
       ui.chiffres,
       el("h3", { texte: "3D approximative" }),
@@ -499,6 +591,8 @@ export function init(panneau, contexte) {
     vider(ui.chiffres);
     vider(ui.dessus);
     vider(ui.avertissements);
+    vider(ui.notices);
+    vider(ui.decoupe);
     vider(ui.coupe).append(el("p", { classe: "vide", texte: nom ? "Chargement…" : "Ouvrez un projet pour voir l'aperçu." }));
     ui.curseur.disabled = true;
   });

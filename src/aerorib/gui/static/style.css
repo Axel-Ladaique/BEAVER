@@ -250,3 +250,19 @@ svg text { fill: var(--texte-doux); font: 11px var(--police); }
 .liste-choix button[aria-current="true"] { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
 .form-ligne { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin: .4rem 0; }
 .form-ligne label { min-width: 8rem; }
+
+/* --- découpe (aperçu, essais) ------------------------------------------------------------------- */
+:root { --coupe-corde: #bf3989; }
+@media (prefers-color-scheme: dark) { :root { --coupe-corde: #ff80c8; } }
+.message.notice { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); color: var(--texte); border: 1px solid var(--accent); }
+svg .coupe-corde { stroke: var(--coupe-corde); }
+svg .morceau-dessus { fill-opacity: .1; stroke: none; }
+svg .sbar-dessus .sbar-bande { stroke: var(--trou); stroke-opacity: .35; }
+svg .sbar-dessus .sbar-axe { stroke: var(--trou); stroke-dasharray: 4 3; }
+svg text.etiquette-morceau { font-weight: 700; pointer-events: none; paint-order: stroke; stroke: var(--surface); stroke-width: .15px; }
+.legende .pastille-sbar { background: color-mix(in srgb, var(--trou) 35%, transparent); border-top: 1px dashed var(--trou); }
+.legende .pastille-morceaux { background: linear-gradient(90deg, #1f6feb55 50%, #d9770655 50%); }
+.pastille-morceau { display: inline-block; width: .8em; height: .8em; border-radius: 2px; margin-right: .4em; vertical-align: -.05em; }
+.table-morceaux td.nombre, .table-morceaux th { white-space: nowrap; }
+.table-morceaux tr.ne-tient-pas td { color: var(--erreur); }
+.table-morceaux { margin-bottom: 1rem; }

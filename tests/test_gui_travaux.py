@@ -152,6 +152,10 @@ def test_generation_complete(genere):
     assert resume["nervures"] > 10 and resume["troncons"] >= 1
     assert resume["masse"] > 0 and resume["trajet"] > 0 and resume["duree"] > 0
     assert resume["erreurs"] == [] and isinstance(resume["avertissements"], list)
+    (corps,) = resume["corps"]  # morceaux imprimés : un seul ici, plateau 1
+    (m,) = corps["liste_morceaux"]
+    assert (m["nom"], m["plateau"], m["ok"], m["tient"]) == ("T1", 1, True, True) and m["rotation"] == 0
+    assert resume["morceaux"] == 1 and resume["notices"] == []
     for f in ("aile1.step", "aile1.stl", "aile1.3mf", "aile1-rapport.html"):
         assert f in resume["fichiers"] and (d / f).is_file(), f
     cfg = yaml.safe_load((d / "config.yaml").read_text(encoding="utf-8"))
@@ -164,6 +168,7 @@ def test_generation_complete(genere):
     assert [e["essai"] for e in liste] == [genere["b"]["essai"], essai]  # plus récent d'abord
     e = next(e for e in liste if e["essai"] == essai)
     assert e["statut"] == "ok" and e["nervures"] == resume["nervures"] and e["masse"] == resume["masse"]
+    assert e["morceaux"] == 1
     det = c.get(f"/api/projets/aile1/essais/{essai}", headers=H).json()
     assert det["resume"]["statut"] == "ok" and det["config"]["rib_layers"][0]["spacing"] == 20
     # fichiers servis

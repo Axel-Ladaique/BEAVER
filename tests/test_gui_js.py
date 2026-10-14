@@ -191,3 +191,100 @@ return { libelles: chemins.map(libelle), aideRoles: aide(["roles"]), aideCable: 
     assert "parent" in out["aideRoles"] and "préfixe" in out["aideRoles"]
     assert "1,2" in out["aideCable"]
     assert out["choix"] == ["baie de servo", "début (coordonnée min.)", "fin (coordonnée max.)"] and out["plan"]
+
+
+_PLAN_DECOUPE = r"""
+const plan = { aile: [-170, 0, 230, 120], segments: [], coupes: [60], trous: [], corps: [],
+  morceaux: [
+    { nom: "T1-A", corps: "Aile", z0: 0, z1: 60, x0: -170, x1: 23, gauche: null, droite: [23, 23], centre: [-73, 30],
+      largeur: 193, profondeur: 51, rotation: 0, tient: true, plateau: 1 },
+    { nom: "T1-B", corps: "Aile", z0: 0, z1: 60, x0: 23, x1: 230, gauche: [23, 23], droite: null, centre: [126, 30],
+      largeur: 207, profondeur: 44, rotation: -37.5, tient: true, plateau: 2 },
+    { nom: "T2", corps: "Aile", z0: 60, z1: 120, x0: -170, x1: 230, gauche: null, droite: null, centre: [30, 90],
+      largeur: 300, profondeur: 50, rotation: 0, tient: false, plateau: 3 },
+  ],
+  plans_corde: [{ troncon: "T1", corps: "Aile", x0: 23, z0: 0, x1: 23, z1: 60, inclinaison: 0, decalage: -7, evite: ["SBAR<8>"] }],
+  sbar_transversales: [{ nom: "SBAR_T", type: "transversale", gaine: false, x0: -5, z0: 90, x1: 105, z1: 90, d: 4, r: 2.15, angle: 90, fente: true }],
+  notices: ["découpe automatique : coupe dans la corde en 2 morceaux"],
+};
+"""
+
+
+def test_vue_de_dessus_dessine_la_decoupe():
+    """Coupes en Z en tirets, coupe dans la corde en trait plein, SBAR transversale en bande, morceaux nommés."""
+    out = _node(_DOM + _PLAN_DECOUPE + r"""
+const { dessinDessus } = await js("onglets/apercu.js");
+const s = dessinDessus(plan, 40);
+const titre = (n) => (n.enfants.find((e) => e.tag === "title") || {}).textContent;
+const lignes = s.enfants.filter((n) => n.tag === "line");
+const sbar = s.enfants.find((n) => n.attrs.class === "sbar-dessus");
+return {
+  zones: s.enfants.filter((n) => n.attrs.class === "morceau-dessus").map((n) => [n.attrs.points, n.attrs.fill, titre(n)]),
+  coupeZ: lignes.filter((n) => n.attrs.class === "coupe-troncon").map((n) => [+n.attrs.x1, titre(n)]),
+  corde: lignes.filter((n) => n.attrs.class === "coupe-corde").map((n) => [+n.attrs.x1, +n.attrs.y1, +n.attrs.x2, +n.attrs.y2, titre(n)]),
+  sbar: [titre(sbar), sbar.enfants.filter((n) => n.tag === "line").map((n) => [n.attrs.class, +n.attrs["stroke-width"]])],
+  textes: s.enfants.filter((n) => n.tag === "text").map((n) => [n.textContent, +n.attrs.x, +n.attrs.y]),
+};
+""")
+    a, b, t2 = out["zones"]
+    assert a[0] == "0,170 60,170 60,-23 0,-23" and a[1] != b[1] != t2[1]
+    assert "Morceau T1-B" in b[2] and "tourné de 38°" in b[2] and "plateau 2" in b[2]
+    assert "ne tient pas" in t2[2]
+    assert out["coupeZ"] == [[60, "Coupe en Z (tronçon) à z = 60,0 mm"]]
+    ((z0, y0, z1, y1, titre),) = out["corde"]
+    assert (z0, y0, z1, y1) == (0, -23, 60, -23) and "Coupe dans la corde (Aile, T1)" in titre and "SBAR<8>" in titre
+    assert out["sbar"][0].startswith("SBAR transversale « SBAR_T » : Ø 4,0 mm") and "fente" in out["sbar"][0]
+    assert out["sbar"][1] == [["sbar-bande", 4.3], ["sbar-axe", 1]]
+    assert out["textes"] == [["T1-A", 30, 73], ["T1-B", 30, -126], ["T2", 90, -30]]
+
+
+def test_morceau_de_point_couleurs_et_plans_3d():
+    out = _node(_DOM + _PLAN_DECOUPE + r"""
+const { morceauDe, couleursMorceaux, quadsDeCoupe, PALETTE } = await js("decoupe.js");
+const pts = [[0, 30], [100, 30], [23.2, 59.8], [0, 90], [500, 30], [0, 200]];
+const cols = couleursMorceaux(new Float32Array([0, 1, 30, 100, -1, 30]), plan.morceaux);
+return { ids: pts.map(([x, z]) => morceauDe(x, z, plan.morceaux)), cols: Array.from(cols).map((c) => Math.round(c * 255)),
+         palette: PALETTE.slice(0, 2), quads: quadsDeCoupe(plan, -10, 20) };
+""")
+    assert out["ids"] == [0, 1, 0, 2, -1, -1]  # sur la face de coupe : premier morceau (tolérance)
+    hexa = lambda h: [int(h[i:i + 2], 16) for i in (1, 3, 5)]  # noqa: E731
+    assert out["cols"] == hexa(out["palette"][0]) + hexa(out["palette"][1])
+    z_cut, corde = out["quads"]
+    assert [p[2] for p in z_cut] == [60] * 4 and z_cut[0][0] < -170 and z_cut[1][0] > 230
+    assert corde == [[23, -10, 0], [23, 20, 0], [23, 20, 60], [23, -10, 60]]
+
+
+def test_panneau_decoupe_et_tableau_de_l_essai():
+    out = _node(_DOM + _PLAN_DECOUPE + r"""
+const { panneauDecoupe, tableauMorceauxEssai, encadreNotices } = await js("decoupe.js");
+const texte = (n) => n.textContent + (n.enfants || []).map(texte).join("");
+const lignes = (t) => t.enfants[1].enfants.map((tr) => tr.enfants.map(texte));
+const [resume, table] = panneauDecoupe(plan);
+const essai = tableauMorceauxEssai([
+  { nom: "WING_1", liste_morceaux: [{ nom: "T1", z0: 0, z1: 40, largeur: 100, profondeur: 12, rotation: 0, tient: true, plateau: 1, ok: true }] },
+  { nom: "WING_2", liste_morceaux: [{ nom: "T1", z0: 0, z1: 40, largeur: 100, profondeur: 12, rotation: 12, tient: true, plateau: 2, ok: false }] },
+]);
+const boite = encadreNotices(plan.notices);
+return { resume: resume.textContent, apercu: lignes(table), essai: lignes(essai), vide: tableauMorceauxEssai([{ nom: "x" }]),
+         notice: [boite.attrs.class, texte(boite)], sansNotice: encadreNotices([]),
+         indispo: texte(panneauDecoupe({ morceaux: [] })[0]) };
+""")
+    assert out["resume"] == "3 morceaux, un par plateau : 1 coupe(s) en Z, 1 coupe(s) dans la corde."
+    assert out["apercu"][1] == ["T1-B", "0,0 – 60,0", "23,0 – 230,0", "207 × 44", "38°", "2"]
+    assert out["apercu"][2][3] == "300 × 50 (ne tient pas)" and out["apercu"][0][4] == "—"
+    assert out["essai"] == [["WING_1 : T1", "0,0 – 40,0", "100 × 12", "—", "1", "✔"],
+                            ["WING_2 : T1", "0,0 – 40,0", "100 × 12", "12°", "2", "✘"]]
+    assert out["vide"] is None and out["sansNotice"] is None
+    assert out["notice"][0] == "message notice" and "coupe dans la corde en 2 morceaux" in out["notice"][1]
+    assert "indisponible" in out["indispo"]
+
+
+def test_libelles_de_la_decoupe():
+    out = _node("""
+const { libelle, aide, libelleChoix } = await js("libelles.js");
+return [libelle(["segment", "chord"]), libelle(["segment"]), libelleChoix(["segment", "chord"], "auto"),
+        libelleChoix(["segment", "chord"], "off"), libelleChoix(["passages", "mode"], "off"), aide(["segment", "chord"])];
+""")
+    assert out[:2] == ["Coupe dans la corde", "Découpe (volume d'impression)"]
+    assert out[2].startswith("auto — coupe dans la corde") and out[3].startswith("off — jamais")
+    assert out[4] == "off — aucun" and "T1-A" in out[5]

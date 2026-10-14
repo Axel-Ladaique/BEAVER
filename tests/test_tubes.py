@@ -1,6 +1,7 @@
 """SBAR transversales et inclinées (spec découpe §6) : trou en goutte d'eau, débouchant ou relié par une fente."""
 
 import math
+import re
 from pathlib import Path
 
 import numpy as np
@@ -178,6 +179,37 @@ def test_sbar_open_at_both_ends_in_the_same_layers_is_refused():
         _run(_through(), AXIS_Z)
 
 
+
+def test_both_ends_open_message_says_which_ends_to_close():
+    with pytest.raises(pipeline.PipelineError) as err:
+        _run(_through(), AXIS_Z)
+    msg = str(err.value)
+    assert "débouche aux deux bouts dans la même couche" in msg and "l'un des deux suffit" in msg
+    ends = re.findall(r"le bout à x = (-?[\d.]+) mm, z = (-?[\d.]+) mm", msg)
+    assert len(ends) == 2 and {e[1] for e in ends} == {"60.0"}  # axe à 60 mm de l'emplanture
+    assert abs(float(ends[0][0]) - float(ends[1][0])) == pytest.approx(110.0, abs=0.5)  # les deux bouts de la SBAR
+
+
+def test_geometry_errors_in_tubes_are_translated(tmp_path, monkeypatch):
+    from shapely.errors import GEOSException
+
+    from aerorib import preview
+    from aerorib.features import tubes
+    from aerorib.io_step import write_step
+
+    def boom(*a, **k):
+        raise GEOSException("TopologyException: side location conflict")
+
+    monkeypatch.setattr(tubes, "_envelopes", boom)
+    bodies = cross_wing_bodies((40, CAMBER(55), 40), (70, CAMBER(55), 40), d=4)
+    msg = r"SBAR_T : SBAR transversale impossible \(GEOSException : TopologyException"
+    with pytest.raises(pipeline.PipelineError, match=msg):
+        _run(bodies)
+    prep = preview.prepare(write_step(tmp_path / "t.step", bodies), FAST)
+    with pytest.raises(preview.PreviewError, match=msg):
+        preview.plates_2d(prep, FAST)
+
+
 def test_sbar_tilted_30_degrees_inside_the_wing():
     run = _run(_tilted(30.0))
     assert run.ok, [i.message for i in run.bodies[0].report.errors][:5]
@@ -291,6 +323,10 @@ def test_preview_matches_generation(tmp_path):
     assert "SBAR_T" in [h["nom"] for h in view.holes]
     est = preview.estimates(prep, plates, FAST)
     assert est["plaques"] == b.plates
+    (vue,) = preview.planform(prep, plates, FAST).to_dict()["sbar_transversales"]  # vue de dessus : axe du trou
+    assert vue["nom"] == "SBAR_T" and vue["type"] == "transversale" and vue["d"] == pytest.approx(4.0, abs=0.01)
+    assert (vue["x0"], vue["z0"], vue["x1"], vue["z1"]) == pytest.approx((g.start[0], g.start[2], g.end[0], g.end[2]), abs=1e-3)
+    assert vue["angle"] == pytest.approx(90, abs=0.5) and vue["fente"] is True
 
 
 def test_preview_of_a_chord_cut_sbar(tmp_path):
@@ -310,3 +346,98 @@ def test_unsolvable_sbar_reported_in_preview(tmp_path):
     prep = preview.prepare(write_step(tmp_path / "b.step", _through()), AXIS_Z)
     with pytest.raises(preview.PreviewError, match="SBAR_T : à z = .* couper la couche en deux"):
         preview.plates_2d(prep, AXIS_Z)
+
+
+# --- bout haut fermé : plafond imprimable quel que soit l'angle ------------------------------------------------
+
+
+def _ceiling_overhang_ok(prism, overhang: float, dz: float = 0.05) -> list[float]:
+    """Hauteurs où la matière d'une couche du trou surplombe le vide de la couche du dessous de plus que `overhang`
+    (vide(z) amaigri de dz·tan(surplomb) non contenu dans vide(z + dz))."""
+    lo, hi = prism.zrange()
+    bad = []
+    reach = dz * math.tan(math.radians(overhang)) * 1.05
+    for z in np.arange(lo + dz / 2, hi, dz):
+        below, above = prism.layer(float(z)), prism.layer(float(z + dz))
+        if below is None:
+            continue
+        core = below.buffer(-reach)
+        if core.is_empty:
+            continue
+        rest = core if above is None else core.difference(above.buffer(1e-6))
+        if rest.area > 1e-4:
+            bad.append(float(z))
+    return bad
+
+
+@pytest.mark.parametrize("tilt", [45.0, 48.0])
+def test_closed_upper_end_ceiling_within_asa_overhang(tmp_path, tilt):
+    from aerorib import preview
+    from aerorib.io_step import write_step
+
+    asa = load_config(overrides={
+        "material_settings": {"layer_height": 1.0, "max_overhang_deg": 40.0}, "rib_layers": [{"spacing": 20}],
+    })
+    prep = preview.prepare(write_step(tmp_path / "t.step", _tilted(tilt, start=(40.0, CAMBER(50), 30.0), length=30.0)), asa)
+    (t,) = preview.tubes(prep, asa)
+    assert not (t.open_start or t.open_end) and t.tilt == pytest.approx(tilt, abs=0.01)
+    assert _ceiling_overhang_ok(t.hole, 40.0) == []
+    # le longeron (+ jeu) reste dans le trou jusqu'à son bout
+    (rod_solid,) = [s for n, s in prep.tube_spars if n == "SBAR_T"]
+    tip = max(rod_solid.vertices(), key=lambda v: v.Z)
+    sec = t.hole.layer(tip.Z - 0.01)
+    assert sec is not None and sec.buffer(1e-6).contains(Point(tip.X, tip.Y))
+    # outil de coupe (OCC) : prisme limité par la face verticale, même sommet que les sections
+    solid = t.hole.solid()
+    top = solid.bounding_box().max.Z
+    assert solid.is_valid and top < t.hole.zrange()[1] - 1.0
+    assert t.hole.layer(top - 0.01) is not None and t.hole.layer(top + 0.01) is None
+
+
+def test_ignored_settings_and_bay_crossing_warn():
+    from types import SimpleNamespace
+
+    from aerorib.features.tubes import tube_warnings
+
+    cfg = load_config(overrides={"spars": {"sbar_t": {"anchor": True, "slit_side": "bottom", "clearance": 0.2}}})
+    t = SimpleNamespace(name="SBAR_T", start=(-5.0, 0.0, 60.0), end=(105.0, 0.0, 60.0), radius=2.2, sleeve=0.8)
+    far = SimpleNamespace(name="SERVO_1", x0=20.0, x1=40.0, opening=(70.0, 100.0))
+    on = SimpleNamespace(name="SERVO_2", x0=20.0, x1=40.0, opening=(50.0, 80.0))
+    attache, baie = tube_warnings([t], cfg, [far, on])
+    assert attache.startswith("SBAR_T (SBAR transversale) : attache (anchor), côté de la fente (slit_side) sans effet")
+    assert "SERVO_2" in baie and "SERVO_1" not in baie and "n'est pas traitée" in baie
+    assert tube_warnings([t], FAST, [far]) == []  # défauts : aucun avertissement
+
+
+def test_ignored_anchor_warns_in_preview_and_generation(tmp_path):
+    from aerorib import preview
+    from aerorib.io_step import write_step
+
+    cfg = load_config(overrides={
+        "material_settings": {"layer_height": 1.0}, "rib_layers": [{"spacing": 20}], "spars": {"SBAR_T": {"anchor": True}},
+    })
+    bodies = cross_wing_bodies((40, CAMBER(55), 40), (70, CAMBER(55), 40), d=4)
+    prep = preview.prepare(write_step(tmp_path / "t.step", bodies), cfg)
+    est = preview.estimates(prep, preview.plates_2d(prep, cfg), cfg)
+    (w,) = [w for w in est["avertissements"] if "SBAR_T" in w]
+    assert "attache (anchor)" in w
+    (b,) = _run(bodies, cfg).bodies
+    assert w in b.warnings
+
+
+def test_preview_section_is_split_into_the_chord_pieces(tmp_path):
+    from aerorib import preview
+    from aerorib.io_step import write_step
+
+    cfg, bodies = _wide([{"spacing": 500, "phase": 250}])
+    prep = preview.prepare(write_step(tmp_path / "w.step", bodies), cfg)
+    plates = preview.plates_2d(prep, cfg)
+    (t,) = preview.tubes(prep, cfg)
+    (plane,) = preview.planform(prep, plates, cfg).to_dict()["plans_corde"]
+    view = preview.section(prep, plates, cfg, (t.start[2] + t.end[2]) / 2)
+    # deux morceaux imprimés séparément : le trou de la SBAR débouche sur la face de coupe de chacun (un contour
+    # par morceau, aucun défaut) — comme la validation morceau par morceau de la génération
+    assert view.defects == [] and len(view.polygons) == 2
+    left, right = sorted(view.polygons, key=lambda p: p.bounds[0])
+    assert left.bounds[2] == pytest.approx(plane["x0"], abs=1e-6) and right.bounds[0] == pytest.approx(plane["x0"], abs=1e-6)
+    assert not left.interiors and not right.interiors

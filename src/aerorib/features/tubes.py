@@ -31,7 +31,8 @@ from dataclasses import dataclass
 
 import numpy as np
 import trimesh
-from build123d import Align, Box, Face, Location, Solid, Vector, Wire, extrude
+from build123d import Align, Box, Face, Location, Plane, Solid, Vector, Wire, extrude
+from shapely.errors import ShapelyError
 from shapely.geometry import LineString, MultiPoint, Point, Polygon
 from shapely.ops import unary_union
 
@@ -43,12 +44,18 @@ OPEN_END = 1.0  # mm : extrémité à moins de cela de l'extérieur, le long de 
 OPEN_REACH = 10.0  # mm : prolongement de l'axe au-delà d'une extrémité débouchante
 FACETS = 64  # facettes de la goutte d'eau (polygone circonscrit au cercle)
 _FAR = 1e4
-_MIN_STEP, _MAX_STEP, _MAX_SAMPLES = 0.05, 0.5, 200  # échantillonnage des couches de l'analyse (mm)
+# couches de l'analyse : pas = hauteur du trou / _MAX_SAMPLES, borné à [_MIN_STEP, _MAX_STEP] mm (au-delà de 100 mm de
+# hauteur, plus de _MAX_SAMPLES échantillons : 2 par mm)
+_MIN_STEP, _MAX_STEP, _MAX_SAMPLES = 0.05, 0.5, 200
 Z = np.array([0.0, 0.0, 1.0])
 
 
 class TubeError(BoreError):
     """SBAR transversale impossible (message en français)."""
+
+
+# erreurs de calcul géométrique (shapely, trimesh, numpy) traduites en TubeError
+GEOMETRY_ERRORS = (ShapelyError, ValueError, IndexError, ZeroDivisionError, FloatingPointError)
 
 
 def _unit(v) -> np.ndarray:
@@ -159,7 +166,18 @@ class Prism:
         pts = self.vertices
         (x0, y0), (x1, y1) = pts[:, :2].min(axis=0) - 1, pts[:, :2].max(axis=0) + 1
         keep = Box(x1 - x0, y1 - y0, hi - lo, align=(Align.MIN, Align.MIN, Align.MIN)).moved(Location((x0, y0, lo)))
-        return (out & keep).solids()[0]
+        out = (out & keep).solids()[0]
+        size = 2 * float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))) + 10
+        center = (pts.max(axis=0) + pts.min(axis=0)) / 2
+        for c, k in self.clips:  # demi-espaces non horizontaux (face verticale d'un bout fermé)
+            c = np.asarray(c, dtype=float)
+            if abs(c[2]) > 1e-12:
+                continue
+            n = c / np.linalg.norm(c)
+            q = center - n * ((center @ c + k) / np.linalg.norm(c))  # projection du centre sur le plan c·p + k = 0
+            half = Box(size, size, size, align=(Align.CENTER, Align.CENTER, Align.MIN))  # côté c·p + k ≥ 0
+            out = (out & half.moved(Plane(origin=tuple(map(float, q)), z_dir=tuple(map(float, n))).location)).solids()[0]
+        return out
 
 
 # --- morceaux de la coupe dans la corde --------------------------------------------------------------------------
@@ -371,6 +389,47 @@ def _admits(env: Polygon, hole: Polygon, slit: Polygon | None, rules: _Rules) ->
     return env.intersection(extra).area + 1e-6
 
 
+def _cause(env: Polygon, hole: Polygon, rules: "_Rules", axis_ends, z_root: float) -> str:
+    """Suite du message d'échec d'une couche : la cause et quoi faire. `axis_ends` : (bout de l'axe, débouchant ?)."""
+    rest = [p for p in _parts(env.difference(hole)) if p.area > rules.line_width**2]
+    if len(rest) > 1:  # le trou seul coupe la couche : il débouche des deux côtés
+        opened = [p for p, o in axis_ends if o]
+        if len(opened) == 2:
+            where = " ou ".join(f"le bout à x = {p[0]:.1f} mm, z = {p[2] - z_root:.1f} mm" for p in opened)
+            return (" : le trou débouche aux deux bouts dans la même couche — impossible en vase mode. Fermer l'un "
+                    f"des deux bouts dans la pièce (raccourcir la SBAR : {where} ; l'un des deux suffit), ou "
+                    "l'incliner pour que ses bouches soient à des hauteurs différentes")
+        return (" : le trou traverse la couche de part en part (il sort de la peau des deux côtés) — impossible en "
+                "vase mode. Déplacer la SBAR vers le milieu de l'épaisseur ou réduire son diamètre")
+    return (" : la paroi entre le trou et la peau est plus fine qu'une ligne, ou la bouche d'une fente dépasserait "
+            "validation.max_mouth_width — impossible en vase mode. Éloigner la SBAR de la peau, réduire son diamètre "
+            "ou la déplacer")
+
+
+_IGNORED = {"anchor": "attache (anchor)", "anchor_gap": "écart de l'attache (anchor_gap)", "slit_side": "côté de la fente (slit_side)"}
+
+
+def tube_warnings(tubes: Sequence["Tube"], cfg: Config, bays=()) -> list[str]:
+    """Réglages sans effet sur une SBAR transversale (attache, côté de la fente : la fente est choisie couche par
+    couche) et rencontres SBAR transversale ↔ baie de servo (non traitées, la validation reste l'arbitre)."""
+    from shapely.geometry import box
+
+    out = []
+    for t in tubes:
+        own = next((v for k, v in cfg.spars.items() if k.lower() == t.name.lower()), {})
+        keys = [label for key, label in _IGNORED.items() if key in own]
+        if keys:
+            out.append(f"{t.name} (SBAR transversale) : {', '.join(keys)} sans effet — réglage ignoré (trou en goutte "
+                       "d'eau, fente choisie couche par couche)")
+        band = LineString([(t.start[0], t.start[2]), (t.end[0], t.end[2])]).buffer(t.radius + t.sleeve)
+        for bay in bays:
+            lo, hi = bay.opening
+            if band.intersects(box(bay.x0, lo, bay.x1, hi)):
+                out.append(f"{t.name} (SBAR transversale) traverse la baie de servo {bay.name} vue de dessus : leur "
+                           "rencontre n'est pas traitée (la validation reste l'arbitre) — éloigner la SBAR de la baie")
+    return out
+
+
 def _choose(valid: list[list[float | None]]) -> list[int]:
     """Option par échantillon : moins de changements, puis moins d'échantillons avec fente, puis fentes plus courtes
     (programmation dynamique ; option 0 = sans fente)."""
@@ -409,137 +468,158 @@ def spar_tubes(
     longeron. `regions` : morceaux de la coupe dans la corde (un seul : pas de coupe) ; `others` : z → autres
     découpes de la couche (trous et fentes des longerons parallèles à Z), retirées de l'enveloppe pour l'analyse.
     TubeError si une couche ne peut pas être reliée au contour (voir le module)."""
+    reach = float(np.linalg.norm([bb.max.X - bb.min.X, bb.max.Y - bb.min.Y, bb.max.Z - bb.min.Z])) + 2 * OPEN_REACH + 20
+    out = []
+    for name, solid in spars:
+        try:
+            tube = _tube(name, solid, cfg, mesh, bb, cables, regions, others, reach)
+        except TubeError:
+            raise
+        except GEOMETRY_ERRORS as exc:  # shapely, trimesh, numpy : jamais d'erreur brute pour l'utilisateur
+            raise TubeError(f"{name} : SBAR transversale impossible ({type(exc).__name__} : {exc})") from exc
+        if tube is not None:
+            out.append((tube, solid))
+    return out
+
+
+def _tube(
+    name: str, solid: Solid, cfg: Config, mesh: trimesh.Trimesh, bb, cables, regions: Sequence[Region],
+    others: Callable[[float], list[Polygon]] | None, reach: float,
+) -> Tube | None:
+    """Tube d'un longeron transversal (None : hors de cette peau) ; voir `spar_tubes`."""
     rules = _Rules(cfg.preset.line_width, cfg.preset.min_slit_width, cfg.validation.max_mouth_width)
     overhang = cfg.preset.max_overhang_deg
     plate_pad = cfg.slit_width / 2
-    reach = float(np.linalg.norm([bb.max.X - bb.min.X, bb.max.Y - bb.min.Y, bb.max.Z - bb.min.Z])) + 2 * OPEN_REACH + 20
     zr = (bb.min.Z, bb.max.Z)
-    out = []
-    for name, solid in spars:
-        info = detect_spar(solid)
-        if info is None:
-            raise TubeError(f"{name} : aucun cylindre détecté")
-        d = _unit(info.axis_dir)
-        a = np.asarray(info.axis_point, dtype=float)
-        b = a + d * info.length
-        if d[2] < 0:
-            d, a, b = -d, b, a
-        s = cfg.spar_settings(name, cable=name in cables)
-        radius = info.diameter / 2 + s.clearance
-        cache: dict[float, object] = {}
+    info = detect_spar(solid)
+    if info is None:
+        raise TubeError(f"{name} : aucun cylindre détecté")
+    d = _unit(info.axis_dir)
+    a = np.asarray(info.axis_point, dtype=float)
+    b = a + d * info.length
+    if d[2] < 0:
+        d, a, b = -d, b, a
+    s = cfg.spar_settings(name, cable=name in cables)
+    radius = info.diameter / 2 + s.clearance
+    cache: dict[float, object] = {}
 
-        def env_at(zs: list[float], close: float = radius + 1.0) -> list:
-            miss = sorted({z for z in zs if z not in cache})
-            if miss:
-                cache.update(zip(miss, _envelopes(mesh, miss, close)))
-            return [cache[z] for z in zs]
+    def env_at(zs: list[float], close: float = radius + 1.0) -> list:
+        miss = sorted({z for z in zs if z not in cache})
+        if miss:
+            cache.update(zip(miss, _envelopes(mesh, miss, close)))
+        return [cache[z] for z in zs]
 
-        def inside(pts: np.ndarray) -> np.ndarray:
-            envs = env_at([float(p[2]) for p in pts])
-            return np.array([
-                zr[0] < p[2] < zr[1] and not e.is_empty and e.contains(Point(p[0], p[1])) for p, e in zip(pts, envs)
-            ])
+    def inside(pts: np.ndarray) -> np.ndarray:
+        envs = env_at([float(p[2]) for p in pts])
+        return np.array([
+            zr[0] < p[2] < zr[1] and not e.is_empty and e.contains(Point(p[0], p[1])) for p, e in zip(pts, envs)
+        ])
 
-        on_axis = a + np.linspace(0, 1, max(2, min(400, math.ceil(info.length) + 1)))[:, None] * (b - a)
-        if not inside(on_axis).any():
-            continue  # longeron hors de ce corps d'aile
-        tilt = tilt_deg(d)
-        # axe à moins du surplomb max de Z : bouts fermés horizontaux (fond, plafond), sous / au-dessus du bout du
-        # longeron + jeu — chaque couche du trou est alors une section complète, centrée sur l'axe (la fente « en
-        # travers », dans le plan de l'axe, la rejoint toujours) ; sinon bouts perpendiculaires à l'axe
-        flat = tilt <= overhang
-        ends, clips, zclips = [], [], []
-        for p, away, sign in ((a, -d, 1.0), (b, d, -1.0)):
-            is_open = not inside(np.array([p, p + away * OPEN_END])).all()
-            if is_open:
-                ends.append((p + away * OPEN_REACH, True))
-            elif flat:
-                ends.append((p + away * (2 * radius + s.clearance + 1.0), False))
-                zc = p[2] - sign * (info.diameter / 2 * math.sin(math.radians(tilt)) + s.clearance)
-                clips.append(zc)
-                zclips.append(sign)
-            else:
-                ends.append((p + away * s.clearance, False))
-        (a2, open_a), (b2, open_b) = ends
-        e_t = _unit(Z - d[2] * d)
-        e_s = np.cross(d, e_t)
-        pad = s.sleeve + plate_pad
+    on_axis = a + np.linspace(0, 1, max(2, min(400, math.ceil(info.length) + 1)))[:, None] * (b - a)
+    if not inside(on_axis).any():
+        return None  # longeron hors de ce corps d'aile
+    tilt = tilt_deg(d)
+    # axe à moins du surplomb max de Z : bouts fermés horizontaux (fond, plafond), sous / au-dessus du bout du
+    # longeron + jeu — chaque couche du trou est alors une section complète, centrée sur l'axe (la fente « en
+    # travers », dans le plan de l'axe, la rejoint toujours) ; sinon bouts perpendiculaires à l'axe
+    flat = tilt <= overhang
+    u = _unit(np.array([d[0], d[1], 0.0])) if not flat else None
+    pad = s.sleeve + plate_pad
+    ends, clips, zclips, ucaps = [], [], [], []
+    for p, away, sign in ((a, -d, 1.0), (b, d, -1.0)):
+        is_open = not inside(np.array([p, p + away * OPEN_END])).all()
+        if is_open:
+            ends.append((p + away * OPEN_REACH, True))
+        elif flat:
+            ends.append((p + away * (2 * radius + s.clearance + 1.0), False))
+            zc = p[2] - sign * (info.diameter / 2 * math.sin(math.radians(tilt)) + s.clearance)
+            clips.append(zc)
+            zclips.append(sign)
+        elif sign < 0 and 90.0 - tilt > overhang + 1e-9:
+            # bout haut fermé : une face ⊥ axe surplomberait de 90° − θ > surplomb max ; face verticale (⊥ u)
+            # au-delà du bout du longeron + jeu (tout le disque du bout y est), le prisme la dépasse
+            u0 = float(p @ u) + info.diameter / 2 * math.cos(math.radians(tilt)) + s.clearance
+            tip = (radius + pad) * 2 / math.sin(math.radians(overhang)) * math.sin(math.radians(tilt))
+            ends.append((p + away * ((u0 - float(p @ u) + tip) / math.sin(math.radians(tilt)) + 1.0), False))
+            ucaps.append(u0)
+        else:
+            ends.append((p + away * s.clearance, False))
+    (a2, open_a), (b2, open_b) = ends
+    e_t = _unit(Z - d[2] * d)
+    e_s = np.cross(d, e_t)
 
-        def caps(grow: float) -> tuple[HalfSpace, ...]:
-            return tuple(((0.0, 0.0, sg), -sg * (zc - sg * grow)) for zc, sg in zip(clips, zclips))
+    def caps(grow: float) -> tuple[HalfSpace, ...]:
+        horizontal = tuple(((0.0, 0.0, sg), -sg * (zc - sg * grow)) for zc, sg in zip(clips, zclips))
+        return (*horizontal, *(((-float(u[0]), -float(u[1]), 0.0), u0 + grow) for u0 in ucaps))
 
-        hole = _prism(a2, b2, teardrop(radius, tilt, overhang), e_t, e_s, caps(0.0))
-        zone = _prism(a2 - d * pad, b2 + d * pad, teardrop(radius + pad, tilt, overhang), e_t, e_s, caps(pad))
-        u = _unit(np.array([d[0], d[1], 0.0]))
-        n = np.cross(Z, u)
-        hz0, hz1 = hole.zrange()
-        z0, z1 = max(hz0, zr[0]), min(hz1, zr[1])
-        step = min(_MAX_STEP, max(_MIN_STEP, (z1 - z0) / _MAX_SAMPLES))
-        zs = [float(z) for z in np.arange(z0 + step / 2, z1, step)]
-        envs = env_at(zs)
-        slits: list[Prism] = []
-        zones: list[Prism] = []
-        for region in regions:
-            along = _Family("le long de l'axe", a2, u, Z)
-            if tilt <= overhang:  # plan de l'axe et de n : parois inclinées de l'angle de l'axe, imprimables
-                across = [(_Family("en travers", a2, n, d), None, None)]
-            else:  # axe presque horizontal : plans verticaux ⊥ u, en escalier le long du trou
-                across = [
-                    (_Family("en travers", a2 + u * ts, n, Z), lo, hi)
-                    for ts, lo, hi in _stairs(hole, region, a2, u, radius, reach)
-                ]
-            families = (((along, None, None),), tuple(across))
-            options = [_Option(pieces, side) for pieces in families if pieces for side in (1, -1)]
-            full = [o.slabs(hole, region, reach, s.slit_width / 2) for o in options]
-            rows, kept = [], []
-            for z, env in zip(zs, envs):
-                clip = region.layer(z, reach)
-                h = hole.layer(z)
-                if clip is None or h is None or env.is_empty:
-                    continue
-                if h.intersection(clip).area <= 1e-9:
-                    continue  # trou hors de ce morceau (le trou n'est pas limité au morceau : au-delà d'une face de
-                    # coupe, il est à l'extérieur du morceau, la bouche est sur la face)
-                avail = env.intersection(clip)
-                if others is not None:
-                    cuts = others(z)
-                    if cuts:
-                        avail = avail.difference(unary_union(cuts))
-                touched = [p for p in _parts(avail) if p.intersects(h)]
-                if not touched:
-                    continue  # trou hors de la matière à cette hauteur
-                e = max(touched, key=lambda p: p.intersection(h).area)
-                row = [_admits(e, h, None, rules)]
-                for slabs in full:
-                    g = [x for x in (p.layer(z) for p in slabs) if x is not None]
-                    row.append(None if not g else _admits(e, h, unary_union(g), rules))
-                rows.append(row)
-                kept.append(z)
-            if not rows:
+    hole = _prism(a2, b2, teardrop(radius, tilt, overhang), e_t, e_s, caps(0.0))
+    zone = _prism(a2 - d * pad, b2 + d * pad, teardrop(radius + pad, tilt, overhang), e_t, e_s, caps(pad))
+    u = _unit(np.array([d[0], d[1], 0.0]))
+    n = np.cross(Z, u)
+    hz0, hz1 = hole.zrange()
+    z0, z1 = max(hz0, zr[0]), min(hz1, zr[1])
+    step = min(_MAX_STEP, max(_MIN_STEP, (z1 - z0) / _MAX_SAMPLES))
+    zs = [float(z) for z in np.arange(z0 + step / 2, z1, step)]
+    envs = env_at(zs)
+    slits: list[Prism] = []
+    zones: list[Prism] = []
+    for region in regions:
+        along = _Family("le long de l'axe", a2, u, Z)
+        if tilt <= overhang:  # plan de l'axe et de n : parois inclinées de l'angle de l'axe, imprimables
+            across = [(_Family("en travers", a2, n, d), None, None)]
+        else:  # axe presque horizontal : plans verticaux ⊥ u, en escalier le long du trou
+            across = [
+                (_Family("en travers", a2 + u * ts, n, Z), lo, hi)
+                for ts, lo, hi in _stairs(hole, region, a2, u, radius, reach)
+            ]
+        families = (((along, None, None),), tuple(across))
+        options = [_Option(pieces, side) for pieces in families if pieces for side in (1, -1)]
+        full = [o.slabs(hole, region, reach, s.slit_width / 2) for o in options]
+        rows, kept, seen = [], [], []
+        for z, env in zip(zs, envs):
+            clip = region.layer(z, reach)
+            h = hole.layer(z)
+            if clip is None or h is None or env.is_empty:
                 continue
-            path = _choose(rows)
-            if not path:
-                bad = next(z for z, r in zip(kept, rows) if all(v is None for v in r))
-                where = f" ({region.label})" if region.label else ""
-                raise TubeError(
-                    f"{name}{where} : à z = {bad - zr[0]:.1f} mm de l'emplanture, aucune fente ne relie le trou à "
-                    "l'extérieur sans couper la couche en deux (trou débouchant des deux côtés dans la même couche, ou "
-                    "paroi plus fine qu'une ligne entre le trou et la peau) — impossible en vase mode : fermer une "
-                    "extrémité dans la pièce (SBAR plus courte), l'incliner pour que ses bouches soient à des hauteurs "
-                    "différentes, ou la déplacer"
-                )
-            for opt, lo, hi in _runs(path, kept):
-                if opt == 0:
-                    continue
-                for fam, sh in options[opt - 1].shadows(hole, region, reach, lo, hi):
-                    slits.append(fam.slab(sh, s.slit_width / 2))
-                    zones.append(fam.slab(sh.buffer(plate_pad, join_style="mitre"), s.strip / 2 + plate_pad))
-        tube = Tube(
-            name, info.diameter, radius, s.sleeve, s.strip, s.slit_width, tilt, name in cables,
-            tuple(map(float, a2)), tuple(map(float, b2)), open_a, open_b, hole, zone, tuple(slits), tuple(zones),
-        )
-        out.append((tube, solid))
-    return out
+            if h.intersection(clip).area <= 1e-9:
+                continue  # trou hors de ce morceau (le trou n'est pas limité au morceau : au-delà d'une face de
+                # coupe, il est à l'extérieur du morceau, la bouche est sur la face)
+            avail = env.intersection(clip)
+            if others is not None:
+                cuts = others(z)
+                if cuts:
+                    avail = avail.difference(unary_union(cuts))
+            touched = [p for p in _parts(avail) if p.intersects(h)]
+            if not touched:
+                continue  # trou hors de la matière à cette hauteur
+            e = max(touched, key=lambda p: p.intersection(h).area)
+            row = [_admits(e, h, None, rules)]
+            for slabs in full:
+                g = [x for x in (p.layer(z) for p in slabs) if x is not None]
+                row.append(None if not g else _admits(e, h, unary_union(g), rules))
+            rows.append(row)
+            kept.append(z)
+            seen.append((e, h))
+        if not rows:
+            continue
+        path = _choose(rows)
+        if not path:
+            i = next(i for i, r in enumerate(rows) if all(v is None for v in r))
+            where = f" ({region.label})" if region.label else ""
+            cause = _cause(*seen[i], rules, ((a, open_a), (b, open_b)), zr[0])
+            raise TubeError(f"{name}{where} : à z = {kept[i] - zr[0]:.1f} mm de l'emplanture, aucune fente ne relie le "
+                            f"trou à l'extérieur sans couper la couche en deux{cause}")
+        for opt, lo, hi in _runs(path, kept):
+            if opt == 0:
+                continue
+            for fam, sh in options[opt - 1].shadows(hole, region, reach, lo, hi):
+                slits.append(fam.slab(sh, s.slit_width / 2))
+                zones.append(fam.slab(sh.buffer(plate_pad, join_style="mitre"), s.strip / 2 + plate_pad))
+    tube = Tube(
+        name, info.diameter, radius, s.sleeve, s.strip, s.slit_width, tilt, name in cables,
+        tuple(map(float, a2)), tuple(map(float, b2)), open_a, open_b, hole, zone, tuple(slits), tuple(zones),
+    )
+    return tube
 
 
 def _stairs(

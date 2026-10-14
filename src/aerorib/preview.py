@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import threading
 import time
 from collections import OrderedDict
@@ -42,7 +43,7 @@ from aerorib.features.bores import (
     spar_bores,
 )
 from aerorib.features.ribs import diamond_profiles, plate_solid
-from aerorib.features.tubes import Tube
+from aerorib.features.tubes import Tube, tube_warnings
 from aerorib.features.servo import ServoBay, ServoError, pocket_section, reinforce_section, reinforce_warnings, servo_bays
 from aerorib.io_step import StepReadError, read_step
 from aerorib.midsurface import MidSurface
@@ -59,11 +60,14 @@ from aerorib.pipeline import (
     split_spars,
     spars_inside,
     _print_volume,
-    usable_height,
+    body_notice,
+    layout_for,
+    layout_notices,
     wall_warnings,
 )
-from aerorib.features.chord_cut import bay_obstacles, bore_obstacles, plan_layout
-from aerorib.segment import SegmentError
+from aerorib.features.chord_cut import LayoutPlan
+from aerorib.layout import Placement, fit_on_bed
+from aerorib.segment import SegmentError, _samples
 from aerorib.slicing import Layer, layer_heights, mesh_sections, to_mesh
 from aerorib.validate import Issue, check_connectivity, check_material_width, check_narrow_slits, slicer_closing
 
@@ -349,7 +353,7 @@ def _prepare_skin(
     )
 
 
-_TUBE_MEMO = 4  # réglages gardés par préparation
+_MEMO = 8  # résultats gardés par préparation (SBAR transversales, plans de découpe)
 
 
 def tubes(prep: Prepared, cfg: Config) -> tuple[Tube, ...]:
@@ -366,7 +370,7 @@ def tubes(prep: Prepared, cfg: Config) -> tuple[Tube, ...]:
             raise PreviewError(f"{prep.name} : {exc}") from exc
         out = tuple(t for t, _ in held)
         prep.memo[key] = out
-        while len(prep.memo) > _TUBE_MEMO:
+        while len(prep.memo) > _MEMO:
             prep.memo.pop(next(iter(prep.memo)))
         return out
 
@@ -522,6 +526,20 @@ def _bore_tools(prep: Prepared, z: float, tubes: Sequence[Tube] = ()) -> list[Po
     return tools
 
 
+def _chord_pieces(prep: Prepared, cfg: Config, z: float) -> list[tuple[float, float]] | None:
+    """Coupe dans la corde à la hauteur z : intervalles en corde [x_gauche, x_droite] des morceaux du tronçon (imprimés
+    et validés séparément) ; None sans coupe dans la corde à cette hauteur."""
+    pieces = _layout(prep, cfg).pieces
+    here = [m for m in pieces if m["z0"] <= z < m["z1"]] or [m for m in pieces if m["z0"] <= z <= m["z1"]]
+    if not any(m["gauche"] or m["droite"] for m in here):
+        return None
+
+    def at(plan, m):
+        return plan[0] + (z - m["z0"]) * (plan[1] - plan[0]) / (m["z1"] - m["z0"])
+
+    return [(at(m["gauche"], m) if m["gauche"] else -_FAR, at(m["droite"], m) if m["droite"] else _FAR) for m in here]
+
+
 def _section(prep: Prepared, plates: list[Plate2D], cfg: Config, z: float, raw: list[Polygon]) -> SectionView:
     fills = [Point(f.x, f.y).buffer(fill_radius(f), quad_segs=32) for _, f in prep.filled if f.z0 <= z <= f.z1]
     skin = _parts(unary_union(raw + fills)) if fills else [p for p in raw if p.area > _MIN_AREA]
@@ -535,9 +553,16 @@ def _section(prep: Prepared, plates: list[Plate2D], cfg: Config, z: float, raw: 
     tools = [f.polygon for f in feet] + _bore_tools(prep, z, held)
     polys = _parts(skin_union.difference(unary_union(tools))) if tools else skin
     preset = cfg.preset
-    closed = Layer(z, slicer_closing(polys, preset.min_slit_width))
-    defects = check_connectivity(closed) + check_material_width(closed, preset.line_width)
-    defects += check_narrow_slits(Layer(z, tuple(polys)), preset.min_slit_width)
+    chord = _chord_pieces(prep, cfg, z)
+    groups = [polys] if chord is None else [
+        _parts(unary_union(polys).intersection(box(xl, -_FAR, xr, _FAR))) for xl, xr in chord
+    ]
+    polys, defects = [], []
+    for group in groups:  # coupe dans la corde : chaque morceau est une couche à part (imprimé séparément)
+        closed = Layer(z, slicer_closing(group, preset.min_slit_width))
+        defects += check_connectivity(closed) + check_material_width(closed, preset.line_width)
+        defects += check_narrow_slits(Layer(z, tuple(group)), preset.min_slit_width)
+        polys += group
     ym, th = prep.mid.at(prep.mid.xs, np.full_like(prep.mid.xs, z))
     band = [(float(x), float(y)) for x, y, t in zip(prep.mid.xs, ym, th) if t > 0]
     holes = prep.holes(z)
@@ -593,10 +618,22 @@ class PlanformView:
     bays: list[dict] = field(default_factory=list)
     # plusieurs corps d'aile : {nom, x0, z0, x1, z1} de chaque corps (vide pour une seule peau)
     bodies: list[dict] = field(default_factory=list)
+    # plan de découpe (le même que la génération) : morceaux {nom, corps, z0, z1, x0, x1, gauche, droite, centre,
+    # largeur, profondeur, rotation, tient, plateau}, plans de coupe dans la corde {troncon, corps, x0, z0, x1, z1,
+    # inclinaison, decalage, evite}, décisions automatiques de découpe (informations)
+    pieces: list[dict] = field(default_factory=list)
+    planes: list[dict] = field(default_factory=list)
+    notices: list[str] = field(default_factory=list)
+    # SBAR transversales : {nom, type, gaine, x0, z0, x1, z1 (axe du trou), d, r, angle, fente}
+    tubes: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
             "corps": self.bodies,
+            "morceaux": self.pieces,
+            "plans_corde": self.planes,
+            "notices": self.notices,
+            "sbar_transversales": self.tubes,
             "segments": [
                 [_round(s.x0), _round(s.z0), _round(s.x1), _round(s.z1), s.layer, s.family] for s in self.segments
             ],
@@ -640,28 +677,127 @@ def _plan_bores(prep: Prepared) -> list[dict]:
     return out
 
 
-def _cuts(prep: Prepared, cfg: Config) -> tuple[list[float], list[str]]:
-    """Coupes de tronçons (altitudes relatives à l'emplanture), comme la découpe du pipeline."""
+@dataclass(frozen=True)
+class Layout:
+    """Plan de découpe d'une peau, vu de l'aperçu : le même que la génération (`pipeline.layout_for`)."""
+
+    cuts: list[float]  # coupes en Z (mm depuis l'emplanture)
+    warnings: list[str]
+    notices: list[str]  # décisions automatiques (mêmes textes que la génération)
+    pieces: list[dict]  # morceaux (repère orienté, z absolus), du bord d'attaque au bord de fuite, tronçon par tronçon
+    planes: list[dict]  # plans de coupe dans la corde (segments vus de dessus, z absolus)
+    ok: bool = True  # plan de découpe établi
+
+
+def _piece_extent(sections, zs: list[float], left, right) -> tuple[float, float] | None:
+    """Étendue en corde d'un morceau : sections (points XY) entre ses plans de coupe (fonctions z → x, None : bord)."""
+    lo, hi = math.inf, -math.inf
+    for z, pts in zip(zs, sections):
+        if not len(pts):
+            continue
+        a, b = float(pts[:, 0].min()), float(pts[:, 0].max())
+        if left is not None:
+            a = max(a, left(z))
+        if right is not None:
+            b = min(b, right(z))
+        if b > a:
+            lo, hi = min(lo, a), max(hi, b)
+    return (lo, hi) if hi > lo else None
+
+
+def _piece(name: str, z0: float, z1: float, extent, pl: Placement, left=None, right=None) -> dict:
+    """Morceau vu de l'aperçu ; `extent` None (aucune section) : étendue en corde inconnue (None, jamais NaN en JSON)."""
+    zc = (z0 + z1) / 2
+    x0, x1 = extent if extent is not None else (left(zc) if left else 0.0, right(zc) if right else 0.0)
+    xl = left(zc) if left is not None else x0
+    xr = right(zc) if right is not None else x1
+    return {
+        "nom": name, "z0": _round(z0), "z1": _round(z1),
+        "x0": None if extent is None else _round(x0), "x1": None if extent is None else _round(x1),
+        "gauche": None if left is None else [_round(left(z0)), _round(left(z1))],  # plan de coupe côté x petits
+        "droite": None if right is None else [_round(right(z0)), _round(right(z1))],
+        "centre": [_round((xl + xr) / 2), _round(zc)],
+        "largeur": _round(pl.size[0]), "profondeur": _round(pl.size[1]), "rotation": _round(pl.angle_deg),
+        "tient": bool(pl.fits), "plateau": 0,
+    }
+
+
+def _layout(prep: Prepared, cfg: Config) -> Layout:
+    """Plan de découpe complet d'une peau (coupes en Z, coupes dans la corde, rotations sur le plateau, morceaux),
+    calculé comme la génération, sans booléen ; en mémoire par réglages."""
+    key = ("decoupe", cfg.model_dump_json())
+    with prep.mesh_lock:
+        if key in prep.memo:
+            return prep.memo[key]
     zlo, zhi = prep.zrange
-    seg = cfg.segment
-    if seg.mode == "off":
-        return [], []
-    (W, D, _), _ = _print_volume(cfg)
+    height = zhi - zlo
     sample = mesh_sections(prep.mesh)
 
-    def sections(zs):
+    def sections(zs):  # zs absolus
         with prep.mesh_lock:
-            return sample([zlo + z for z in zs])
+            return sample(list(zs))
 
-    try:
-        obstacles = [*bore_obstacles(prep.bores, zlo, zhi), *bay_obstacles(prep.bays, zlo, cfg.servo_strip())]
-        plan = plan_layout(
-            zhi - zlo, usable_height(cfg), sections, (W, D), seg.margin, seg.cuts_at or None, chord=seg.chord,
-            max_overhang_deg=cfg.preset.max_overhang_deg, obstacles=obstacles,
-        )
-        return list(plan.cuts), []
-    except SegmentError as exc:
-        return [], [f"découpe en tronçons impossible : {exc}"]
+    (W, D, _), _ = _print_volume(cfg)
+    seg = cfg.segment
+    if seg.mode == "off":
+        zs = _samples(0.0, height, height)
+        pts = [p for p in sections([zlo + z for z in zs]) if len(p)]
+        pl = fit_on_bed(np.concatenate(pts), (W, D), seg.margin) if pts else Placement(0.0, True, 0.0, (0.0, 0.0))
+        ext = _piece_extent(sections([zlo + z for z in zs]), [zlo + z for z in zs], None, None)
+        out = Layout([], [], [], [_piece("T1", zlo, zhi, ext, pl)], [])
+    else:
+        try:
+            plan = layout_for(height, zlo, sections, cfg, prep.bores, prep.bays)
+        except SegmentError as exc:
+            out = Layout([], [f"découpe en tronçons impossible : {exc}"], [], [], [], ok=False)
+        else:
+            out = _plan_view(plan, cfg, (W, D), zlo, height, sections)
+    with prep.mesh_lock:
+        prep.memo[key] = out
+        while len(prep.memo) > _MEMO:
+            prep.memo.pop(next(iter(prep.memo)))
+    return out
+
+
+def _plan_view(plan: LayoutPlan, cfg: Config, bed, zlo: float, height: float, sections) -> Layout:
+    names = plan.names()
+    pieces, planes, k = [], [], 0
+    for i, sp in enumerate(plan.segments, 1):
+        za, zb = zlo + sp.z0, zlo + sp.z1
+        zs = [zlo + z for z in _samples(sp.z0, sp.z1, height)]
+        got = sections(zs)
+        lines = [(lambda z, p=p: p.x_at(z - zlo)) for p in sp.planes]
+        for p in sp.planes:
+            planes.append({
+                "troncon": f"T{i}", "x0": _round(p.x_at(sp.z0)), "z0": _round(za), "x1": _round(p.x_at(sp.z1)),
+                "z1": _round(zb), "inclinaison": _round(p.inclination_deg), "decalage": _round(p.shift),
+                "evite": list(p.avoided),
+            })
+        for pos, j in enumerate(sp.order()):
+            left = lines[j - 1] if j > 0 else None
+            right = lines[j] if j < sp.k - 1 else None
+            pieces.append(_piece(names[k + pos], za, zb, _piece_extent(got, zs, left, right), sp.placements[j], left,
+                                 right))
+        k += sp.k
+    return Layout(list(plan.cuts), [], layout_notices(plan, cfg, bed), pieces, planes)
+
+
+def _cuts(prep: Prepared, cfg: Config) -> tuple[list[float], list[str]]:
+    """Coupes de tronçons (altitudes relatives à l'emplanture), comme la découpe du pipeline."""
+    lay = _layout(prep, cfg)
+    return lay.cuts, lay.warnings
+
+
+def _plan_tubes(prep: Prepared, cfg: Config) -> list[dict]:
+    """SBAR transversales vues de dessus : axe du trou (x, z) aux deux bouts, Ø, rayon du trou, angle avec Z."""
+    return [
+        {
+            "nom": t.name, "type": "transversale", "gaine": t.cable, "x0": _round(t.start[0]), "z0": _round(t.start[2]),
+            "x1": _round(t.end[0]), "z1": _round(t.end[2]), "d": _round(t.diameter), "r": _round(t.radius),
+            "angle": _round(t.tilt), "fente": not t.debouching,
+        }
+        for t in tubes(prep, cfg)
+    ]
 
 
 def planform(prep: Prepared, plates: list[Plate2D], cfg: Config | None = None) -> PlanformView:
@@ -671,6 +807,12 @@ def planform(prep: Prepared, plates: list[Plate2D], cfg: Config | None = None) -
     if prep.parts:
         views = [planform(part, [p for p in plates if p.body == k], cfg) for k, part in enumerate(prep.parts)]
         bb = prep.bb
+        pieces, notices = [], []
+        for part, v in zip(prep.parts, views):
+            if cfg is not None and len(v.pieces) > 1:
+                notices.append(f"{part.name} : {body_notice(len(v.pieces), cfg)}")
+            notices += [f"{part.name} : {n}" for n in v.notices]
+            pieces += [{**p, "corps": part.name, "plateau": len(pieces) + i} for i, p in enumerate(v.pieces, 1)]
         return PlanformView(
             [sg for v in views for sg in v.segments], (bb.min.X, prep.zrange[0], bb.max.X, prep.zrange[1]),
             [c for v in views for c in v.cuts],
@@ -678,6 +820,8 @@ def planform(prep: Prepared, plates: list[Plate2D], cfg: Config | None = None) -
             [b for v in views for b in v.bores], [b for v in views for b in v.bays],
             [{"nom": part.name, "x0": _round(v.wing[0]), "z0": _round(v.wing[1]), "x1": _round(v.wing[2]),
               "z1": _round(v.wing[3])} for part, v in zip(prep.parts, views)],
+            pieces, [{**pl, "corps": part.name} for part, v in zip(prep.parts, views) for pl in v.planes], notices,
+            [t for v in views for t in v.tubes],
         )
     bb = prep.bb
     zmin, zmax = bb.min.Z, bb.max.Z
@@ -688,9 +832,15 @@ def planform(prep: Prepared, plates: list[Plate2D], cfg: Config | None = None) -
         if hi <= lo:
             continue
         segs.append(PlanSegment(p.c + lo * p.d0, zmin + lo * p.d1, p.c + hi * p.d0, zmin + hi * p.d1, p.layer, p.family))
-    cuts, warns = _cuts(prep, cfg) if cfg is not None else ([], [])
-    return PlanformView(segs, (bb.min.X, zmin, bb.max.X, zmax), [prep.zrange[0] + c for c in cuts], warns,
-                        _plan_bores(prep), _plan_bays(prep))
+    if cfg is None:
+        return PlanformView(segs, (bb.min.X, zmin, bb.max.X, zmax), [], [], _plan_bores(prep), _plan_bays(prep))
+    lay = _layout(prep, cfg)
+    pieces = [{**p, "corps": prep.name, "plateau": i} for i, p in enumerate(lay.pieces, 1)]
+    planes = [{**p, "corps": prep.name} for p in lay.planes]
+    return PlanformView(
+        segs, (bb.min.X, zmin, bb.max.X, zmax), [prep.zrange[0] + c for c in lay.cuts], list(lay.warnings),
+        _plan_bores(prep), _plan_bays(prep), [], pieces, planes, list(lay.notices), _plan_tubes(prep, cfg),
+    )
 
 
 # --- chiffres estimés ---------------------------------------------------------------------------------------
@@ -713,6 +863,7 @@ def estimates(prep: Prepared, plates: list[Plate2D], cfg: Config, *, cached: boo
         ]
         n_plates = sum(e["plaques"] for e in per)
         troncons = None if any(e["troncons"] is None for e in per) else [t for e in per for t in e["troncons"]]
+        morceaux = None if any(e["morceaux"] is None for e in per) else sum(e["morceaux"] for e in per)
         return {
             "plaques": n_plates,
             "plaques_par_couche": [
@@ -720,6 +871,7 @@ def estimates(prep: Prepared, plates: list[Plate2D], cfg: Config, *, cached: boo
                 for i, c in enumerate(per[0]["plaques_par_couche"])
             ],
             "troncons": troncons,
+            "morceaux": morceaux,
             "couches": sum(e["couches"] for e in per),
             "trajet_m": sum(e["trajet_m"] for e in per),
             "masse_g": sum(e["masse_g"] for e in per),
@@ -735,12 +887,13 @@ def estimates(prep: Prepared, plates: list[Plate2D], cfg: Config, *, cached: boo
     for p in plates:
         per_layer[p.layer] += 1
     zlo, zhi = prep.zrange
-    cuts, warns = _cuts(prep, cfg)
-    bounds = [0.0, *cuts, zhi - zlo]
-    troncons = [b - a for a, b in pairwise(bounds)] if not warns else None
+    lay = _layout(prep, cfg)
+    bounds = [0.0, *lay.cuts, zhi - zlo]
+    troncons = [b - a for a, b in pairwise(bounds)] if lay.ok else None
+    warns = list(lay.warnings)
     warns = [
         *wall_warnings(prep.bb, prep.mid, prep.bores, cfg, per_layer, prep.bays, prep.anchor, tubes(prep, cfg)),
-        *reinforce_warnings(prep.bays), *warns,
+        *reinforce_warnings(prep.bays), *tube_warnings(tubes(prep, cfg), cfg, prep.bays), *warns,
     ]
     bb = prep.bb
     zs = layer_heights(bb.min.Z, bb.max.Z, preset.layer_height)
@@ -759,6 +912,7 @@ def estimates(prep: Prepared, plates: list[Plate2D], cfg: Config, *, cached: boo
             {"indice": i, "nom": layer.name, "plaques": n} for i, (layer, n) in enumerate(zip(cfg.rib_layers, per_layer))
         ],
         "troncons": troncons,
+        "morceaux": len(lay.pieces) if lay.ok else None,  # pièces imprimées (coupes dans la corde comprises)
         "couches": n,
         "trajet_m": path_mm / 1000.0,
         "masse_g": mass_g,

@@ -115,6 +115,49 @@ def format_bays(bays, heights: Sequence[float] = ()) -> str:
     return "  baies : " + (" ; ".join(items) if items else "aucune")
 
 
+def piece_rows(body, first_plate: int = 1) -> list[dict]:
+    """Morceaux imprimés d'un corps (`pipeline.BodyResult`) : nom, étendue en Z depuis l'emplanture, emprise sur le
+    plateau une fois tourné, rotation, plateau (numéro dans le projet 3MF, à partir de `first_plate`), validation."""
+    n = max(len(body.segments), 1)
+    names = list(body.names) if len(body.names) == n else [f"T{i}" for i in range(1, n + 1)]
+    spans = list(body.spans) if len(body.spans) == n else [None] * n
+    reports = list(body.piece_reports) if len(body.piece_reports) == n else [body.report] * n
+    out = []
+    for i, (name, span, rep) in enumerate(zip(names, spans, reports)):
+        pl = body.placements[i] if i < len(body.placements) else None
+        out.append({
+            "nom": name,
+            "z0": None if span is None else round(span[0], 2),
+            "z1": None if span is None else round(span[1], 2),
+            "largeur": None if pl is None else round(pl.size[0], 1),
+            "profondeur": None if pl is None else round(pl.size[1], 1),
+            "rotation": None if pl is None else round(pl.angle_deg, 1),
+            "tient": None if pl is None else bool(pl.fits),
+            "plateau": first_plate + i,
+            "ok": bool(rep.ok),
+        })
+    return out
+
+
+def _pieces_table(rows: Sequence[dict]) -> str:
+    def num(v, unit=""):
+        return "—" if v is None else f"{v:g}{unit}"
+
+    head = "".join(f"<th>{h}</th>" for h in ("Morceau", "z (mm)", "Emprise (mm)", "Rotation", "Plateau", "Vase mode"))
+    body = "".join(
+        "<tr>"
+        f"<td>{html.escape(r['nom'])}</td>"
+        f"<td>{num(r['z0'])} – {num(r['z1'])}</td>"
+        f"<td>{num(r['largeur'])} × {num(r['profondeur'])}{'' if r['tient'] in (None, True) else ' (ne tient pas)'}</td>"
+        f"<td>{'—' if not r['rotation'] else num(r['rotation'], '°')}</td>"
+        f"<td>{r['plateau']}</td>"
+        f"<td>{'✔' if r['ok'] else '✘'}</td>"
+        "</tr>"
+        for r in rows
+    )
+    return f"<table class='morceaux'><caption>Morceaux imprimés</caption><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+
+
 def _ring_path(coords) -> str:
     pts = list(coords)
     return "M" + " L".join(f"{x:.3f},{-y:.3f}" for x, y in pts) + " Z"
@@ -154,11 +197,19 @@ figure { margin:24px 0; }
 svg { width:100%; height:auto; max-height:420px; }
 .part { fill:var(--part); stroke:var(--stroke); stroke-width:0.1; vector-effect:non-scaling-stroke; }
 .bad { fill:none; stroke:var(--bad); stroke-width:2; vector-effect:non-scaling-stroke; }
+table { border-collapse:collapse; margin:16px 0; }
+caption { text-align:left; font-weight:600; padding-bottom:4px; }
+th, td { border-bottom:1px solid var(--part); padding:4px 12px 4px 0; text-align:left; }
+.notices { border-left:3px solid var(--stroke); padding-left:12px; }
 """
 
 
-def write_html(report: Report, path: Path, title: str = "AeroRib", details: Sequence[str] = ()) -> Path:
-    """Rapport HTML ; `details` : lignes ajoutées sous le résumé (trous et gaines, baies de servo)."""
+def write_html(
+    report: Report, path: Path, title: str = "AeroRib", details: Sequence[str] = (), pieces: Sequence[dict] = (),
+    notices: Sequence[str] = (),
+) -> Path:
+    """Rapport HTML ; `details` : lignes ajoutées sous le résumé (trous et gaines, baies de servo) ; `pieces` :
+    tableau des morceaux (`piece_rows`) ; `notices` : décisions automatiques de découpe."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     figures = []
@@ -172,6 +223,10 @@ def write_html(report: Report, path: Path, title: str = "AeroRib", details: Sequ
         )
     items = "".join(f"<li>{html.escape(d.strip())}</li>" for d in details)
     extra = f"<ul class='details'>{items}</ul>" if items else ""
+    if notices:
+        extra += "<ul class='notices'>" + "".join(f"<li>ℹ {html.escape(n)}</li>" for n in notices) + "</ul>"
+    if pieces:
+        extra += _pieces_table(pieces)
     body = (
         f"<main><h1>{html.escape(title)}</h1><pre>{html.escape(format_text(report))}</pre>{extra}"
         f"{''.join(figures)}</main>"

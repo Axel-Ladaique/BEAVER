@@ -251,6 +251,11 @@ def test_preview_of_several_bodies_matches_generation(run_z, tmp_path):
     assert [c["nom"] for c in plan["corps"]] == ["WING_1", "WING_2"]
     assert plan["aile"][1] == pytest.approx(0.0, abs=1e-3) and plan["aile"][3] == pytest.approx(80.0, abs=1e-3)
     assert sorted(t["nom"] for t in plan["trous"]) == ["SBAR_8", "SBAR_8"]
+    # un morceau par corps, numérotés sur les plateaux dans l'ordre de la génération
+    assert [(m["corps"], m["nom"], m["plateau"]) for m in plan["morceaux"]] == [
+        (b.name, n, i) for i, (b, n) in enumerate(((b, n) for b in run_z.bodies for n in b.names), 1)
+    ]
+    assert est["morceaux"] == sum(len(b.segments) for b in run_z.bodies) and plan["notices"] == []
     for z in (JOINT_Z / 2, (JOINT_Z + 80) / 2):  # un seul corps à chaque hauteur, avec son longeron
         view = preview.section(prep, plates, FAST, z)
         assert len(view.polygons) == 1 and view.footprints and view.defects == []

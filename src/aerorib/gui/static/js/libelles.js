@@ -69,6 +69,8 @@ const LIBELLES_CHEMIN = {
   "passages.slit_width": "Largeur de la fente (mm)",
   "passages.sleeve": "Manchon (mm)",
   "segment.mode": "Découpe en tronçons",
+  "segment.chord": "Coupe dans la corde",
+  "segment": "Découpe (volume d'impression)",
   "passages.mode": "Traitement des passages",
   "servo.strip": "Matière entre nervures et baie (mm)",
   "servo.slit_width": "Largeur de la fente de renfort (mm)",
@@ -81,6 +83,8 @@ const AIDES = {
   "rib_layers.*.angle": "vide = auto (min(45°, surplomb max))",
   "segment.max_height": "vide = hauteur du gabarit Bambu − marge",
   "segment.cuts_at": "altitudes séparées par « ; »",
+  "segment.mode": "tronçons en Z selon la hauteur et l'empreinte sur le plateau (pièce tournée si besoin)",
+  "segment.chord": "quand une section ne tient pas sur le plateau même en diagonale : coupe plane dans la corde (morceaux T1-A, T1-B…), signalée dans l'aperçu",
   "naming.*": "préfixes séparés par des virgules",
   "split.gap": "≥ largeur de ligne",
   "naming.cable_markers": "un longeron dont le nom contient l'un de ces marqueurs est une gaine de câble (séparés par des virgules)",
@@ -94,6 +98,19 @@ const AIDES = {
   "spars.cable.anchor": "gaine : sans attache par défaut",
 };
 export const IMPRIMANTES = { p1s: "P1S (256 × 256 × 250)", h2s: "H2S (340 × 320 × 340)" };
+/** Choix propres à un champ (chemin générique), prioritaires sur CHOIX. */
+export const CHOIX_CHEMIN = {
+  "segment.mode": { auto: "auto — découpe en Z si besoin", off: "off — pièce entière (avertissement si trop grande)" },
+  "segment.chord": { auto: "auto — coupe dans la corde si besoin", off: "off — jamais (erreur si un tronçon ne tient pas)" },
+};
+
+/** Libellé d'un choix `v` du champ `chemin`. */
+export function libelleChoix(chemin, v) {
+  const propre = CHOIX_CHEMIN[cleChemin(chemin)];
+  if (propre && propre[v]) return propre[v];
+  return CHOIX[v] ? `${v} — ${CHOIX[v]}` : v;
+}
+
 export const CHOIX = {
   fill: "reboucher", link: "relier à la peau", off: "aucun", auto: "automatique",
   top: "dessus (extrados)", bottom: "dessous (intrados)",

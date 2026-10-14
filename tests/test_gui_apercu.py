@@ -59,6 +59,15 @@ def test_reponse_complete(client):
     assert d["estimates"]["plaques"] > 0
     assert sum(c["plaques"] for c in d["estimates"]["plaques_par_couche"]) == d["estimates"]["plaques"]
     assert isinstance(d["avertissements"], list) and all(isinstance(w, str) for w in d["avertissements"])
+    # plan de découpe : hauteur utile 30 mm ⇒ trois tronçons en Z, un par plateau, découpe notifiée (pas un
+    # avertissement)
+    pf = d["planform"]
+    assert [(m["nom"], m["plateau"], m["tient"]) for m in pf["morceaux"]] == [("T1", 1, True), ("T2", 2, True), ("T3", 3, True)]
+    assert [m["z1"] for m in pf["morceaux"][:-1]] == pytest.approx(pf["coupes"]) and len(pf["coupes"]) == 2
+    assert d["estimates"]["morceaux"] == 3 and pf["plans_corde"] == [] and pf["sbar_transversales"] == []
+    (n,) = d["notices"]
+    assert n.startswith("découpe automatique : 3 tronçons en Z (hauteur") and pf["notices"] == [n]
+    assert not any("découpe automatique" in w for w in d["avertissements"])
 
 
 def test_z_nul_est_mi_envergure(client):

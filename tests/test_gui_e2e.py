@@ -111,3 +111,65 @@ def test_aile_servo_apercu_et_generation(tmp_path, monkeypatch):
             p.kill()
             p.join(5)
     assert not multiprocessing.active_children()
+
+
+@pytest.mark.slow
+def test_aile_large_decoupe_visible_dans_l_apercu_puis_generation(tmp_path, monkeypatch):
+    """Aile synthétique à grande corde (P1S) : l'aperçu montre les deux morceaux, le plan de coupe dans la corde et la
+    décision automatique ; la génération donne le même plan (essai ok, 2 morceaux, notice présente)."""
+    from aerorib.io_step import write_step
+    from aerorib.testing.synthetic import wide_wing_bodies
+
+    (tmp_path / "profils").mkdir()
+    monkeypatch.setenv("AERORIB_PROFILES", str(tmp_path / "profils"))
+    step = write_step(tmp_path / "large.step", wide_wing_bodies())
+    rapide = {"material_settings": {"layer_height": 1.0}, "rib_layers": [{"spacing": 20}]}
+    preview.clear_cache()
+    app = create_app(tmp_path / "projets", TOKEN)
+    c = TestClient(app, base_url="http://127.0.0.1")
+    try:
+        r = c.post("/api/projets", headers=H, data={"nom": "large"}, files={"fichier": ("large.step", step.read_bytes())})
+        assert r.status_code == 201, r.text
+        r = c.put("/api/projets/large/config", headers=H, json={"donnees": rapide})
+        assert r.status_code == 200, r.text
+
+        r = c.post("/api/projets/large/apercu", headers=H, json={"config": rapide, "z": None, "attendre": True})
+        assert r.status_code == 200, r.text
+        d = r.json()
+        pf = d["planform"]
+        assert [(m["nom"], m["plateau"], m["tient"]) for m in pf["morceaux"]] == [("A", 1, True), ("B", 2, True)]
+        (plan,) = pf["plans_corde"]
+        assert plan["evite"] == ["SBAR_8"] and d["estimates"]["morceaux"] == 2
+        (notice,) = d["notices"]
+        assert notice.startswith("découpe automatique : coupe dans la corde en 2 morceaux")
+        assert notice not in d["avertissements"]
+
+        r = c.post("/api/projets/large/generations", headers=H)
+        assert r.status_code == 202, r.text
+        job = r.json()["id"]
+        t0 = time.monotonic()
+        while True:
+            st = c.get(f"/api/generations/{job}", headers=H).json()
+            if st["statut"] != "en cours":
+                break
+            assert time.monotonic() - t0 < TIMEOUT, "génération trop longue"
+            time.sleep(1)
+        assert st["statut"] == "ok", st
+        resume = c.get(f"/api/projets/large/essais/{st['essai']}", headers=H).json()["resume"]
+        assert resume["statut"] == "ok" and resume["morceaux"] == 2 and resume["troncons"] == 1
+        assert resume["notices"] == [f"Aile_large : {notice}"]  # même décision que l'aperçu
+        assert resume["nervures"] == d["estimates"]["plaques"]
+        (corps,) = resume["corps"]
+        assert [(m["nom"], m["plateau"], m["ok"]) for m in corps["liste_morceaux"]] == [("A", 1, True), ("B", 2, True)]
+        for m, vu in zip(corps["liste_morceaux"], pf["morceaux"]):
+            assert m["rotation"] == pytest.approx(vu["rotation"], abs=1.0)
+        rapport = (tmp_path / "projets" / "large" / "essais" / st["essai"] / resume["rapport"]).read_text(encoding="utf-8")
+        assert "Morceaux imprimés" in rapport and "coupe dans la corde en 2 morceaux" in rapport
+        assert {"large-a.stl", "large-b.stl", "large.3mf"} <= set(resume["fichiers"])
+    finally:
+        app.state.travaux.shutdown()
+        preview.clear_cache()
+        for p in multiprocessing.active_children():
+            p.kill()
+            p.join(5)
+    assert not multiprocessing.active_children()

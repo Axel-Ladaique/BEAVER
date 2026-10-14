@@ -12,7 +12,7 @@ from aerorib.bambu import BambuError, Template, write_project
 from aerorib.layout import format_rotations
 from aerorib.io_step import NamedBody, write_step
 from aerorib.pipeline import RunResult
-from aerorib.report import format_bays, format_bores, write_html
+from aerorib.report import format_bays, format_bores, piece_rows, write_html
 from aerorib.slicing import to_mesh
 
 
@@ -67,6 +67,10 @@ def _write_all(run, out_dir, stem, formats, template, single, pieces, written) -
         written.append(
             write_step(out_dir / f"{stem}.step", [NamedBody((n,), s) for b in run.bodies for n, s in pieces[b.name]])
         )
+    first, plate = {}, 1  # premier plateau de chaque corps dans le projet 3MF (un morceau par plateau)
+    for b in run.bodies:
+        first[b.name] = plate
+        plate += len(pieces[b.name])
     for b in run.bodies:
         base = stem if single else f"{stem}-{safe_name(b.name)}"
         if "stl" in formats:
@@ -76,14 +80,16 @@ def _write_all(run, out_dir, stem, formats, template, single, pieces, written) -
                 export_stl(solid, str(path), tolerance=0.02, angular_tolerance=0.3)
                 written.append(path)
         details = [format_bores(b.bores, b.filled, b.tubes)] + ([format_bays(b.bays, b.z_heights)] if b.bays else [])
-        details += list(b.notices)
         if b.piece_reports:
             details.append("morceaux : " + ", ".join(
                 f"{n} {'✔' if r.ok else '✘'}" for n, r in zip(b.names, b.piece_reports)
             ))
         if rot := format_rotations(b.placements, list(b.names) if b.piece_reports else None):
             details.append("plateau : " + " ; ".join(rot))
-        written.append(write_html(b.report, out_dir / f"{base}-rapport.html", title=b.name, details=details))
+        written.append(write_html(
+            b.report, out_dir / f"{base}-rapport.html", title=b.name, details=details,
+            pieces=piece_rows(b, first[b.name]), notices=b.notices,
+        ))
     if "3mf" in formats:
         for b in run.bodies:
             if len(b.placements) != len(pieces[b.name]):

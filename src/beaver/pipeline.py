@@ -34,7 +34,7 @@ from beaver.features.bores import (
     spar_bores,
 )
 from beaver.features.chord_cut import LayoutPlan, bay_obstacles, bore_obstacles, cut_lines, cut_segment, plan_layout
-from beaver.features.ribs import CutGuides, HollowSpec, diamond_plates, emptied_by_walls, plate_lines
+from beaver.features.ribs import CutGuides, HollowSpec, diamond_plates, diamond_profiles, emptied_by_walls, plate_lines
 from beaver.features.tubes import Region, Tube, band, beyond, is_transversal, spar_tubes, tube_warnings
 from beaver.features.servo import (
     ServoBay, ServoError, hole_meets_pocket, pocket_profile, pocket_solid, reinforce_solids, reinforce_warnings, servo_bays,
@@ -44,6 +44,7 @@ from beaver.midsurface import MidSurface
 from beaver.orient import Orientation, orient
 from beaver.segment import CutFailure, SegmentError, cut_chain, split_part
 from beaver.slicing import mesh_sections, section_sampler, slice_layers, to_mesh
+from beaver.report import hollow_summary
 from beaver.validate import MAX_FAILED_LAYERS, Issue, Report, validate
 
 
@@ -69,6 +70,8 @@ class BodyResult:
     spans: tuple[tuple[float, float], ...] = ()  # étendue en Z de chaque morceau (mm depuis l'emplanture)
     piece_reports: tuple[Report, ...] = ()  # validation de chaque morceau (coupe dans la corde seulement)
     tubes: tuple[Tube, ...] = ()  # SBAR transversales / inclinées
+    hollow: str | None = None  # évidements des nervures en clair (`report.hollow_summary`), None : désactivés
+    hollow_saved_g: float = 0.0  # masse économisée estimée par les évidements (`hollow_saving_g`)
 
     @property
     def z_heights(self) -> list[float]:
@@ -206,6 +209,24 @@ def hollow_on(cfg: Config) -> bool:
     return any(hollow_spec(cfg, i) is not None for i in range(len(cfg.rib_layers)))
 
 
+def hollow_saving_g(bb, mid: MidSurface, bores, cfg: Config, bays=(), anchor=None, tubes=(), cuts=None) -> float:
+    """Masse économisée estimée par les évidements (g), sur les seuls profils 2D des plaques (pas de booléen).
+
+    En vase mode, chaque plaque donne les deux bords de sa fente : par couche, un trajet ≈ 2 × la longueur de la
+    plaque coupée à ce z ; sommé sur les couches (dz = d1·ds), trajet ≈ 2·d1·aire/hauteur de couche, d'où une masse
+    ≈ 2·d1·aire × largeur de ligne × densité. Gain = écart entre profils pleins et évidés (mêmes options)."""
+    preset = cfg.preset
+    saved = 0.0
+    for i, layer in enumerate(cfg.rib_layers):
+        opts = rib_options(cfg, bb, i, bays, anchor, tubes, cuts)
+        if opts["hollow"] is None:
+            continue
+        hollowed = diamond_profiles(bb, mid, list(bores), layer, **opts)
+        full = diamond_profiles(bb, mid, list(bores), layer, **{**opts, "hollow": None, "cuts": None})
+        saved += sum(2 * p.d1 * p.polygon.area for p in full) - sum(2 * p.d1 * p.polygon.area for p in hollowed)
+    return max(saved, 0.0) * preset.line_width * preset.density / 1000.0
+
+
 def cut_guides(plan: LayoutPlan | None, z_root: float) -> CutGuides | None:
     """Coupes d'un plan de découpe en z absolus (`z_root` : bas de la pièce, boîte optimale) : plans z = cte et plans
     dans la corde x = x0 + pente·z limités à leur tronçon (`ribs.CutGuides`)."""
@@ -288,6 +309,7 @@ class Generated(NamedTuple):
     openings: tuple[Solid, ...] = ()
     tubes: tuple[Tube, ...] = ()  # SBAR transversales / inclinées
     plan: LayoutPlan | None = None  # plan de découpe déjà calculé (SBAR transversales : coupes dans la corde)
+    hollow_saved_g: float = 0.0  # masse économisée estimée par les évidements (`hollow_saving_g`)
 
 
 def split_spars(
@@ -474,6 +496,7 @@ def generate_skin(
         if plan is None:
             plan = cut_plan(skin, cfg, bores, bays, filled=[f for _, f in to_fill], rib_origin=rib_origin_of(skin, anchor))
         guides = cut_guides(plan, skin.bounding_box(optimal=True).min.Z)
+    saved = hollow_saving_g(bb, mid, bores, cfg, bays, anchor, tubes, guides) if hollow_on(cfg) else 0.0
     skin = fill_skin(skin, to_fill, tol)
     plates, counts = [], []
     for i, layer in enumerate(cfg.rib_layers):
@@ -498,7 +521,7 @@ def generate_skin(
     openings = (*pockets, *hole_openings(bores, bays, bb), *(t.opening_solid() for t in tubes))
     return Generated(
         part, tuple(bores), len(plates), tuple(f for _, f in to_fill), slivers, tuple(warns), tuple(bays), openings,
-        tuple(tubes), plan,
+        tuple(tubes), plan, saved,
     )
 
 
@@ -982,7 +1005,7 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
         bodies.append(
             BodyResult(
                 s.body.name, skin, result, report, bores, n, filled, warns, seg.pieces, gen.bays, placements,
-                notices, seg.names, seg.spans, piece_reports, gen.tubes,
+                notices, seg.names, seg.spans, piece_reports, gen.tubes, hollow_summary(cfg), gen.hollow_saved_g,
             )
         )
     return RunResult(o, tuple(bodies))

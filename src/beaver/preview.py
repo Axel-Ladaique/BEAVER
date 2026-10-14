@@ -28,7 +28,7 @@ from shapely.geometry import LineString, Point, Polygon, box
 from shapely.ops import unary_union
 
 from beaver.classify import ClassifyError, classify
-from beaver.config import Config
+from beaver.config import Config, HollowSettings
 from beaver.features.bores import (
     Bore,
     BoreError,
@@ -73,6 +73,7 @@ from beaver.features.chord_cut import LayoutPlan
 from beaver.layout import Placement, fit_on_bed
 from beaver.segment import SegmentError, _samples
 from beaver.slicing import Layer, layer_heights, mesh_sections, to_mesh
+from beaver.report import hollow_summary
 from beaver.validate import Issue, check_connectivity, check_material_width, check_narrow_slits, slicer_closing
 
 SECONDS_PER_PLATE = 0.3  # s : coût estimé d'une plaque (recalé : aile Fusion v2, 84 plaques, 29 s réelles)
@@ -885,6 +886,62 @@ def planform(prep: Prepared, plates: list[Plate2D], cfg: Config | None = None) -
 
 
 def estimates(prep: Prepared, plates: list[Plate2D], cfg: Config, *, cached: bool = False) -> dict:
+    """Chiffres estimés (`_estimates`) et gain des évidements : `evidements` = None s'ils sont désactivés, sinon
+    réglage en clair (`resume`), trajet et masse de la même pièce sans évidement (`trajet_sans_m`, `masse_sans_g` :
+    profils pleins, mêmes couches échantillonnées, aucun booléen) et gains relatifs (`gain_masse`, `gain_trajet`)."""
+    est = _estimates(prep, plates, cfg, cached=cached)
+    est["evidements"] = _hollow_gain(prep, cfg, est)
+    return est
+
+
+def _without_hollow(cfg: Config) -> Config:
+    """Même configuration, nervures pleines (réglage global et surcharges de couche retirés)."""
+    return cfg.model_copy(update={
+        "ribs_hollow": HollowSettings(),
+        "rib_layers": [layer.model_copy(update={"hollow": None}) for layer in cfg.rib_layers],
+    })
+
+
+def _hollow_gain(prep: Prepared, cfg: Config, est: dict) -> dict | None:
+    if not hollow_on(cfg):
+        return None
+    off = _without_hollow(cfg)
+    full = plates_2d(prep, off)
+    if prep.parts:
+        path_mm = sum(_path_mm(part, [p for p in full if p.body == k], off) for k, part in enumerate(prep.parts))
+    else:
+        path_mm = _path_mm(prep, full, off)
+    path_m = path_mm / 1000.0
+    mass_g = _mass_g(path_mm, cfg)
+    return {
+        "resume": hollow_summary(cfg),
+        "trajet_sans_m": path_m,
+        "masse_sans_g": mass_g,
+        "gain_trajet": 1 - est["trajet_m"] / path_m if path_m > 0 else 0.0,
+        "gain_masse": 1 - est["masse_g"] / mass_g if mass_g > 0 else 0.0,
+    }
+
+
+def _mass_g(path_mm: float, cfg: Config) -> float:
+    preset = cfg.preset
+    return path_mm * preset.line_width * preset.layer_height * preset.density / 1000.0
+
+
+def _path_mm(prep: Prepared, plates: list[Plate2D], cfg: Config) -> float:
+    """Trajet d'impression estimé d'une peau (mm) : moyenne sur SAMPLED_LAYERS couches × nombre de couches."""
+    bb = prep.bb
+    zs = layer_heights(bb.min.Z, bb.max.Z, cfg.preset.layer_height)
+    n = len(zs)
+    picked = sorted({round(i) for i in np.linspace(0, n - 1, min(SAMPLED_LAYERS, n))}) if n else []
+    sample = [float(zs[i]) for i in picked]
+    lengths = [
+        sum(p.length for p in _section(prep, plates, cfg, z, raw).polygons)
+        for z, raw in zip(sample, _skin_slices(prep, sample))
+    ]
+    return float(np.mean(lengths)) * n if lengths else 0.0
+
+
+def _estimates(prep: Prepared, plates: list[Plate2D], cfg: Config, *, cached: bool = False) -> dict:
     """Plaques (total et par couche, dans l'ordre de `rib_layers`), tronçons, trajet et masse (couches
     échantillonnées), durée estimée.
 
@@ -897,7 +954,7 @@ def estimates(prep: Prepared, plates: list[Plate2D], cfg: Config, *, cached: boo
     """
     if prep.parts:
         per = [
-            estimates(part, [p for p in plates if p.body == k], cfg, cached=True) for k, part in enumerate(prep.parts)
+            _estimates(part, [p for p in plates if p.body == k], cfg, cached=True) for k, part in enumerate(prep.parts)
         ]
         n_plates = sum(e["plaques"] for e in per)
         troncons = None if any(e["troncons"] is None for e in per) else [t for e in per for t in e["troncons"]]
@@ -934,16 +991,9 @@ def estimates(prep: Prepared, plates: list[Plate2D], cfg: Config, *, cached: boo
         *reinforce_warnings(prep.bays), *tube_warnings(tubes(prep, cfg), cfg, prep.bays), *warns,
     ]
     bb = prep.bb
-    zs = layer_heights(bb.min.Z, bb.max.Z, preset.layer_height)
-    n = len(zs)
-    picked = sorted({round(i) for i in np.linspace(0, n - 1, min(SAMPLED_LAYERS, n))}) if n else []
-    sample = [float(zs[i]) for i in picked]
-    lengths = [
-        sum(p.length for p in _section(prep, plates, cfg, z, raw).polygons)
-        for z, raw in zip(sample, _skin_slices(prep, sample))
-    ]
-    path_mm = float(np.mean(lengths)) * n if lengths else 0.0
-    mass_g = path_mm * preset.line_width * preset.layer_height * preset.density / 1000.0
+    n = len(layer_heights(bb.min.Z, bb.max.Z, preset.layer_height))
+    path_mm = _path_mm(prep, plates, cfg)
+    mass_g = _mass_g(path_mm, cfg)
     return {
         "plaques": len(plates),
         "plaques_par_couche": [

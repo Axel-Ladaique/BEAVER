@@ -50,6 +50,11 @@ def _check_printable(mode: str, full_run):
         assert len(layer.polygons) == 1 and not layer.polygons[0].interiors, layer.z
     for key in ("path_length_m", "mass_g"):
         assert body.report.stats[key] < 0.97 * full.report.stats[key], key
+    # gain estimé pour le rapport (profils des plaques, sans booléen) : proche du gain mesuré
+    assert full.hollow is None and full.hollow_saved_g == 0
+    assert body.hollow.startswith("ponts ")
+    measured = full.report.stats["mass_g"] - body.report.stats["mass_g"]
+    assert body.hollow_saved_g == pytest.approx(measured, rel=0.3)
     return body
 
 
@@ -145,3 +150,19 @@ def test_real_wing_v2_hollow_at_crossings():
     assert body.plates == 84
     assert body.report.stats["path_length_m"] < 0.9 * 909
     assert body.report.stats["mass_g"] < 0.9 * 61
+    # gain estimé du rapport (profils) proche du gain mesuré (≈ 9,8 g)
+    assert body.hollow_saved_g == pytest.approx(61.09 - body.report.stats["mass_g"], rel=0.25)
+
+
+SERVO = Path(__file__).parent / "fixtures" / "aile_4412_servo_extrados.step"
+
+
+@pytest.mark.slow
+def test_real_servo_wing_hollow_at_crossings():
+    """Fixture servo (sans évidement : 111 plaques) évidée aux croisements : imprimable, baie intacte, plus légère."""
+    cfg = load_config(overrides={"ribs_hollow": {"mode": "croisements"}})
+    run = run_model(classify(read_step(SERVO), cfg), cfg)
+    (body,) = run.bodies
+    assert body.report.ok, [(i.z, i.message) for i in body.report.errors][:5]
+    assert body.plates == 111 and len(body.bays) == 1
+    assert body.hollow_saved_g > 0

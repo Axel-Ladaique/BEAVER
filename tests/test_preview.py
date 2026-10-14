@@ -296,3 +296,20 @@ def test_walls_removing_every_plate_warn_in_the_preview(step, monkeypatch):
 def test_no_wall_warning_when_plates_remain(prep, plates):
     est = preview.estimates(prep, plates, _cfg())
     assert not [w for w in est["avertissements"] if "parois" in w]
+
+
+def test_estimates_hollow_gain(step):
+    """Évidements : chiffres de la pièce évidée et, pour comparaison, sans évidement (profils seulement)."""
+    plein = _cfg(rib_layers=[{"spacing": 30}])
+    evide = _cfg(rib_layers=[{"spacing": 30}], ribs_hollow={"mode": "croisements"})
+    prep = preview.prepare(step, evide)
+    off = preview.estimates(prep, preview.plates_2d(prep, plein), plein)
+    assert off["evidements"] is None
+    est = preview.estimates(prep, preview.plates_2d(prep, evide), evide)
+    json.dumps(est)
+    g = est["evidements"]
+    assert g["resume"] == "ponts aux croisements, ponts 4 mm, 30 % de la demi-épaisseur"
+    assert est["masse_g"] < g["masse_sans_g"] and est["trajet_m"] < g["trajet_sans_m"]
+    assert g["masse_sans_g"] == pytest.approx(off["masse_g"]) and g["trajet_sans_m"] == pytest.approx(off["trajet_m"])
+    assert g["gain_masse"] == pytest.approx(1 - est["masse_g"] / off["masse_g"]) and g["gain_masse"] > 0.02
+    assert g["gain_trajet"] == pytest.approx(1 - est["trajet_m"] / off["trajet_m"])

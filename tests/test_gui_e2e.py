@@ -173,3 +173,54 @@ def test_aile_large_decoupe_visible_dans_l_apercu_puis_generation(tmp_path, monk
             p.kill()
             p.join(5)
     assert not multiprocessing.active_children()
+
+
+@pytest.mark.slow
+def test_aile_fusion_v2_evidements_apercu_et_generation(tmp_path, monkeypatch):
+    """v2 évidée aux croisements par l'API : l'aperçu donne le gain (≈ −16 %), l'essai est ok, plus léger que sans
+    évidement (≈ 61 g), avec la ligne « évidements » dans le résumé et le rapport HTML."""
+    (tmp_path / "profils").mkdir()
+    monkeypatch.setenv("BEAVER_PROFILES", str(tmp_path / "profils"))
+    evide = {"ribs_hollow": {"mode": "croisements"}}
+    preview.clear_cache()
+    app = create_app(tmp_path / "projets", TOKEN)
+    c = TestClient(app, base_url="http://127.0.0.1")
+    try:
+        r = c.post("/api/projets", headers=H, data={"nom": "aile"},
+                   files={"fichier": ("aile.step", FUSION_V2.read_bytes())})
+        assert r.status_code == 201, r.text
+        r = c.put("/api/projets/aile/config", headers=H, json={"donnees": evide})
+        assert r.status_code == 200, r.text
+
+        r = c.post("/api/projets/aile/apercu", headers=H, json={"config": evide, "z": None, "attendre": True})
+        assert r.status_code == 200, r.text
+        est = r.json()["estimates"]
+        g = est["evidements"]
+        assert est["plaques"] == 84 and g["resume"] == "ponts aux croisements, ponts 4 mm, 30 % de la demi-épaisseur"
+        assert g["masse_sans_g"] == pytest.approx(61.1, abs=1.0) and est["masse_g"] < 0.9 * g["masse_sans_g"]
+        assert 0.12 < g["gain_masse"] < 0.22
+
+        r = c.post("/api/projets/aile/generations", headers=H)
+        assert r.status_code == 202, r.text
+        job = r.json()["id"]
+        t0 = time.monotonic()
+        while True:
+            st = c.get(f"/api/generations/{job}", headers=H).json()
+            if st["statut"] != "en cours":
+                break
+            assert time.monotonic() - t0 < TIMEOUT, "génération trop longue"
+            time.sleep(1)
+        assert st["statut"] == "ok", st
+        resume = c.get(f"/api/projets/aile/essais/{st['essai']}", headers=H).json()["resume"]
+        assert resume["statut"] == "ok" and resume["nervures"] == 84 and resume["masse"] < 61
+        (corps,) = resume["corps"]
+        assert corps["evidements"].startswith("ponts aux croisements, ponts 4 mm, 30 % de la demi-épaisseur — gain estimé ≈ ")
+        rapport = (tmp_path / "projets" / "aile" / "essais" / st["essai"] / resume["rapport"]).read_text(encoding="utf-8")
+        assert "évidements : ponts aux croisements, ponts 4 mm, 30 % de la demi-épaisseur" in rapport
+    finally:
+        app.state.travaux.shutdown()
+        preview.clear_cache()
+        for p in multiprocessing.active_children():
+            p.kill()
+            p.join(5)
+    assert not multiprocessing.active_children()

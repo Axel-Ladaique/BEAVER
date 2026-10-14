@@ -35,6 +35,7 @@ def test_run_writes_outputs(tmp_path: Path):
     assert r.exit_code == 0, r.output
     assert "orientation : longeron SBAR_8" in r.output
     assert "✔ imprimable en vase mode" in r.output
+    assert "évidements" not in r.output  # désactivés par défaut : pas de ligne
     # décisions autonomes visibles : longeron Ø8 + jeu 2×0,15, passage Ø2,4 au BF (corde 100 → x = 30 − 70)
     assert "  trous : SBAR_8 (longeron, Ø8.3, attache intrados) ; passage 1 (Ø2.4, x=" in r.output
     for name in ("aile.step", "aile.stl", "aile-rapport.html"):
@@ -43,6 +44,20 @@ def test_run_writes_outputs(tmp_path: Path):
     assert body.name == "Aile_test"
     bb = body.solid.bounding_box()
     assert abs(bb.min.Z) < 1e-3  # exporté dans le repère d'impression
+
+
+def test_run_reports_hollow_setting_and_estimated_gain(tmp_path: Path):
+    src = write_step(tmp_path / "aile.step", wing_x_bodies())
+    p = tmp_path / "c.yaml"
+    p.write_text("material_settings: {layer_height: 1.0}\npassages: {mode: link}\nribs_hollow: {mode: croisements}\n",
+                 encoding="utf-8")
+    out = tmp_path / "res"
+    r = runner.invoke(app, ["run", str(src), "-c", str(p), "--out", str(out)])
+    assert r.exit_code == 0, r.output
+    line = next(ln for ln in r.output.splitlines() if ln.startswith("  évidements : "))
+    assert line.startswith("  évidements : ponts aux croisements, ponts 4 mm, 30 % de la demi-épaisseur — gain estimé ≈ ")
+    assert "g sans évidement)" in line
+    assert line.strip() in (out / "aile-rapport.html").read_text(encoding="utf-8")
 
 
 def test_run_lists_filled_bores_by_default(tmp_path: Path):

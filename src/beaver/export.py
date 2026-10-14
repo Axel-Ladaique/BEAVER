@@ -12,7 +12,7 @@ from beaver.bambu import BambuError, Template, write_project
 from beaver.layout import format_rotations
 from beaver.io_step import NamedBody, write_step
 from beaver.pipeline import RunResult
-from beaver.report import format_bays, format_bores, piece_rows, write_html
+from beaver.report import format_bays, format_bores, format_hollow, piece_rows, write_html
 from beaver.slicing import to_mesh
 
 
@@ -80,6 +80,8 @@ def _write_all(run, out_dir, stem, formats, template, single, pieces, written) -
                 export_stl(solid, str(path), tolerance=0.02, angular_tolerance=0.3)
                 written.append(path)
         details = [format_bores(b.bores, b.filled, b.tubes)] + ([format_bays(b.bays, b.z_heights)] if b.bays else [])
+        if (line := format_hollow(b.hollow, b.hollow_saved_g, b.report.stats["mass_g"])) is not None:
+            details.append(line)
         if b.piece_reports:
             details.append("morceaux : " + ", ".join(
                 f"{n} {'✔' if r.ok else '✘'}" for n, r in zip(b.names, b.piece_reports)

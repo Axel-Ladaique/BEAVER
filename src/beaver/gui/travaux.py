@@ -143,7 +143,7 @@ def _run_job(step: str, config_path: str, out_dir: str, queue) -> None:
 
         from beaver.bambu import BambuError, read_template, vase_warning
         from beaver.classify import ClassifyError, classify
-        from beaver.report import format_bays, format_bores, piece_rows
+        from beaver.report import format_bays, format_bores, format_hollow, piece_rows
         from beaver.config import ConfigError, load_config, material_label, resolve_template
         from beaver.export import export_results
         from beaver.io_step import StepReadError, read_step
@@ -187,6 +187,9 @@ def _run_job(step: str, config_path: str, out_dir: str, queue) -> None:
                 "couches": int(s["layers"]), "hauteur": round(s["height_mm"], 2),
                 "trous": format_bores(b.bores, b.filled, b.tubes).strip().removeprefix("trous : "),
                 "baies": format_bays(b.bays, b.z_heights).strip().removeprefix("baies : "),
+                # évidements des nervures et gain estimé, None : désactivés
+                "evidements": (line.strip().removeprefix("évidements : ")
+                               if (line := format_hollow(b.hollow, b.hollow_saved_g, s["mass_g"])) else None),
                 # morceaux imprimés : nom, étendue en Z, emprise, rotation sur le plateau, plateau, validation
                 "liste_morceaux": piece_rows(b, plateau),
             })

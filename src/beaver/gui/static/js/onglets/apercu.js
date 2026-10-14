@@ -329,6 +329,13 @@ function tuile(valeur, etiquette, titre) {
   ]);
 }
 
+/** Gain des évidements (masse estimée avec et sans), null s'ils sont désactivés. */
+export function texteEvidements(e) {
+  const g = e && e.evidements;
+  if (!g) return null;
+  return `évidements : −${nombre(100 * g.gain_masse, 0)} % de masse (${nombre(e.masse_g, 1)} g au lieu de ${nombre(g.masse_sans_g, 1)} g)`;
+}
+
 function chiffres(e) {
   const out = [
     tuile(String(e.plaques), "plaques (total)"),
@@ -343,6 +350,12 @@ function chiffres(e) {
     tuile(`${nombre(e.masse_g, 1)} g`, "masse estimée", "trajet × largeur de ligne × hauteur de couche × densité"),
     tuile(duree(e.duree_s), "durée de génération estimée", `préparation mesurée : ${duree(e.preparation_s)}`),
   ];
+  const evid = texteEvidements(e);
+  if (evid) {
+    const g = e.evidements;
+    out.push(tuile(`−${nombre(100 * g.gain_masse, 0)} %`, evid,
+      `${g.resume} ; trajet ${nombre(e.trajet_m, 1)} m au lieu de ${nombre(g.trajet_sans_m, 1)} m (−${nombre(100 * g.gain_trajet, 0)} %)`));
+  }
   return out;
 }
 

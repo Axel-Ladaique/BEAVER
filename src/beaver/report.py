@@ -75,6 +75,45 @@ def format_bores(bores, filled=(), tubes=()) -> str:
     return "  trous : " + (" ; ".join(items) if items else "aucun")
 
 
+def _fr(v: float, digits: int = 1) -> str:
+    """Nombre en français, sans zéros inutiles (4 ; 3,5)."""
+    return f"{v:.{digits}f}".rstrip("0").rstrip(".").replace(".", ",")
+
+
+def _hollow_text(h) -> str:
+    if h.mode == "off":
+        return "désactivés"
+    where = "ponts aux croisements" if h.mode == "croisements" else f"ponts à pas régulier ({_fr(h.pitch)} mm)"
+    out = f"{where}, ponts {_fr(h.bridge_width)} mm, {_fr(100 * h.keep_ratio)} % de la demi-épaisseur"
+    if h.ramp_factor < 1:
+        out += f", rampes × {_fr(h.ramp_factor, 2)}"
+    return out
+
+
+def hollow_summary(cfg) -> str | None:
+    """Réglage des évidements des nervures en clair (« ponts aux croisements, ponts 4 mm, 30 % de la
+    demi-épaisseur ») ; une partie par couche quand les surcharges de couche diffèrent ; None si désactivés partout."""
+    per = [cfg.layer_hollow(layer) for layer in cfg.rib_layers]
+    if all(h.mode == "off" for h in per):
+        return None
+    if all(h == per[0] for h in per):
+        return _hollow_text(per[0])
+    return " ; ".join(f"couche « {layer.name} » : {_hollow_text(h)}" for layer, h in zip(cfg.rib_layers, per))
+
+
+def format_hollow(summary: str | None, saved_g: float, mass_g: float) -> str | None:
+    """Ligne « évidements » du rapport ; `saved_g` : masse économisée estimée (profils des plaques, voir
+    `pipeline.hollow_saving_g`), `mass_g` : masse de la pièce évidée."""
+    if summary is None:
+        return None
+    line = f"  évidements : {summary}"
+    if saved_g > 0:
+        full = mass_g + saved_g
+        line += (f" — gain estimé ≈ {_fr(saved_g)} g (−{100 * saved_g / full:.0f} %, "
+                 f"≈ {_fr(full)} g sans évidement)")
+    return line
+
+
 def segment_heights(segments) -> list[float]:
     """Hauteurs des tronçons (solides posés à z = 0), de l'emplanture au saumon."""
     out = []

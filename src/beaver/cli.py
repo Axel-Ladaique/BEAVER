@@ -18,7 +18,7 @@ from beaver.layout import format_rotations
 from beaver.io_step import StepReadError, read_step
 from beaver.orient import orient
 from beaver.pipeline import PipelineError, run_model
-from beaver.report import format_bays, format_bores, format_text, write_html
+from beaver.report import format_bays, format_bores, format_hollow, format_text, write_html
 from beaver.validate import validate
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, pretty_exceptions_show_locals=False)
@@ -238,6 +238,8 @@ def run(
             typer.echo(format_bores(b.bores, b.filled, b.tubes))
             if b.bays:
                 typer.echo(format_bays(b.bays, b.z_heights))
+            if (line := format_hollow(b.hollow, b.hollow_saved_g, b.report.stats["mass_g"])) is not None:
+                typer.echo(line)
         plate = 1
         for b in result.bodies:
             for n in b.notices:

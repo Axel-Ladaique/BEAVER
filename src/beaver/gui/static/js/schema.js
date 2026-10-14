@@ -29,6 +29,7 @@ const SCHEMA_LONGERON = {
 export const PLAN = [
   { titre: "Général", cles: ["material", "slit_width", "printer"] },
   { cle: "rib_layers" },
+  { cle: "ribs_hollow" },
   { cle: "material_settings" },
   { cle: "split" },
   { cle: "spars" },

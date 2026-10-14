@@ -77,6 +77,14 @@ const LIBELLES_CHEMIN = {
   "naming.servo": "Baie de servo",
   "orientation": "Orientation et emplanture",
   "orientation.root": "Emplanture",
+  "ribs_hollow": "Évidements",
+  "ribs_hollow.mode": "Évidements des nervures",
+  "ribs_hollow.bridge_width": "Largeur des ponts (mm)",
+  "ribs_hollow.pitch": "Pas des ponts (mm)",
+  "ribs_hollow.keep_ratio": "Hauteur gardée (part de la demi-épaisseur)",
+  "ribs_hollow.keep_min": "Hauteur gardée min. (mm)",
+  "ribs_hollow.ramp_factor": "Facteur de pente des rampes",
+  "rib_layers.*.hollow": "Évidements (surcharge de la couche)",
 };
 const AIDES = {
   "slit_width": "épaisseur des plaques coupées dans la pièce",
@@ -96,12 +104,20 @@ const AIDES = {
   "spars.cable.sleeve": "gaine : défaut 1,2 × largeur de ligne (≈ 0,5 mm)",
   "spars.cable.strip": "gaine : défaut = largeur de ligne",
   "spars.cable.anchor": "gaine : sans attache par défaut",
+  "ribs_hollow.mode": "nervures moins hautes côté bande centrale entre des ponts pleine hauteur (échancrures, jamais de trou fermé : vase mode) ; désactivés par défaut",
+  "ribs_hollow.bridge_width": "longueur pleine hauteur de chaque pont, mesurée le long de la nervure (défaut 4 mm)",
+  "ribs_hollow.pitch": "mode « ponts à pas régulier » : distance entre deux ponts le long de la nervure (défaut 30 mm)",
+  "ribs_hollow.keep_ratio": "hauteur gardée sous la peau dans les zones évidées (part de la demi-épaisseur, défaut 0,3 = 30 %)",
+  "ribs_hollow.keep_min": "hauteur gardée sous la peau au moins égale à cette valeur (défaut 2 mm)",
+  "ribs_hollow.ramp_factor": "flancs des échancrures en rampe au surplomb max de la matière × ce facteur ; < 1 : rampes plus douces (défaut 1)",
+  "rib_layers.*.hollow": "avancé, JSON : surcharge partielle du réglage global pour cette couche, ex. {\"mode\": \"off\"} ; null = réglage global",
 };
 export const IMPRIMANTES = { p1s: "P1S (256 × 256 × 250)", h2s: "H2S (340 × 320 × 340)" };
 /** Choix propres à un champ (chemin générique), prioritaires sur CHOIX. */
 export const CHOIX_CHEMIN = {
   "segment.mode": { auto: "auto — découpe en Z si besoin", off: "off — pièce entière (avertissement si trop grande)" },
   "segment.chord": { auto: "auto — coupe dans la corde si besoin", off: "off — jamais (erreur si un tronçon ne tient pas)" },
+  "ribs_hollow.mode": { off: "désactivés", croisements: "ponts aux croisements", pas: "ponts à pas régulier" },
 };
 
 /** Libellé d'un choix `v` du champ `chemin`. */

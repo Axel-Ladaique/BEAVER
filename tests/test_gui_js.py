@@ -288,3 +288,36 @@ return [libelle(["segment", "chord"]), libelle(["segment"]), libelleChoix(["segm
     assert out[:2] == ["Coupe dans la corde", "Découpe (volume d'impression)"]
     assert out[2].startswith("auto — coupe dans la corde") and out[3].startswith("off — jamais")
     assert out[4] == "off — aucun" and "T1-A" in out[5]
+
+
+def test_libelles_et_choix_des_evidements():
+    out = _node("""
+const { aide, libelle, libelleChoix } = await js("libelles.js");
+const { PLAN } = await js("schema.js");
+const champs = ["mode", "bridge_width", "pitch", "keep_ratio", "keep_min", "ramp_factor"].map((k) => ["ribs_hollow", k]);
+return { section: libelle(["ribs_hollow"]), libelles: champs.map(libelle), aides: champs.map(aide),
+         choix: ["off", "croisements", "pas"].map((v) => libelleChoix(["ribs_hollow", "mode"], v)),
+         couche: [libelle(["rib_layers", 1, "hollow"]), aide(["rib_layers", 1, "hollow"])],
+         plan: PLAN.findIndex((b) => b.cle === "ribs_hollow") - PLAN.findIndex((b) => b.cle === "rib_layers") };
+""")
+    assert out["section"] == "Évidements"
+    assert out["libelles"] == [
+        "Évidements des nervures", "Largeur des ponts (mm)", "Pas des ponts (mm)",
+        "Hauteur gardée (part de la demi-épaisseur)", "Hauteur gardée min. (mm)", "Facteur de pente des rampes",
+    ]
+    assert all(out["aides"]), out["aides"]  # une aide courte sur chaque champ
+    assert "hauteur gardée sous la peau dans les zones évidées (part de la demi-épaisseur" in out["aides"][3]
+    assert out["choix"] == ["désactivés", "ponts aux croisements", "ponts à pas régulier"]
+    assert out["couche"][0] == "Évidements (surcharge de la couche)" and '{"mode": "off"}' in out["couche"][1]
+    assert out["plan"] == 1  # section juste après les couches de nervures
+
+
+def test_chiffres_estimes_montrent_le_gain_des_evidements():
+    out = _node(_DOM + r"""
+const { texteEvidements } = await js("onglets/apercu.js");
+const e = { masse_g: 51.3, trajet_m: 763.4,
+            evidements: { resume: "ponts aux croisements", masse_sans_g: 61.1, trajet_sans_m: 909, gain_masse: 0.1604, gain_trajet: 0.16 } };
+return [texteEvidements(e), texteEvidements({ masse_g: 61.1, evidements: null })];
+""")
+    assert out[0].replace(" ", " ").replace("\xa0", " ") == "évidements : −16 % de masse (51,3 g au lieu de 61,1 g)"
+    assert out[1] is None

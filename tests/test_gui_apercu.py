@@ -296,3 +296,13 @@ def test_sans_jeton_401(client):
 def test_head_sur_route_get_405(client):
     r = client.head("/api/projets/aile1/apercu", headers=H)
     assert r.status_code == 405
+
+
+def test_estimations_avec_gain_des_evidements(client):
+    """L'aperçu sert le gain des évidements dans ses chiffres estimés (null quand ils sont désactivés)."""
+    assert _attendre(client).json()["estimates"]["evidements"] is None
+    evide = {**CFG, "rib_layers": [{"spacing": 30}], "ribs_hollow": {"mode": "croisements"}}
+    est = _attendre(client, config=evide).json()["estimates"]
+    g = est["evidements"]
+    assert g["resume"] == "ponts aux croisements, ponts 4 mm, 30 % de la demi-épaisseur"
+    assert est["masse_g"] < g["masse_sans_g"] and 0 < g["gain_masse"] < 1

@@ -52,13 +52,15 @@ Limites de la phase P1 :
   jonction dans la corde, les nervures s'arrêtent ≈ 1,5 mm avant la face de chaque côté (paroi verticale), d'où une
   bande sans nervure d'environ 3 mm ; près des bords d'attaque et de fuite, une plaque très courte peut exister
   d'un côté de la jonction et pas de l'autre ;
-- longerons et alésages **parallèles à l'axe d'impression** : un longeron incliné (même de 1°) est
-  refusé, car le trou vertical ne le laisserait pas entrer ;
+- longerons et alésages **parallèles à l'axe d'impression**, ou nettement inclinés (au-delà de
+  `passages.max_tilt_deg`) : ces derniers sont des **SBAR transversales** (voir plus bas). Un longeron à peine
+  incliné (entre la tolérance du trou vertical et `passages.max_tilt_deg`) est refusé comme ambigu ;
 - un longeron plus court que la pièce reçoit un trou et une fente limités à sa longueur (débouchant
   à l'emplanture ou au saumon s'il y arrive) ; après la coupe, l'outil vérifie que le longeron ne
   traverse pas la matière.
 
-- L'orientation suit l'axe du premier longeron détecté (`orientation: auto`), ou un axe imposé par la config ;
+- L'orientation suit l'axe du **plus long** longeron (`orientation: auto`), ou un axe imposé par la config
+  (`orientation.axis`) ;
   l'emplanture se règle avec `orientation.root` (voir « Baies de servo et gaines de câble »).
 - `check --orient` sert à vérifier un fichier CAO brut (ex. l'export d'origine) : il l'oriente d'abord selon le longeron.
   Le `.step` généré est déjà orienté : le vérifier avec `check` simple.
@@ -139,6 +141,73 @@ uv run aerorib run piece.step -c examples/config-2-troncons.yaml --3mf --out out
   Bambu Studio plante sur la machine de développement. Ouvrir le projet (`--open`), trancher, et vérifier
   que la spirale est continue (aucune rétraction entre le début et la fin de chaque plateau) ainsi que la
   disposition des plateaux.
+
+## Volume d'impression et découpe
+
+Chaque morceau doit tenir dans le volume de l'imprimante (plateau et hauteur du gabarit, moins
+`segment.margin`). L'outil décide seul, **signale chaque découpe automatique** (ligne « ℹ découpe automatique : … »
+dans la CLI, encadré « Découpe automatique » dans la GUI, liste dans le rapport HTML) et la **montre dans l'aperçu**
+avant toute génération.
+
+- **Imprimante** : `printer: p1s` (défaut, plateau 256 × 256, hauteur 250) ou `h2s` (340 × 320 × 340), menu
+  « Imprimante » de la GUI. Elle choisit le gabarit Bambu, donc le volume utile.
+- **Ordre des décisions** :
+  1. **rotation sur le plateau** : un morceau trop large tel quel est tourné autour de Z (angle de plus grande
+     marge) ; la rotation est écrite dans le 3MF, les STL/STEP restent dans le repère de la pièce ;
+  2. **coupes en Z** (perpendiculaires à l'envergure) : selon la hauteur utile, puis, si un tronçon ne tient pas
+     même tourné (flèche, dièdre), en tronçons plus nombreux ;
+  3. **coupe dans la corde** : si une section seule ne tient pas même en diagonale, le tronçon est coupé par un
+     ou plusieurs plans qui contiennent l'épaisseur et passent aux points i/k de la corde (au milieu pour 2
+     morceaux) à l'emplanture et au saumon du tronçon : ils suivent la flèche et l'effilement ; k est le plus petit
+     nombre de morceaux qui tiennent. Le plan est décalé si besoin pour éviter un longeron,
+     une gaine (trou + manchon + bande) ou une baie de servo. Les nervures sont générées sur la pièce entière
+     **puis** coupées : le motif est continu d'un morceau à l'autre. Chaque morceau est validé séparément.
+- **Nommage** : `T1`, `T2`… pour les tronçons en Z (emplanture = T1) ; `A`, `B`… du bord d'attaque au bord de
+  fuite pour la coupe dans la corde ; `T1-A`, `T1-B`… avec les deux. Fichiers : `<nom>-t1-a.stl`… ; un plateau par
+  morceau dans le 3MF, dans cet ordre.
+- **`segment.chord`** (« Coupe dans la corde » dans la GUI) : `auto` (défaut) ou `off`. Avec `off`, un tronçon qui
+  ne tient pas sur le plateau arrête la génération avec un message (activer `auto` ou choisir une imprimante plus
+  grande). `segment.mode: off` désactive toute découpe (avertissement si la pièce est trop grande).
+- **Aperçu** (onglet Aperçu) : vue de dessus avec les coupes en Z en tirets, les coupes dans la corde en trait
+  plein, le nom de chaque morceau et les SBAR transversales ; panneau « Découpe » (morceau, étendue, emprise sur le
+  plateau, rotation, numéro de plateau) ; vue 3D colorée par morceau avec les plans de coupe. La coupe à hauteur
+  réglable montre chaque morceau séparément (comme la validation). L'aperçu et la génération utilisent le même
+  plan de découpe.
+- **Fichiers à plusieurs corps d'aile** (`WING_1`, `WING_2`… déjà découpés dans la CAO) : un morceau par corps,
+  re-découpé seulement s'il ne tient pas (avec une notice). À une jonction **dans la corde**, les nervures
+  s'arrêtent avant la face de chaque côté : bande sans nervure d'environ 3 mm.
+- **Limites** :
+  - l'inclinaison d'un plan de coupe dans la corde (flèche, effilement) doit rester ≤ surplomb max de la matière
+    (45° PLA Aero, 40° ASA Aero) : sinon l'outil raccourcit d'abord les tronçons en Z, puis s'arrête avec un
+    message (coupes `segment.cuts_at` plus courtes ou imprimante plus grande) ;
+  - un longeron dont l'axe tombe sur une jonction dans la corde entre deux corps de la CAO est refusé (déplacer le
+    longeron ou la coupe dans la CAO) ; un plan de coupe automatique sans position libre (obstacles partout) aussi ;
+  - au plus 6 morceaux en corde par tronçon.
+
+## SBAR transversales
+
+Un longeron dont l'axe s'écarte de l'envergure de plus de `passages.max_tilt_deg` (en corde, ou incliné) est une
+**SBAR transversale** : elle n'est plus refusée.
+
+- **Trou en goutte d'eau** : section du trou pointue vers le haut, flancs au surplomb max de la matière, pour que
+  son plafond soit imprimable ; jeu `clearance` comme les longerons. Bout fermé dans la pièce : fond et plafond
+  imprimables (face verticale au bout haut quand l'axe est trop couché pour une face perpendiculaire).
+- **Fentes** : dans chaque couche, le trou doit rejoindre le contour (vase mode). S'il ne débouche pas par la peau,
+  la face de coupe, l'emplanture ou le saumon, une fente de `slit_width` le relie à la peau la plus proche,
+  choisie couche par couche. L'attache (`anchor`) et le côté de fente (`slit_side`) ne s'appliquent pas : s'ils
+  sont réglés pour cette SBAR, un avertissement le dit. Une SBAR qui traverse une baie de servo est signalée
+  (rencontre non traitée).
+- **Coupe dans la corde** : une SBAR transversale **traverse** le plan de coupe (c'est voulu) ; chaque morceau
+  reçoit sa partie du trou, qui débouche sur la face de coupe.
+- **Refus** : une SBAR horizontale ouverte aux deux bouts dans les mêmes couches (du bord d'attaque au bord de
+  fuite, par exemple) couperait chaque couche en deux : impossible en vase mode. Le message donne la position
+  des deux bouts : en fermer un dans la pièce (SBAR plus courte), ou l'incliner pour que ses deux bouches soient à
+  des hauteurs différentes. Une paroi plus fine qu'une ligne entre le trou et la peau est aussi refusée
+  (éloigner la SBAR de la peau ou réduire son diamètre).
+- **Envergure** : l'axe d'impression suit le **plus long** longeron. Si une SBAR transversale est plus longue
+  que le longeron principal, imposer l'axe avec `orientation.axis` (ex. `orientation: {axis: [0, 0, 1]}`).
+- Aperçu : la SBAR apparaît en bande dans la vue de dessus et dans la coupe à hauteur réglable ; rapport :
+  « SBAR_x (transversale, Ø…, axe …°) ».
 
 ## Profils matière (PLA Aero / ASA Aero)
 

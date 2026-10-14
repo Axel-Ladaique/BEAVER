@@ -13,6 +13,7 @@ from aerorib.classify import classify
 from aerorib.config import load_config
 from aerorib.features.tubes import Prism, Region, band, beyond, is_transversal, teardrop
 from aerorib.io_step import NamedBody
+from build123d import Location
 from aerorib.slicing import Layer, slice_layers, to_mesh
 from aerorib.testing.synthetic import cross_wing_bodies, naca4, rod, split_wing_bodies
 from aerorib.validate import check_connectivity, slicer_closing
@@ -441,3 +442,81 @@ def test_preview_section_is_split_into_the_chord_pieces(tmp_path):
     left, right = sorted(view.polygons, key=lambda p: p.bounds[0])
     assert left.bounds[2] == pytest.approx(plane["x0"], abs=1e-6) and right.bounds[0] == pytest.approx(plane["x0"], abs=1e-6)
     assert not left.interiors and not right.interiors
+
+
+# --- SBAR près de la peau, prolongement d'un bout débouchant (revue finale I2) -------------------------------------
+
+
+def test_sbar_hugging_the_skin_is_refused(tmp_path):
+    """SBAR en corde à 0,1 mm sous une face plane de la peau, fermée aux deux bouts (CAO saine) : avec le jeu, le
+    trou ouvre la peau sur toute sa longueur. La couche reste d'un seul tenant (l'analyse vase mode l'accepte, trou
+    « débouchant ») et le trou est retiré de la référence de validation : la fente dans la peau serait livrée ✔.
+    Refus clair (même cas qu'un longeron vertical près de la peau, déjà signalé)."""
+    from aerorib import preview
+    from aerorib.io_step import write_step
+
+    bodies = _slotted_bodies((10.0, 20.0 - 2.1, 40.0), (40.0, 20.0 - 2.1, 40.0))
+    msg = (r"SBAR_T : trop près de la peau \(paroi < largeur de ligne 0\.42 mm\) à z = .* — l'éloigner de la peau "
+           r"ou réduire le jeu")
+    with pytest.raises(pipeline.PipelineError, match=msg):
+        _run(bodies, SLOT_CFG)
+    prep = preview.prepare(write_step(tmp_path / "t.step", bodies), SLOT_CFG)  # aperçu = génération
+    with pytest.raises(preview.PreviewError, match=msg):
+        preview.plates_2d(prep, SLOT_CFG)
+    _run(_slotted_bodies((10.0, 20.0 - 3.5, 40.0), (40.0, 20.0 - 3.5, 40.0)), SLOT_CFG)  # paroi suffisante : admise
+
+
+SLOT_CFG = load_config(overrides={"material_settings": {"layer_height": 1.0}, "rib_layers": [{"spacing": 500, "phase": 250}],
+                                  "orientation": {"axis": [0, 0, 1]}})
+
+
+def _slotted_bodies(p0, p1):
+    """Pièce à encoche (zone concave) : profil 100 × 20 (y ≤ 20 : face plane) creusé d'une fente x ∈ [58, 70],
+    y ≥ 6, extrudé sur 80 mm ; SBAR_T Ø4 de p0 à p1 (repère de construction)."""
+    from build123d import BuildPart, BuildSketch, Polygon as Poly, extrude
+
+    with BuildPart() as bp:
+        with BuildSketch():
+            Poly((0, 0), (100, 0), (100, 20), (70, 20), (70, 6), (58, 6), (58, 20), (0, 20), align=None)
+        extrude(amount=80)
+    t = rod(p0, p1, 4)
+    return [NamedBody(("Aile_T",), (bp.part - t).solids()[0]), NamedBody(("SBAR_T",), t)]
+
+
+def test_open_end_extension_stops_before_a_concave_wall():
+    """Bout débouchant à 9 mm de l'autre paroi d'une encoche : l'ancien prolongement de 10 mm l'entaillait, et la
+    référence de validation (trou prolongé compris) cachait l'entaille. Le trou s'arrête dès qu'il est sorti."""
+    # SBAR en corde (y = 13) fermée dans la matière côté x = 30, débouchant dans la fente en x = 61
+    run = _run(_slotted_bodies((30.0, 13.0, 40.0), (61.0, 13.0, 40.0)), SLOT_CFG)
+    assert run.ok, [i.message for i in run.bodies[0].report.errors][:5]
+    (b,) = run.bodies
+    (t,) = b.tubes
+    assert (t.open_start or t.open_end) and t.debouching
+
+    def oriented(x, y, z):  # repère de construction → repère orienté de la pièce
+        return np.asarray(tuple((run.orientation.location * Location((x, y, z))).position))
+
+    mouth = np.asarray(t.start if t.open_start else t.end)
+    assert np.linalg.norm(mouth - oriented(61.0, 13.0, 40.0)) <= 0.5 + 1e-6  # sortie franche : pas de prolongement
+    (layer,) = slice_layers(b.result, [40.0])
+    for x in (70.2, 71.0):  # autre paroi de l'encoche intacte (l'ancien prolongement allait jusqu'à x = 71)
+        q = oriented(x, 13.0, 40.0)
+        assert any(poly.contains(Point(q[0], q[1])) for poly in layer.polygons)
+
+
+def test_open_end_near_a_cambered_trailing_edge_does_not_hide_a_cut():
+    """SBAR qui sort par l'intrados cambré à 5 mm du bord de fuite (bout réel 0,5 mm sous l'intrados) : le trou, plus
+    gros que le bord de fuite mince, le tranche au-delà du bout du longeron. Avant, le prolongement de 10 mm y était
+    retiré de la référence de validation : bord de fuite coupé, livré ✔. Désormais la référence s'arrête à la
+    bouche du bout réel : l'entaille est signalée."""
+    pts, camber = naca4("4412", 100)
+    lower = np.asarray(pts[79:])  # intrados, du bord d'attaque au bord de fuite
+    y_end = float(np.interp(95.0, lower[:, 0], lower[:, 1])) - 0.5
+    run = _run(cross_wing_bodies((75.0, camber(75.0), 40.0), (95.0, y_end, 40.0), d=3))
+    (b,) = run.bodies
+    (t,) = b.tubes
+    assert t.open_end and not t.open_start
+    assert not run.ok and {i.check for i in b.report.errors} == {"skin"}
+    # la référence (bouche admise : bout réel + OPEN_END + rayon max) s'arrête avant le bout de l'outil
+    length = lambda pr: float(np.linalg.norm(pr.ring1[0] - pr.ring0[0]))  # noqa: E731
+    assert length(t.hole) > length(t.opening) + 1.0

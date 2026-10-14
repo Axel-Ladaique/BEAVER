@@ -37,7 +37,7 @@ def test_embedded_profiles_have_no_hardcoded_template():
 
 
 def test_h2s_usable_volume_from_template():
-    (w, d, h), warn = _print_volume(load_config(overrides={"printer": "h2s"}))
+    (w, d, h), warn, _ = _print_volume(load_config(overrides={"printer": "h2s"}))
     assert warn is None and (w, d) == (340, 320) and h == 340
     assert read_template(resolve_template(load_config(overrides={"printer": "h2s"}))).bed == (340, 320)
 
@@ -71,6 +71,7 @@ def test_h2s_3mf_written_with_h2s_model_and_vase(tmp_path):
     assert str(settings["spiral_mode"]) == "1"
 
 
+@pytest.mark.slow  # ≈ 13 s : deux générations complètes
 def test_p1s_pla_unchanged_vs_explicit_template(tmp_path):
     """Gabarit « auto » = ce que donnait l'ancien chemin codé en dur du profil (contenu des membres du zip)."""
     (a_dir := tmp_path / "a").mkdir()
@@ -92,8 +93,53 @@ def test_pinned_template_printer_mismatch_warns():
     p1s = str(TEMPLATES_DIR / "p1s_pla_aero.3mf")
     cfg = load_config(overrides={"printer": "h2s", "bambu": {"template": p1s}})
     assert resolve_template(cfg).name == "p1s_pla_aero.3mf"  # l'explicite l'emporte
-    vol, warn = _print_volume(cfg)
+    vol, warn, _ = _print_volume(cfg)
     assert vol[:2] == (256, 256)
     assert warn == ("gabarit p1s_pla_aero.3mf (Bambu Lab P1S) ≠ imprimante choisie h2s\u00a0: "
                     "le volume et le projet suivent le gabarit")
     assert _print_volume(load_config(overrides={"printer": "p1s", "bambu": {"template": p1s}}))[1] is None
+
+
+# --- gabarit épinglé ≠ imprimante : libellés et aperçu (revue finale I1) ------------------------------------------
+
+P1S_TEMPLATE = str(TEMPLATES_DIR / "p1s_pla_aero.3mf")
+MISMATCH = "gabarit p1s_pla_aero.3mf (Bambu Lab P1S) ≠ imprimante choisie h2s"
+
+
+def _pinned(**segment):
+    return load_config(overrides={"printer": "h2s", "bambu": {"template": P1S_TEMPLATE},
+                                  "orientation": {"axis": [0, 0, 1]}, "segment": segment})
+
+
+def test_print_volume_label_comes_from_the_template():
+    assert _print_volume(_pinned()).label == "P1S"
+    assert _print_volume(load_config(overrides={"printer": "h2s"})).label == "H2S"
+    assert _print_volume(load_config()).label == "P1S"
+
+
+def test_notices_name_the_template_printer():
+    from aerorib.pipeline import body_notice, segment_part
+    from aerorib.testing.synthetic import swept_wing
+
+    seg = segment_part("B", swept_wing(chord=400, span=60), _pinned(), lambda m: None)
+    (n,) = seg.notices
+    assert "plateau P1S (256 × 256 mm)" in n and "H2S" not in n
+    assert any(MISMATCH in w for w in seg.warnings)
+    assert "(P1S)" in body_notice(2, _pinned())
+
+
+@pytest.mark.parametrize("mode", ["auto", "off"])
+def test_preview_shows_template_mismatch(tmp_path, mode):
+    from aerorib import preview
+    from aerorib.io_step import NamedBody
+    from aerorib.testing.synthetic import swept_wing
+
+    step = write_step(tmp_path / "large.step", [NamedBody(("Aile_large",), swept_wing(chord=400, span=60))])
+    cfg = _pinned(mode=mode)
+    prep = preview.prepare(step, cfg)
+    view = preview.planform(prep, [], cfg)
+    assert any(w.startswith(MISMATCH) for w in view.warnings), view.warnings
+    if mode == "auto":
+        assert any("plateau P1S (256 × 256 mm)" in n for n in view.notices)
+    else:  # même avertissement « trop grand » que la génération
+        assert any("dépasse le volume d'impression" in w and "segment.mode: off" in w for w in view.warnings)

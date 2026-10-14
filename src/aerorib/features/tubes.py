@@ -41,7 +41,13 @@ from aerorib.config import Config
 from aerorib.features.bores import BoreError
 
 OPEN_END = 1.0  # mm : extrémité à moins de cela de l'extérieur, le long de l'axe → le trou débouche
-OPEN_REACH = 10.0  # mm : prolongement de l'axe au-delà d'une extrémité débouchante
+OPEN_REACH = 10.0  # mm : prolongement max de l'axe au-delà d'une extrémité débouchante (arrêté dès que la section
+# du trou ne recoupe plus la matière : il ne peut pas entailler une zone concave plus loin)
+_REACH_STEP = 0.25  # mm : pas de la recherche de la sortie franche du trou au-delà d'un bout débouchant
+_REACH_PAD = 0.5  # mm : le trou dépasse la sortie franche d'autant (si la section y est encore vide)
+_Z_ROUND = 0.05  # mm : arrondi des hauteurs des enveloppes le long de l'axe (sections partagées, axe incliné)
+MOUTH_MIN_ANGLE = 5.0  # ° : sortie la plus rasante admise (longueur max d'une bouche le long de l'axe)
+_MIN_PIERCE = 0.01  # mm² : percée de la peau négligeable (bruit numérique)
 FACETS = 64  # facettes de la goutte d'eau (polygone circonscrit au cercle)
 _FAR = 1e4
 # couches de l'analyse : pas = hauteur du trou / _MAX_SAMPLES, borné à [_MIN_STEP, _MAX_STEP] mm (au-delà de 100 mm de
@@ -247,7 +253,9 @@ class Tube:
     slit: float  # largeur de la fente vers l'extérieur
     tilt: float  # angle (°) entre l'axe et Z
     cable: bool
-    start: tuple[float, float, float]  # axe du trou (extrémités prolongées : jeu, ou OPEN_REACH si débouchant)
+    # axe du trou, extrémités prolongées : jeu (bout fermé) ; bout débouchant : jusqu'à la sortie franche du trou
+    # (au plus OPEN_REACH), sinon OPEN_END — le trou ne dépasse jamais sa bouche
+    start: tuple[float, float, float]
     end: tuple[float, float, float]
     open_start: bool
     open_end: bool
@@ -255,6 +263,13 @@ class Tube:
     zone: Prism  # trou + manchon + demi-épaisseur de plaque : sans nervure
     slits: tuple[Prism, ...] = ()
     slit_zones: tuple[Prism, ...] = ()  # fentes + bande (strip) + demi-épaisseur de plaque : sans nervure
+    # trou retiré de la peau de référence de la validation : entre les bouts réels du longeron (bout fermé : comme
+    # le trou ; bout débouchant : + OPEN_END + rayon max de la section, la bouche d'une sortie oblique), jamais le
+    # prolongement d'outil au-delà — ce qu'il entaille reste une « peau entamée »
+    opening: Prism | None = None
+
+    def opening_solid(self) -> Solid:
+        return (self.opening if self.opening is not None else self.hole).solid()
 
     @property
     def axis(self) -> np.ndarray:
@@ -519,18 +534,50 @@ def _tube(
     if not inside(on_axis).any():
         return None  # longeron hors de ce corps d'aile
     tilt = tilt_deg(d)
+    e_t = _unit(Z - d[2] * d)
+    e_s = np.cross(d, e_t)
+    profile = teardrop(radius, tilt, overhang)
+    section_poly = Polygon(profile)
+
+    def material_at(center: np.ndarray) -> bool:
+        """La section du trou (plan ⊥ axe en `center`) recoupe-t-elle la matière de la peau (section exacte du
+        maillage, trou du longeron de la CAO compris) ?"""
+        sec = mesh.section(plane_origin=center, plane_normal=d)
+        if sec is None:
+            return False
+        frame = np.eye(4)
+        frame[:3, 0], frame[:3, 1], frame[:3, 2], frame[:3, 3] = e_t, e_s, d, center
+        planar, _ = sec.to_2D(to_2D=np.linalg.inv(frame), check=False)
+        return any(g.intersection(section_poly).area > _MIN_PIERCE for g in planar.polygons_full)
+
+    def open_reach(p: np.ndarray, away: np.ndarray) -> float:
+        """Prolongement du trou au-delà d'un bout débouchant : jusqu'à la première section du trou (plan ⊥ axe)
+        sans matière (+ _REACH_PAD si la section y est encore vide), au plus OPEN_REACH — le trou sort franchement de
+        la peau. Sans sortie franche dans OPEN_REACH (sortie rasante) : OPEN_END seulement. Jamais plus loin : le
+        prolongement entaillerait une zone concave de la peau (encoche, intrados cambré près du bord de fuite). Ce
+        qu'il entaille au-delà de la bouche admise (`Tube.opening`) reste visible pour la validation."""
+        for t in np.arange(0.0, OPEN_REACH + 1e-9, _REACH_STEP):
+            if not material_at(p + away * t):
+                t_pad = min(OPEN_REACH, t + _REACH_PAD)
+                return t_pad if not material_at(p + away * t_pad) else float(t)
+        return OPEN_END
+
     # axe à moins du surplomb max de Z : bouts fermés horizontaux (fond, plafond), sous / au-dessus du bout du
     # longeron + jeu — chaque couche du trou est alors une section complète, centrée sur l'axe (la fente « en
     # travers », dans le plan de l'axe, la rejoint toujours) ; sinon bouts perpendiculaires à l'axe
     flat = tilt <= overhang
     u = _unit(np.array([d[0], d[1], 0.0])) if not flat else None
     pad = s.sleeve + plate_pad
-    ends, clips, zclips, ucaps = [], [], [], []
+    ends, clips, zclips, ucaps, ref_ends = [], [], [], [], []
+    mouth_reach = OPEN_END + float(np.linalg.norm(profile, axis=1).max())
     for p, away, sign in ((a, -d, 1.0), (b, d, -1.0)):
         is_open = not inside(np.array([p, p + away * OPEN_END])).all()
         if is_open:
-            ends.append((p + away * OPEN_REACH, True))
-        elif flat:
+            t_end = open_reach(p, away)
+            ends.append((p + away * t_end, True))
+            ref_ends.append(p + away * min(t_end, mouth_reach))
+            continue
+        if flat:
             ends.append((p + away * (2 * radius + s.clearance + 1.0), False))
             zc = p[2] - sign * (info.diameter / 2 * math.sin(math.radians(tilt)) + s.clearance)
             clips.append(zc)
@@ -544,15 +591,15 @@ def _tube(
             ucaps.append(u0)
         else:
             ends.append((p + away * s.clearance, False))
+        ref_ends.append(ends[-1][0])
     (a2, open_a), (b2, open_b) = ends
-    e_t = _unit(Z - d[2] * d)
-    e_s = np.cross(d, e_t)
 
     def caps(grow: float) -> tuple[HalfSpace, ...]:
         horizontal = tuple(((0.0, 0.0, sg), -sg * (zc - sg * grow)) for zc, sg in zip(clips, zclips))
         return (*horizontal, *(((-float(u[0]), -float(u[1]), 0.0), u0 + grow) for u0 in ucaps))
 
-    hole = _prism(a2, b2, teardrop(radius, tilt, overhang), e_t, e_s, caps(0.0))
+    hole = _prism(a2, b2, profile, e_t, e_s, caps(0.0))
+    opening = _prism(ref_ends[0], ref_ends[1], profile, e_t, e_s, caps(0.0))
     zone = _prism(a2 - d * pad, b2 + d * pad, teardrop(radius + pad, tilt, overhang), e_t, e_s, caps(pad))
     u = _unit(np.array([d[0], d[1], 0.0]))
     n = np.cross(Z, u)
@@ -615,11 +662,96 @@ def _tube(
             for fam, sh in options[opt - 1].shadows(hole, region, reach, lo, hi):
                 slits.append(fam.slab(sh, s.slit_width / 2))
                 zones.append(fam.slab(sh.buffer(plate_pad, join_style="mitre"), s.strip / 2 + plate_pad))
+    _check_wall(name, hole, profile, a, b, d, (open_a, open_b), zs, envs, inside, env_at, zr, rules.line_width)
     tube = Tube(
         name, info.diameter, radius, s.sleeve, s.strip, s.slit_width, tilt, name in cables,
         tuple(map(float, a2)), tuple(map(float, b2)), open_a, open_b, hole, zone, tuple(slits), tuple(zones),
+        opening,
     )
     return tube
+
+
+def _exit_t(a: np.ndarray, d: np.ndarray, length: float, inside, from_start: bool) -> float | None:
+    """Coordonnée le long de l'axe (depuis le bout réel `a`, vers `d`) où l'axe entre dans l'enveloppe, côté début
+    (`from_start`) ou côté fin ; None si l'axe n'y entre pas."""
+    ts = np.linspace(-OPEN_END - 0.5, length + OPEN_END + 0.5, max(50, min(800, math.ceil(2 * length) + 6)))
+    ins = inside(a + ts[:, None] * d)
+    if not ins.any():
+        return None
+    i = int(np.argmax(ins)) if from_start else len(ins) - 1 - int(np.argmax(ins[::-1]))
+    j = i - 1 if from_start else i + 1
+    if not 0 <= j < len(ts):
+        return float(ts[i])
+    lo, hi = float(ts[j]), float(ts[i])  # lo : dehors, hi : dedans
+    for _ in range(10):
+        mid = (lo + hi) / 2
+        if inside((a + mid * d)[None, :])[0]:
+            hi = mid
+        else:
+            lo = mid
+    return (lo + hi) / 2
+
+
+def _mouth_end(a: np.ndarray, d: np.ndarray, t_exit: float, inward: float, length: float, env_at, zr,
+               need: float, cap: float) -> float:
+    """Fin de la bouche d'un bout débouchant, le long de l'axe (coordonnée depuis `a`) : de l'entrée de l'axe dans
+    l'enveloppe vers l'intérieur (`inward` = ±1), tant que l'axe est à moins de `need` du bord de l'enveloppe de sa
+    couche (le trou y touche la peau parce qu'il en sort), au plus `cap`."""
+    t = t_exit
+    while abs(t - t_exit) < cap:
+        t += inward * _REACH_STEP
+        if not -OPEN_END <= t <= length + OPEN_END:
+            return t
+        q = a + t * d
+        if not zr[0] < q[2] < zr[1]:
+            continue
+        (env,) = env_at([round(float(q[2]) / _Z_ROUND) * _Z_ROUND])
+        pt = Point(float(q[0]), float(q[1]))
+        if not env.is_empty and env.contains(pt) and env.boundary.distance(pt) >= need:
+            return t
+    return t_exit + inward * cap
+
+
+def _check_wall(
+    name: str, hole: Prism, profile: np.ndarray, a: np.ndarray, b: np.ndarray, d: np.ndarray, opened,
+    zs: Sequence[float], envs: Sequence, inside, env_at, zr, line_width: float,
+) -> None:
+    """Le trou (jeu compris) ne doit toucher la peau (paroi < largeur de ligne) qu'à ses bouches : depuis l'entrée
+    de l'axe dans la peau à un bout débouchant, tant que l'axe reste à moins de (rayon max de la section + une
+    ligne) du bord — au plus la longueur d'une sortie rasante à MOUTH_MIN_ANGLE. Ailleurs (bouts fermés compris),
+    la percée de la peau n'existe pas dans la CAO : TubeError (la validation ne la verrait pas, le trou étant
+    retiré de sa référence). Tolérance d'une largeur de ligne au bord d'une bouche."""
+    length = float(np.linalg.norm(b - a))
+    need = float(np.linalg.norm(profile, axis=1).max()) + line_width  # rayon max de la section + une ligne
+    cap = OPEN_END + need / math.tan(math.radians(MOUTH_MIN_ANGLE))
+    lo, hi = -math.inf, math.inf
+    for opened_k, from_start in ((opened[0], True), (opened[1], False)):
+        if not opened_k:
+            continue
+        t = _exit_t(a, d, length, inside, from_start)
+        if t is None:
+            return  # axe jamais dans la peau : rien à protéger
+        if from_start:
+            lo = _mouth_end(a, d, t, 1.0, length, env_at, zr, need, cap)
+        else:
+            hi = _mouth_end(a, d, t, -1.0, length, env_at, zr, need, cap)
+    if lo >= hi:
+        return  # bouches jointives : tout le trou est bouche
+    for z, env in zip(zs, envs):
+        h = hole.layer(z)
+        if h is None or env.is_empty:
+            continue
+        for part in _parts(h.difference(env.buffer(-line_width))):
+            if part.area < _MIN_PIERCE:
+                continue
+            xy = np.asarray(part.exterior.coords)
+            ts = (xy[:, 0] - a[0]) * d[0] + (xy[:, 1] - a[1]) * d[1] + (z - a[2]) * d[2]
+            if ts.max() > lo + line_width and ts.min() < hi - line_width:  # au-delà d'une bouche, plus qu'une ligne
+                raise TubeError(
+                    f"{name} : trop près de la peau (paroi < largeur de ligne {line_width:g} mm) à z = "
+                    f"{z - zr[0]:.1f} mm de l'emplanture, loin de ses bouts débouchants — l'éloigner de la peau ou "
+                    "réduire le jeu (clearance)"
+                )
 
 
 def _stairs(

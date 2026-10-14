@@ -15,6 +15,7 @@ LABELS = {
     "connectivity": "contour non unique",
     "narrow_slit": "fente trop fine",
     "skin": "peau entamée",
+    "volume": "hors plateau",
     "material_width": "matière trop fine",
 }
 
@@ -117,7 +118,8 @@ def format_bays(bays, heights: Sequence[float] = ()) -> str:
 
 def piece_rows(body, first_plate: int = 1) -> list[dict]:
     """Morceaux imprimés d'un corps (`pipeline.BodyResult`) : nom, étendue en Z depuis l'emplanture, emprise sur le
-    plateau une fois tourné, rotation, plateau (numéro dans le projet 3MF, à partir de `first_plate`), validation."""
+    plateau une fois tourné, marge (mm libres sur l'axe le plus serré), rotation, plateau (numéro dans le projet
+    3MF, à partir de `first_plate`), validation."""
     n = max(len(body.segments), 1)
     names = list(body.names) if len(body.names) == n else [f"T{i}" for i in range(1, n + 1)]
     spans = list(body.spans) if len(body.spans) == n else [None] * n
@@ -131,6 +133,7 @@ def piece_rows(body, first_plate: int = 1) -> list[dict]:
             "z1": None if span is None else round(span[1], 2),
             "largeur": None if pl is None else round(pl.size[0], 1),
             "profondeur": None if pl is None else round(pl.size[1], 1),
+            "marge": None if pl is None else round(pl.slack, 1),  # mm libres sur l'axe le plus serré du plateau
             "rotation": None if pl is None else round(pl.angle_deg, 1),
             "tient": None if pl is None else bool(pl.fits),
             "plateau": first_plate + i,
@@ -143,12 +146,13 @@ def _pieces_table(rows: Sequence[dict]) -> str:
     def num(v, unit=""):
         return "—" if v is None else f"{v:g}{unit}"
 
-    head = "".join(f"<th>{h}</th>" for h in ("Morceau", "z (mm)", "Emprise (mm)", "Rotation", "Plateau", "Vase mode"))
+    head = "".join(f"<th>{h}</th>" for h in ("Morceau", "z (mm)", "Emprise (mm)", "Marge (mm)", "Rotation", "Plateau", "Vase mode"))
     body = "".join(
         "<tr>"
         f"<td>{html.escape(r['nom'])}</td>"
         f"<td>{num(r['z0'])} – {num(r['z1'])}</td>"
         f"<td>{num(r['largeur'])} × {num(r['profondeur'])}{'' if r['tient'] in (None, True) else ' (ne tient pas)'}</td>"
+        f"<td>{num(r.get('marge'))}</td>"
         f"<td>{'—' if not r['rotation'] else num(r['rotation'], '°')}</td>"
         f"<td>{r['plateau']}</td>"
         f"<td>{'✔' if r['ok'] else '✘'}</td>"

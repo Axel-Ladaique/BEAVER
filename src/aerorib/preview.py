@@ -63,6 +63,7 @@ from aerorib.pipeline import (
     body_notice,
     layout_for,
     layout_notices,
+    volume_warnings,
     wall_warnings,
 )
 from aerorib.features.chord_cut import LayoutPlan
@@ -737,21 +738,25 @@ def _layout(prep: Prepared, cfg: Config) -> Layout:
         with prep.mesh_lock:
             return sample(list(zs))
 
-    (W, D, _), _ = _print_volume(cfg)
+    (W, D, _), _, printer = _print_volume(cfg)
     seg = cfg.segment
+    with prep.mesh_lock:
+        lo, hi = prep.mesh.bounds
+    # mêmes avertissements que la génération (`segment_part`) : gabarit ≠ imprimante, max_height, pièce trop grande
+    warns = volume_warnings(cfg, (float(hi[0] - lo[0]), float(hi[1] - lo[1]), height))
     if seg.mode == "off":
         zs = _samples(0.0, height, height)
         pts = [p for p in sections([zlo + z for z in zs]) if len(p)]
         pl = fit_on_bed(np.concatenate(pts), (W, D), seg.margin) if pts else Placement(0.0, True, 0.0, (0.0, 0.0))
         ext = _piece_extent(sections([zlo + z for z in zs]), [zlo + z for z in zs], None, None)
-        out = Layout([], [], [], [_piece("T1", zlo, zhi, ext, pl)], [])
+        out = Layout([], warns, [], [_piece("T1", zlo, zhi, ext, pl)], [])
     else:
         try:
             plan = layout_for(height, zlo, sections, cfg, prep.bores, prep.bays)
         except SegmentError as exc:
-            out = Layout([], [f"découpe en tronçons impossible : {exc}"], [], [], [], ok=False)
+            out = Layout([], [*warns, f"découpe en tronçons impossible : {exc}"], [], [], [], ok=False)
         else:
-            out = _plan_view(plan, cfg, (W, D), zlo, height, sections)
+            out = _plan_view(plan, cfg, (W, D), zlo, height, sections, printer, warns)
     with prep.mesh_lock:
         prep.memo[key] = out
         while len(prep.memo) > _MEMO:
@@ -759,7 +764,10 @@ def _layout(prep: Prepared, cfg: Config) -> Layout:
     return out
 
 
-def _plan_view(plan: LayoutPlan, cfg: Config, bed, zlo: float, height: float, sections) -> Layout:
+def _plan_view(
+    plan: LayoutPlan, cfg: Config, bed, zlo: float, height: float, sections, printer: str | None = None,
+    warnings: Sequence[str] = (),
+) -> Layout:
     names = plan.names()
     pieces, planes, k = [], [], 0
     for i, sp in enumerate(plan.segments, 1):
@@ -779,7 +787,7 @@ def _plan_view(plan: LayoutPlan, cfg: Config, bed, zlo: float, height: float, se
             pieces.append(_piece(names[k + pos], za, zb, _piece_extent(got, zs, left, right), sp.placements[j], left,
                                  right))
         k += sp.k
-    return Layout(list(plan.cuts), [], layout_notices(plan, cfg, bed), pieces, planes)
+    return Layout(list(plan.cuts), list(warnings), layout_notices(plan, cfg, bed, printer), pieces, planes)
 
 
 def _cuts(prep: Prepared, cfg: Config) -> tuple[list[float], list[str]]:

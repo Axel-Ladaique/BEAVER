@@ -180,3 +180,46 @@ def test_preview_cuts_match_generation(tmp_path):
     pieces, _ = pipeline._segment("B", prep.skin, cfg, lambda m: None)
     heights = [p.bounding_box(optimal=True).max.Z for p in pieces]
     assert np.cumsum(heights)[:-1] == pytest.approx(cuts, abs=1e-3)
+
+
+# --- morceau hors plateau malgré le plan de découpe (revue finale I3) ---------------------------------------------
+
+
+def _never_fits(monkeypatch):
+    from aerorib.layout import Placement
+
+    monkeypatch.setattr(pipeline, "fit_on_bed", lambda fp, bed, margin: Placement(30.0, False, -40.0, (300.0, 280.0)))
+
+
+def test_piece_too_big_in_auto_mode_is_an_error(monkeypatch):
+    _never_fits(monkeypatch)
+    msgs = []
+    (pl,), errors = pipeline.place_pieces("B", (swept_wing(chord=400, span=60),), _cfg(), msgs.append, ("T1",))
+    assert not pl.fits
+    (e,) = errors
+    assert e == ("B : le morceau T1 (300×280 mm au mieux, même tourné) ne tient pas sur le plateau P1S (256×256 mm, "
+                 "marge 5 mm) malgré le plan de découpe — non imprimable : imposer des coupes (segment.cuts_at) ou "
+                 "choisir une imprimante plus grande")
+    assert f"✘ {e}" in msgs
+    # segment.mode: off : pas d'erreur ici, l'avertissement « dépasse le volume d'impression » le dit déjà
+    _, errors = pipeline.place_pieces("B", (swept_wing(chord=400, span=60),), _cfg(mode="off"), msgs.append)
+    assert errors == ()
+
+
+def test_run_with_a_piece_too_big_is_not_printable(monkeypatch):
+    from aerorib.classify import classify
+    from aerorib.report import format_text, piece_rows
+    from aerorib.testing.synthetic import wide_wing_bodies
+
+    cfg = load_config(overrides={"bambu": {"template": str(FIXTURE)}, "material_settings": {"layer_height": 1.0},
+                                 "rib_layers": [{"spacing": 500, "phase": 250}]})  # sans nervure
+    model = classify(wide_wing_bodies(span=100, sweep_deg=35), cfg)  # morceaux en flèche : tournés sur le plateau
+    _never_fits(monkeypatch)
+    run = pipeline.run_model(model, cfg)
+    assert not run.ok
+    (b,) = run.bodies
+    errs = [i for i in b.report.errors if i.check == "volume"]
+    assert len(errs) == 2 and "le morceau A" in errs[0].message and "le morceau B" in errs[1].message
+    assert [r["ok"] for r in piece_rows(b)] == [False, False]
+    assert "hors plateau" in format_text(b.report)
+    assert not any("ne tient pas" in w for w in b.warnings)

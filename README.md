@@ -132,8 +132,11 @@ uv run aerorib run piece.step -c examples/config-2-troncons.yaml --3mf --out out
 - Sorties d'une pièce découpée en plusieurs tronçons : `<nom>-t1.stl`, `<nom>-t2.stl`… (un STL par tronçon,
   emplanture = t1) ; le `.step` contient tous les tronçons ; chaque tronçon est posé à z = 0 ; le `.3mf` a
   un plateau par tronçon. Sans découpe : `<nom>.stl` et `<nom>.step` seuls.
-- Si un tronçon dépasse l'emprise du plateau, ou si le gabarit est introuvable, le message d'erreur le dit ;
-  les autres anomalies (repli sur la taille de l'imprimante, volume limite) sortent en avertissements.
+- Si un morceau ne tient pas sur le plateau malgré le plan de découpe (`segment.mode: auto`), la pièce est
+  **non imprimable** : erreur de validation « hors plateau » qui nomme le morceau, son emprise et le plateau. Avec
+  `segment.mode: off`, une pièce trop grande donne seulement un avertissement. Gabarit introuvable : message
+  d'erreur. Les autres anomalies (repli sur la taille de l'imprimante, gabarit d'une autre imprimante que
+  `printer`, volume limite) sortent en avertissements, dans l'aperçu comme à la génération.
 - Autre gabarit (autre imprimante, autre réglage) : dans Bambu Studio, créer un projet avec la bonne imprimante,
   le bon filament et le vase mode, l'enregistrer en `.3mf`, puis renseigner `bambu: {template: chemin.3mf}`
   dans la config projet (chemin relatif à ce fichier).
@@ -192,18 +195,22 @@ Un longeron dont l'axe s'écarte de l'envergure de plus de `passages.max_tilt_de
 - **Trou en goutte d'eau** : section du trou pointue vers le haut, flancs au surplomb max de la matière, pour que
   son plafond soit imprimable ; jeu `clearance` comme les longerons. Bout fermé dans la pièce : fond et plafond
   imprimables (face verticale au bout haut quand l'axe est trop couché pour une face perpendiculaire).
-- **Fentes** : dans chaque couche, le trou doit rejoindre le contour (vase mode). S'il ne débouche pas par la peau,
-  la face de coupe, l'emplanture ou le saumon, une fente de `slit_width` le relie à la peau la plus proche,
-  choisie couche par couche. L'attache (`anchor`) et le côté de fente (`slit_side`) ne s'appliquent pas : s'ils
-  sont réglés pour cette SBAR, un avertissement le dit. Une SBAR qui traverse une baie de servo est signalée
+- **Fentes** : dans chaque couche, le trou doit rejoindre le contour (vase mode). S'il ne débouche pas par la peau
+  ou par une face de coupe dans la corde (l'emplanture, le saumon et les coupes en Z ne comptent pas : faces
+  horizontales), une fente de `slit_width` le relie à la peau la plus proche, choisie couche par couche.
+  L'attache (`anchor`) et le côté de fente (`slit_side`) ne s'appliquent pas : s'ils sont réglés pour cette SBAR,
+  un avertissement le dit. Une SBAR qui traverse une baie de servo est signalée
   (rencontre non traitée).
 - **Coupe dans la corde** : une SBAR transversale **traverse** le plan de coupe (c'est voulu) ; chaque morceau
   reçoit sa partie du trou, qui débouche sur la face de coupe.
 - **Refus** : une SBAR horizontale ouverte aux deux bouts dans les mêmes couches (du bord d'attaque au bord de
   fuite, par exemple) couperait chaque couche en deux : impossible en vase mode. Le message donne la position
   des deux bouts : en fermer un dans la pièce (SBAR plus courte), ou l'incliner pour que ses deux bouches soient à
-  des hauteurs différentes. Une paroi plus fine qu'une ligne entre le trou et la peau est aussi refusée
-  (éloigner la SBAR de la peau ou réduire son diamètre).
+  des hauteurs différentes. Une paroi plus fine qu'une ligne entre le trou (jeu compris) et la peau,
+  ailleurs qu'à une bouche, est aussi refusée (« trop près de la peau » : éloigner la SBAR de la peau ou réduire le
+  jeu). À un bout débouchant, le trou s'arrête dès qu'il est sorti de la peau (au plus 10 mm au-delà du bout) :
+  il n'entaille pas une zone concave plus loin, et ce qu'il entaille au-delà de sa bouche reste signalé par la
+  validation.
 - **Envergure** : l'axe d'impression suit le **plus long** longeron. Si une SBAR transversale est plus longue
   que le longeron principal, imposer l'axe avec `orientation.axis` (ex. `orientation: {axis: [0, 0, 1]}`).
 - Aperçu : la SBAR apparaît en bande dans la vue de dessus et dans la coupe à hauteur réglable ; rapport :

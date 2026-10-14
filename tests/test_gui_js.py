@@ -261,7 +261,7 @@ const texte = (n) => n.textContent + (n.enfants || []).map(texte).join("");
 const lignes = (t) => t.enfants[1].enfants.map((tr) => tr.enfants.map(texte));
 const [resume, table] = panneauDecoupe(plan);
 const essai = tableauMorceauxEssai([
-  { nom: "WING_1", liste_morceaux: [{ nom: "T1", z0: 0, z1: 40, largeur: 100, profondeur: 12, rotation: 0, tient: true, plateau: 1, ok: true }] },
+  { nom: "WING_1", liste_morceaux: [{ nom: "T1", z0: 0, z1: 40, largeur: 100, profondeur: 12, marge: 134.5, rotation: 0, tient: true, plateau: 1, ok: true }] },
   { nom: "WING_2", liste_morceaux: [{ nom: "T1", z0: 0, z1: 40, largeur: 100, profondeur: 12, rotation: 12, tient: true, plateau: 2, ok: false }] },
 ]);
 const boite = encadreNotices(plan.notices);
@@ -272,8 +272,8 @@ return { resume: resume.textContent, apercu: lignes(table), essai: lignes(essai)
     assert out["resume"] == "3 morceaux, un par plateau : 1 coupe(s) en Z, 1 coupe(s) dans la corde."
     assert out["apercu"][1] == ["T1-B", "0,0 – 60,0", "23,0 – 230,0", "207 × 44", "38°", "2"]
     assert out["apercu"][2][3] == "300 × 50 (ne tient pas)" and out["apercu"][0][4] == "—"
-    assert out["essai"] == [["WING_1 : T1", "0,0 – 40,0", "100 × 12", "—", "1", "✔"],
-                            ["WING_2 : T1", "0,0 – 40,0", "100 × 12", "12°", "2", "✘"]]
+    assert out["essai"] == [["WING_1 : T1", "0,0 – 40,0", "100 × 12", "134,5", "—", "1", "✔"],
+                            ["WING_2 : T1", "0,0 – 40,0", "100 × 12", "—", "12°", "2", "✘"]]  # marge absente : —
     assert out["vide"] is None and out["sansNotice"] is None
     assert out["notice"][0] == "message notice" and "coupe dans la corde en 2 morceaux" in out["notice"][1]
     assert "indisponible" in out["indispo"]

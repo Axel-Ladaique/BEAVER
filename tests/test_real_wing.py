@@ -137,3 +137,17 @@ def test_blunt_edged_wing_is_printable():
     assert not body.report.errors
     assert len(body.bores) == 2
     assert body.plates > 40
+
+
+DOUBLE_SBAR = Path(__file__).parent / "fixtures" / "aile_4412_double_sbar.step"
+
+
+@pytest.mark.slow
+def test_real_double_sbar_wing_unchanged():
+    """Non-régression (contraintes globales) : aile à deux SBAR parallèles, ✔, 98 plaques, un seul morceau (P1S)."""
+    cfg = load_config()
+    run = run_model(classify(read_step(DOUBLE_SBAR), cfg), cfg)
+    (body,) = run.bodies
+    assert body.report.ok, [i.message for i in body.report.errors][:5]
+    assert body.plates == 98
+    assert len(body.segments) == 1 and body.tubes == () and body.notices == ()

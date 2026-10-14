@@ -80,6 +80,7 @@ def test_piece_rows_number_plates_and_keep_rotation():
     rows = piece_rows(_body_with_pieces(), first_plate=3)
     assert [(r["nom"], r["plateau"], r["rotation"], r["ok"]) for r in rows] == [("A", 3, 0.0, True), ("B<1>", 4, -37.5, False)]
     assert (rows[0]["z0"], rows[0]["z1"], rows[0]["largeur"], rows[0]["profondeur"]) == (0.0, 120.0, 193.1, 51.4)
+    assert [r["marge"] for r in rows] == [10.0, 2.0]  # spec §2 : marge de chaque morceau sur le plateau
 
 
 def test_html_pieces_table_and_notices(tmp_path: Path):
@@ -89,6 +90,7 @@ def test_html_pieces_table_and_notices(tmp_path: Path):
                      notices=["découpe automatique : coupe dans la corde en 2 morceaux"])
     html = out.read_text(encoding="utf-8")
     assert "<caption>Morceaux imprimés</caption>" in html and "<th>Rotation</th>" in html and "<th>Plateau</th>" in html
-    assert "<td>A</td><td>0 – 120</td><td>193.1 × 51.4</td><td>—</td><td>1</td><td>✔</td>" in html
-    assert "<td>B&lt;1&gt;</td><td>0 – 120</td><td>240 × 60</td><td>-37.5°</td><td>2</td><td>✘</td>" in html
+    assert "<th>Marge (mm)</th>" in html
+    assert "<td>A</td><td>0 – 120</td><td>193.1 × 51.4</td><td>10</td><td>—</td><td>1</td><td>✔</td>" in html
+    assert "<td>B&lt;1&gt;</td><td>0 – 120</td><td>240 × 60</td><td>2</td><td>-37.5°</td><td>2</td><td>✘</td>" in html
     assert "<li>ℹ découpe automatique : coupe dans la corde en 2 morceaux</li>" in html

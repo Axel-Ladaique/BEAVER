@@ -117,13 +117,14 @@ export function tableauMorceauxEssai(corps) {
   for (const c of corps || []) for (const m of c.liste_morceaux || []) lignes.push({ ...m, corps: c.nom });
   if (!lignes.length) return null;
   return el("table", { classe: "table-morceaux" }, [
-    el("thead", {}, [el("tr", {}, ["Morceau", "z (mm)", "Emprise (mm)", "Rotation", "Plateau", "Vase mode"]
+    el("thead", {}, [el("tr", {}, ["Morceau", "z (mm)", "Emprise (mm)", "Marge (mm)", "Rotation", "Plateau", "Vase mode"]
       .map((t) => el("th", { texte: t })))]),
     el("tbody", {}, lignes.map((m) => el("tr", {}, [
       el("td", { texte: nomMorceau(m, plusieurs) }),
       el("td", { classe: "nombre", texte: m.z0 === null ? "—" : `${nombre(m.z0, 1)} – ${nombre(m.z1, 1)}` }),
       el("td", { classe: "nombre", texte: m.largeur === null ? "—"
         : `${nombre(m.largeur, 0)} × ${nombre(m.profondeur, 0)}${m.tient === false ? " (ne tient pas)" : ""}` }),
+      el("td", { classe: "nombre", texte: nombre(m.marge, 1) }),
       el("td", { classe: "nombre", texte: rotationTexte(m.rotation) }),
       el("td", { classe: "nombre", texte: String(m.plateau) }),
       el("td", { texte: m.ok ? "✔" : "✘" }),

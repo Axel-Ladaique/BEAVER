@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import functools
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import NamedTuple
 
 from build123d import Cylinder, Location, Solid
 from OCP.Standard import Standard_Failure
 from OCP.BRepTools import BRepTools
+from shapely.errors import ShapelyError
 from shapely.geometry import MultiPoint, Point, Polygon
 
 from aerorib.classify import Model
@@ -39,7 +42,7 @@ from aerorib.midsurface import MidSurface
 from aerorib.orient import Orientation, orient
 from aerorib.segment import SegmentError, split_part
 from aerorib.slicing import mesh_sections, section_sampler, slice_layers, to_mesh
-from aerorib.validate import MAX_FAILED_LAYERS, Report, validate
+from aerorib.validate import MAX_FAILED_LAYERS, Issue, Report, validate
 
 
 class PipelineError(ValueError):
@@ -294,7 +297,7 @@ def layout_for(height: float, z0: float, sample, cfg: Config, bores, bays) -> La
     """Plan de découpe (coupes en Z puis dans la corde) d'une pièce d'étendue [z0, z0 + height] ; `sample` : zs absolus
     → points des sections. Même calcul en génération (`segment_part`, SBAR transversales) et dans l'aperçu."""
     seg = cfg.segment
-    (W, D, H), _ = _print_volume(cfg)
+    (W, D, H), _, _ = _print_volume(cfg)
     max_h = seg.max_height if seg.max_height is not None else H - seg.margin
     obstacles = [*bore_obstacles(bores, z0, z0 + height), *bay_obstacles(bays, z0, cfg.servo_strip())]
     return plan_layout(
@@ -364,8 +367,10 @@ def generate_skin(
         blocked = spar_obstruction(spar, part)
         if blocked > MAX_SPAR_OBSTRUCTION:
             raise PipelineError(f"{name} : le longeron traverse la matière ({blocked:.0f} mm³) — vérifier son axe")
-    # trous des SBAR transversales : leurs bouches (peau, face de coupe dans la corde) sont des ouvertures voulues
-    openings = (*pockets, *hole_openings(bores, bays, bb), *(t.hole.solid() for t in tubes))
+    # trous des SBAR transversales entre leurs bouts réels, bouches comprises (`Tube.opening`) : ouvertures voulues
+    # de la peau. Pas le prolongement d'outil au-delà (une entaille par lui reste « peau entamée »), et le trou ne
+    # touche la peau qu'à ses bouches (sinon TubeError, `tubes._check_wall`)
+    openings = (*pockets, *hole_openings(bores, bays, bb), *(t.opening_solid() for t in tubes))
     return Generated(
         part, tuple(bores), len(plates), tuple(f for _, f in to_fill), slivers, tuple(warns), tuple(bays), openings,
         tuple(tubes), plan,
@@ -378,24 +383,71 @@ def generate_skin(
 GEOMETRY_ERRORS = (ValueError, RuntimeError, Standard_Failure)
 
 
-def _print_volume(cfg: Config) -> tuple[tuple[float, float, float], str | None]:
-    """((largeur, profondeur, hauteur), avertissement) : gabarit Bambu s'il existe, sinon imprimante."""
+class PrintVolume(NamedTuple):
+    size: tuple[float, float, float]  # largeur, profondeur, hauteur (mm)
+    warning: str | None  # gabarit ≠ imprimante choisie, gabarit illisible…
+    label: str  # imprimante du volume : celle du gabarit (« P1S »), sinon celle de la config
+
+
+@functools.lru_cache(maxsize=8)
+def _template_at(path: str, mtime_ns: int, size: int):
+    return read_template(Path(path))
+
+
+def _cached_template(path: Path):
+    """Gabarit relu seulement s'il a changé (chemin, date, taille) : `_print_volume` est appelé plusieurs fois par
+    corps."""
+    try:
+        st = path.stat()
+    except OSError:
+        return read_template(path)  # BambuError en français
+    return _template_at(str(path), st.st_mtime_ns, st.st_size)
+
+
+def _print_volume(cfg: Config) -> PrintVolume:
+    """(largeur, profondeur, hauteur), avertissement, libellé de l'imprimante : gabarit Bambu s'il existe (libellé
+    tiré de son `printer_model`), sinon imprimante de la config."""
     try:
         path = resolve_template(cfg)
-        t = read_template(path)
+        t = _cached_template(path)
         model = str(t.settings.get("printer_model") or "")
         warn = None
         if model and not model.lower().endswith(cfg.printer):
             warn = (f"gabarit {path.name} ({model}) ≠ imprimante choisie {cfg.printer}\u00a0: "
                     "le volume et le projet suivent le gabarit")
-        return (t.bed[0], t.bed[1], t.height), warn
+        label = model.split()[-1].upper() if model.split() else cfg.printer.upper()
+        return PrintVolume((t.bed[0], t.bed[1], t.height), warn, label)
     except BambuError as exc:
         warn = f"gabarit Bambu illisible ({exc}) — volume de l'imprimante {cfg.printer} utilisé"
     except ConfigError as exc:
         warn = (
             f"{exc} — volume de l'imprimante {cfg.printer} utilisé" if cfg.bambu.template not in (None, AUTO_TEMPLATE) else None
         )
-    return tuple(cfg.printer_spec.volume), warn
+    return PrintVolume(tuple(cfg.printer_spec.volume), warn, cfg.printer.upper())
+
+
+def volume_warnings(cfg: Config, size: tuple[float, float, float] | None = None) -> list[str]:
+    """Avertissements « volume d'impression », mêmes textes en génération (`segment_part`) et dans l'aperçu
+    (`preview._layout`) : gabarit ≠ imprimante ou illisible, segment.max_height au-delà de la hauteur utile, et en
+    `segment.mode: off` pièce de dimensions `size` (largeur, profondeur, hauteur) trop grande."""
+    seg = cfg.segment
+    (W, D, H), fallback, _ = _print_volume(cfg)
+    out = [fallback] if fallback else []
+    usable = H - seg.margin
+    if seg.max_height is not None and seg.max_height > usable + 1e-9:
+        out.append(
+            f"segment.max_height ({seg.max_height:g} mm) dépasse la hauteur utile "
+            f"({usable:g} mm = {H:g} − marge {seg.margin:g})"
+        )
+    if seg.mode == "off" and size is not None:
+        w, d, h = size
+        max_h = seg.max_height if seg.max_height is not None else usable
+        if h > max_h + 1e-9 or w > W - 2 * seg.margin or d > D - 2 * seg.margin:
+            out.append(
+                f"la pièce ({h:.0f} mm / {w:.0f}×{d:.0f} mm) dépasse le volume d'impression "
+                "— découpe désactivée (segment.mode: off)"
+            )
+    return out
 
 
 def usable_height(cfg: Config) -> float:
@@ -403,7 +455,7 @@ def usable_height(cfg: Config) -> float:
     seg = cfg.segment
     if seg.max_height is not None:
         return seg.max_height
-    (_, _, H), _ = _print_volume(cfg)
+    (_, _, H), _, _ = _print_volume(cfg)
     return H - seg.margin
 
 
@@ -441,9 +493,9 @@ def _segment(
     return seg.pieces, seg.warnings
 
 
-def layout_notices(plan: LayoutPlan, cfg: Config, bed: tuple[float, float]) -> list[str]:
+def layout_notices(plan: LayoutPlan, cfg: Config, bed: tuple[float, float], label: str | None = None) -> list[str]:
     """Décisions automatiques de découpe (informations pour l'utilisateur), mêmes textes en génération et dans
-    l'aperçu ; `bed` : plateau du gabarit (largeur, profondeur)."""
+    l'aperçu ; `bed` : plateau du gabarit (largeur, profondeur) ; `label` : son imprimante (`_print_volume`)."""
     notices = []
     n_z = len(plan.z.cuts) + 1
     if plan.z.reason:
@@ -453,7 +505,8 @@ def layout_notices(plan: LayoutPlan, cfg: Config, bed: tuple[float, float]) -> l
             f"découpe automatique : {len(plan.segments)} tronçons en Z pour limiter l'inclinaison de la coupe dans "
             f"la corde (surplomb max {cfg.preset.max_overhang_deg:g}°)"
         )
-    plateau = f"plateau {cfg.printer.upper()} ({bed[0]:.0f} × {bed[1]:.0f} mm)"
+    label = label if label is not None else _print_volume(cfg).label
+    plateau = f"plateau {label} ({bed[0]:.0f} × {bed[1]:.0f} mm)"
     need = plan.z.chord
     for i, sp in enumerate(plan.segments, 1):
         if not sp.planes:
@@ -477,7 +530,7 @@ def body_notice(n_pieces: int, cfg: Config) -> str:
     """Corps d'aile (plusieurs corps dans le STEP) encore découpé pour tenir dans le volume d'impression."""
     return (
         f"corps d'aile déjà découpé dans la CAO, encore découpé en {n_pieces} morceaux pour tenir dans le volume "
-        f"d'impression ({cfg.printer.upper()})"
+        f"d'impression ({_print_volume(cfg).label})"
     )
 
 
@@ -491,23 +544,11 @@ def segment_part(
     même contour extérieur que `result` ; `result` par défaut). `original` (peau de référence de la validation) est
     coupée comme `result` quand il y a une coupe dans la corde ; `bores`, `bays` : obstacles des plans de coupe."""
     seg = cfg.segment
-    (W, D, H), fallback = _print_volume(cfg)
-    warnings = [f"{body_name} : {fallback}"] if fallback else []
-    usable = H - seg.margin
-    if seg.max_height is not None and seg.max_height > usable + 1e-9:
-        warnings.append(
-            f"{body_name} : segment.max_height ({seg.max_height:g} mm) dépasse la hauteur utile "
-            f"({usable:g} mm = {H:g} − marge {seg.margin:g})"
-        )
-    max_h = seg.max_height if seg.max_height is not None else usable
+    (W, D, _), _, printer = _print_volume(cfg)
     bb = result.bounding_box(optimal=True)
+    size = (bb.max.X - bb.min.X, bb.max.Y - bb.min.Y, bb.max.Z - bb.min.Z)
+    warnings = [f"{body_name} : {w}" for w in volume_warnings(cfg, size)]
     if seg.mode == "off":
-        w, d, h = bb.max.X - bb.min.X, bb.max.Y - bb.min.Y, bb.max.Z - bb.min.Z
-        if h > max_h + 1e-9 or w > W - 2 * seg.margin or d > D - 2 * seg.margin:
-            warnings.append(
-                f"{body_name} : la pièce ({h:.0f} mm / {w:.0f}×{d:.0f} mm) dépasse le volume d'impression "
-                "— découpe désactivée (segment.mode: off)"
-            )
         for w_ in warnings:
             progress(f"⚠ {w_}")
         return Segmented((result,), tuple(warnings), (), ("T1",), ((0.0, bb.max.Z - bb.min.Z),))
@@ -539,7 +580,7 @@ def segment_part(
                     checks += [(ref[j], _face_exempt(cut_lines(sp, j, CUT_FACE_TOL), gap)) for j in order]
     except SegmentError as exc:
         raise PipelineError(f"{body_name} : {exc}") from exc
-    notices = layout_notices(plan, cfg, (W, D))
+    notices = layout_notices(plan, cfg, (W, D), printer)
     n_seg = len(plan.segments)
     if n_seg > 1:
         progress(f"{body_name} : découpe en {n_seg} tronçons")
@@ -582,10 +623,12 @@ def place_pieces(
     body_name: str, pieces: tuple[Solid, ...], cfg: Config, progress: Callable[[str], None],
     names: Sequence[str] = (),
 ) -> tuple[tuple[Placement, ...], tuple[str, ...]]:
-    """Rotation de chaque tronçon sur le plateau + avertissements (tronçon trop grand même tourné)."""
-    (W, D, _), _ = _print_volume(cfg)
+    """Rotation de chaque tronçon sur le plateau + erreurs (morceau trop grand même tourné). `segment.mode: off` :
+    pas d'erreur (l'avertissement « dépasse le volume d'impression » de `segment_part` le dit déjà) ; sinon le plan
+    de découpe aurait dû faire tenir le morceau : erreur de validation (`oversize_issue`), pièce non imprimable."""
+    (W, D, _), _, printer = _print_volume(cfg)
     margin = cfg.segment.margin
-    placements, warnings = [], []
+    placements, errors = [], []
     for i, piece in enumerate(pieces, 1):
         pb = piece.bounding_box(optimal=True)
         w, d = pb.max.X - pb.min.X, pb.max.Y - pb.min.Y
@@ -595,18 +638,28 @@ def place_pieces(
         pl = fit_on_bed(_footprint(piece), (W, D), margin)
         if pl.fits:
             progress(f"{body_name} : {names[i - 1] if names else f'T{i}'} : {format_rotation(pl)}")
-        elif cfg.segment.mode != "off":  # en mode off, l'avertissement de dépassement existe déjà
-            warnings.append(
-                f"{body_name} : {f'le morceau {names[i - 1]}' if names else f'le tronçon {i}'} ({pl.size[0]:.0f}×{pl.size[1]:.0f} mm au mieux, même tourné) "
-                f"ne tient pas sur le plateau ({W:.0f}×{D:.0f} mm, marge {margin:g} mm) — "
-                "à découper ou à réduire"
+        elif cfg.segment.mode != "off":
+            errors.append(
+                f"{body_name} : {f'le morceau {names[i - 1]}' if names else f'le tronçon {i}'} "
+                f"({pl.size[0]:.0f}×{pl.size[1]:.0f} mm au mieux, même tourné) ne tient pas sur le plateau {printer} "
+                f"({W:.0f}×{D:.0f} mm, marge {margin:g} mm) malgré le plan de découpe — non imprimable : imposer "
+                "des coupes (segment.cuts_at) ou choisir une imprimante plus grande"
             )
         if not pl.fits:  # posé sans rotation : marge et emprise sont celles de 0°
             pl = Placement(0.0, False, min(W - 2 * margin - w, D - 2 * margin - d), (w, d))
         placements.append(pl)
-    for w_ in warnings:
-        progress(f"⚠ {w_}")
-    return tuple(placements), tuple(warnings)
+    for e in errors:
+        progress(f"✘ {e}")
+    return tuple(placements), tuple(errors)
+
+
+def oversize_issue(message: str, z: float) -> Issue:
+    """Morceau hors plateau malgré le plan de découpe : erreur de validation (pièce non imprimable)."""
+    return Issue("volume", "error", z, message)
+
+
+def _with_issues(report: Report, extra: Sequence[Issue]) -> Report:
+    return replace(report, issues=(*report.issues, *extra)) if extra else report
 
 
 def skins_anchor(skins: Sequence[Solid]):
@@ -709,11 +762,18 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
         try:
             original = skin.cut(*gen.openings) if gen.openings else skin
         except GEOMETRY_ERRORS as exc:
-            raise PipelineError(f"{s.body.name} : poche de servo impossible ({type(exc).__name__} : {exc})") from exc
-        seg = segment_part(
-            s.body.name, result, cfg, progress, skin=skin, original=original, bores=bores, bays=gen.bays,
-            plan=gen.plan,
-        )
+            raise PipelineError(
+                f"{s.body.name} : ouverture de la peau impossible (poche, trou de SBAR) ({type(exc).__name__} : {exc})"
+            ) from exc
+        try:
+            seg = segment_part(
+                s.body.name, result, cfg, progress, skin=skin, original=original, bores=bores, bays=gen.bays,
+                plan=gen.plan,
+            )
+        except PipelineError:
+            raise
+        except (*GEOMETRY_ERRORS, ShapelyError) as exc:  # planificateur (shapely) ou découpe (OpenCascade)
+            raise PipelineError(f"{s.body.name} : découpe impossible ({type(exc).__name__} : {exc})") from exc
         piece_reports: tuple[Report, ...] = ()
         if seg.checks:  # coupe dans la corde : chaque morceau validé avec la peau d'origine coupée de même
             piece_reports = tuple(
@@ -737,8 +797,18 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
             )
             progress(f"{s.body.name} : {notices[0]}")
         names = seg.names if seg.chord else ()
-        placements, place_warns = place_pieces(s.body.name, seg.pieces, cfg, progress, names)
-        warns = (*(o.warnings if not bodies else ()), *gen.warnings, *warns, *place_warns)
+        placements, too_big = place_pieces(s.body.name, seg.pieces, cfg, progress, names)
+        if too_big:  # segment.mode auto : le plan de découpe s'est trompé, pièce non imprimable
+            bb = result.bounding_box(optimal=True)
+            spans = seg.spans if len(seg.spans) == len(seg.pieces) else [(0.0, 0.0)] * len(seg.pieces)
+            bad = [i for i, pl in enumerate(placements) if not pl.fits]
+            report = _with_issues(report, [oversize_issue(m, bb.min.Z + spans[i][0]) for i, m in zip(bad, too_big)])
+            if piece_reports:
+                piece_reports = tuple(
+                    _with_issues(r, [oversize_issue(m, 0.0) for i, m in zip(bad, too_big) if i == k])
+                    for k, r in enumerate(piece_reports)
+                )
+        warns = (*(o.warnings if not bodies else ()), *gen.warnings, *warns)
         bodies.append(
             BodyResult(
                 s.body.name, skin, result, report, bores, n, filled, warns, seg.pieces, gen.bays, placements,

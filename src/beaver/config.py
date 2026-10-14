@@ -94,6 +94,69 @@ class SplitSettings(_Strict):
         return v
 
 
+HollowMode = Literal["off", "croisements", "pas"]
+
+
+class HollowSettings(_Strict):
+    """Évidements des nervures (échancrures côté bande, pleine hauteur aux ponts), voir docs/specs évidements.
+
+    Réglage global `ribs_hollow` (racine de la config, à côté de `rib_layers` : il porte sur les nervures, pas sur la
+    bande de séparation `split`) ; surcharge partielle possible par couche (`rib_layers[*].hollow`)."""
+
+    # off : nervures pleines (défaut) ; croisements : ponts aux nœuds du losange ; pas : ponts à pas régulier
+    mode: HollowMode = "off"
+    # mm, le long de la plaque : longueur pleine hauteur d'un pont
+    bridge_width: float = Field(default=4.0, json_schema_extra={"exclusiveMinimum": 0})
+    pitch: float = Field(default=30.0, json_schema_extra={"exclusiveMinimum": 0})  # mm, mode pas : distance entre ponts
+    # hauteur gardée sous la peau = keep_ratio × demi-épaisseur locale, au moins keep_min (mm)
+    keep_ratio: float = Field(default=0.3, json_schema_extra={"exclusiveMinimum": 0, "maximum": 1})
+    keep_min: float = Field(default=2.0, json_schema_extra={"exclusiveMinimum": 0})
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _known_mode(cls, v: object) -> object:
+        if v not in ("off", "croisements", "pas"):
+            raise ValueError(f"ribs_hollow.mode : off, croisements ou pas (reçu {v!r})")
+        return v
+
+    @field_validator("bridge_width")
+    @classmethod
+    def _bridge(cls, v: float) -> float:
+        if not v > 0:
+            raise ValueError(f"bridge_width : largeur de pont > 0 mm attendue, reçu {v}")
+        return v
+
+    @field_validator("pitch")
+    @classmethod
+    def _pitch(cls, v: float) -> float:
+        if not v > 0:
+            raise ValueError(f"pitch : pas des ponts > 0 mm attendu, reçu {v}")
+        return v
+
+    @field_validator("keep_ratio")
+    @classmethod
+    def _ratio(cls, v: float) -> float:
+        if not 0 < v <= 1:
+            raise ValueError(f"keep_ratio : proportion gardée entre 0 et 1 attendue (0 exclu), reçu {v}")
+        return v
+
+    @field_validator("keep_min")
+    @classmethod
+    def _keep(cls, v: float) -> float:
+        if not v > 0:
+            raise ValueError(f"keep_min : hauteur gardée > 0 mm attendue, reçu {v}")
+        return v
+
+    @model_validator(mode="after")
+    def _pitch_beyond_bridge(self) -> "HollowSettings":
+        if self.mode == "pas" and self.pitch <= self.bridge_width:
+            raise ValueError(
+                f"pitch {self.pitch} mm ≤ largeur de pont (bridge_width) {self.bridge_width} mm : aucun évidement "
+                "possible entre deux ponts"
+            )
+        return self
+
+
 class RibLayer(_Strict):
     name: str = "principal"
     pattern: Literal["diamond"] = "diamond"
@@ -103,6 +166,8 @@ class RibLayer(_Strict):
     depth: Literal["full"] | float = "full"
     phase: float = 0.0  # décalage du motif (mm, le long de X)
     samples: int = Field(default=16, ge=4)
+    # surcharge partielle des évidements pour cette couche (clés de `HollowSettings`) ; None = réglage global
+    hollow: dict[str, Any] | None = None
 
     @field_validator("depth", mode="before")
     @classmethod
@@ -213,6 +278,7 @@ class Config(_Strict):
     orientation: Literal["auto"] | OrientationAxis = "auto"
     split: SplitSettings = Field(default_factory=SplitSettings)
     rib_layers: list[RibLayer] = Field(default_factory=lambda: [RibLayer()])
+    ribs_hollow: HollowSettings = Field(default_factory=HollowSettings)
     spars: dict[str, dict[str, Any]] = Field(default_factory=dict)
     passages: PassageSettings = Field(default_factory=PassageSettings)
     servo: ServoSettings = Field(default_factory=ServoSettings)
@@ -264,7 +330,33 @@ class Config(_Strict):
                 self.spar_settings(name, cable=name == CABLE_KEY)
             except ValidationError as exc:
                 raise ValueError(f"spars '{name}' invalide : {exc}") from exc
+        lw = self.preset.line_width
+        for layer in self.rib_layers:
+            if layer.hollow is not None:
+                unknown = set(layer.hollow) - set(HollowSettings.model_fields)
+                if unknown:
+                    raise ValueError(
+                        f"rib_layers '{layer.name}' : évidements (hollow) : réglage inconnu : {', '.join(sorted(unknown))}"
+                    )
+                try:
+                    self.layer_hollow(layer)
+                except ValidationError as exc:
+                    msgs = "; ".join(str(e.get("ctx", {}).get("error", e["msg"])) for e in exc.errors())
+                    raise ValueError(f"rib_layers '{layer.name}' : évidements (hollow) invalides : {msgs}") from exc
+            h = self.layer_hollow(layer)
+            if h.keep_min < 2 * lw - 1e-9:
+                where = "ribs_hollow" if layer.hollow is None else f"rib_layers '{layer.name}' : hollow"
+                raise ValueError(
+                    f"{where} : keep_min {h.keep_min} mm < 2 × largeur de ligne ({2 * lw:.2f} mm) — les deux murs de "
+                    "la nervure évidée se confondraient"
+                )
         return self
+
+    def layer_hollow(self, layer: RibLayer) -> HollowSettings:
+        """Évidements d'une couche : réglage global `ribs_hollow`, surchargé clé par clé par `layer.hollow`."""
+        if not layer.hollow:
+            return self.ribs_hollow
+        return HollowSettings.model_validate({**self.ribs_hollow.model_dump(), **layer.hollow})
 
     def _spar_entries(self) -> list[tuple[str, BoreSettings]]:
         """Réglages à contrôler : (libellé, réglages) de chaque entrée `spars` ; gaine incluse."""

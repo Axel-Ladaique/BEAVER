@@ -34,7 +34,7 @@ from beaver.features.bores import (
     spar_bores,
 )
 from beaver.features.chord_cut import LayoutPlan, bay_obstacles, bore_obstacles, cut_lines, cut_segment, plan_layout
-from beaver.features.ribs import diamond_plates, emptied_by_walls, plate_lines
+from beaver.features.ribs import HollowSpec, diamond_plates, emptied_by_walls, plate_lines
 from beaver.features.tubes import Region, Tube, band, beyond, is_transversal, spar_tubes, tube_warnings
 from beaver.features.servo import (
     ServoBay, ServoError, hole_meets_pocket, pocket_profile, pocket_solid, reinforce_solids, reinforce_warnings, servo_bays,
@@ -184,8 +184,16 @@ def rib_options(
     return dict(
         angle_deg=cfg.rib_angle(layer), gap=cfg.split.gap, slit=cfg.slit_width, min_depth=cfg.split.min_rib_depth,
         line_width=cfg.preset.line_width, max_mouth=cfg.validation.max_mouth_width, exclude=deeper_lines(cfg, bb, i, anchor),
-        bays=tuple(bays), pocket_strip=cfg.servo_strip(), anchor=anchor, tubes=tuple(tubes),
+        bays=tuple(bays), pocket_strip=cfg.servo_strip(), anchor=anchor, tubes=tuple(tubes), hollow=hollow_spec(cfg, i),
     )
+
+
+def hollow_spec(cfg: Config, i: int) -> HollowSpec | None:
+    """Évidements du niveau i (réglage global surchargé par la couche) ; None : désactivés (plaques pleines)."""
+    h = cfg.layer_hollow(cfg.rib_layers[i])
+    if h.mode == "off":
+        return None
+    return HollowSpec(h.mode, h.bridge_width, h.pitch, h.keep_ratio, h.keep_min, cfg.preset.max_overhang_deg)
 
 
 def wall_warnings(
@@ -323,10 +331,14 @@ def rib_crossings(cfg: Config, origin: float, zmin: float, zmax: float) -> list[
     """Plans z = cte où les deux familles de plaques d'un même niveau de nervures se croisent (`plate_lines` : plaques
     x = c ± tan(angle)·(z − origine), c au pas `spacing` ; croisements en origine + j·spacing / (2·tan(angle))). Leurs
     arêtes de croisement (parallèles à Y) sont dans ces plans : une coupe en Z posée dessus fait échouer le booléen
-    (aile ×3, coupe à 420 mm). `origin` : bas de la boîte de calage du motif (`skins_anchor`, sinon la peau)."""
+    (aile ×3, coupe à 420 mm). `origin` : bas de la boîte de calage du motif (`skins_anchor`, sinon la peau).
+
+    Évidements : marche verticale au-dessus de chaque pont (arête parallèle à Y à z = pont + bridge_width·d1/2),
+    pont aux croisements ou tous les `pitch` le long de la plaque à partir de `origin` (`ribs.bridge_positions`)."""
     out = []
-    for layer in cfg.rib_layers:
-        t = math.tan(math.radians(cfg.rib_angle(layer)))
+    for i, layer in enumerate(cfg.rib_layers):
+        ang = math.radians(cfg.rib_angle(layer))
+        t = math.tan(ang)
         if t <= 0 or layer.spacing <= 0:
             continue
         step = layer.spacing / (2 * t)
@@ -334,6 +346,15 @@ def rib_crossings(cfg: Config, origin: float, zmin: float, zmax: float) -> list[
         if j1 - j0 > 100_000:
             continue
         out += [origin + j * step for j in range(j0, j1 + 1)]
+        hollow = hollow_spec(cfg, i)
+        if hollow is None:
+            continue
+        lift = hollow.bridge_width * math.cos(ang) / 2
+        if hollow.mode == "pas":
+            step = hollow.pitch * math.cos(ang)
+        j0, j1 = math.ceil((zmin - lift - origin) / step - 1e-9), math.floor((zmax - lift - origin) / step + 1e-9)
+        if j1 - j0 <= 100_000:
+            out += [origin + j * step + lift for j in range(j0, j1 + 1)]
     return out
 
 

@@ -54,6 +54,141 @@ _SLOPE_STEP = 0.1  # mm, pas en x de lecture de la pente de peau dans la fenêtr
 _WALL_MARGIN_LINES = 2
 
 
+# Évidements (docs/specs/2026-10-15-evidements-design.md). Sous un évidement, la nervure ne descend qu'à la
+# profondeur gardée ; gain < _HOLLOW_MIN_SAVING (mm, selon Y) : pleine hauteur (échancrure inutile).
+_HOLLOW_MIN_SAVING = 1.0
+_HOLLOW_TOL = 0.1  # mm : bord évidé (parallèle à la peau) simplifié à cette tolérance (coût des booléens)
+_HOLLOW_SNAP = 2 * _MIN_VERTEX_GAP  # mm : borne d'évidement plus proche d'une borne de tronçon : ramenée dessus
+
+
+@dataclass(frozen=True)
+class HollowSpec:
+    """Réglages d'évidement d'une couche de nervures (`config.HollowSettings`, mode ≠ off) + surplomb max matière."""
+
+    mode: str  # croisements | pas
+    bridge_width: float
+    pitch: float
+    keep_ratio: float
+    keep_min: float
+    max_overhang_deg: float
+
+
+@dataclass(frozen=True)
+class HollowEdge:
+    """Évidement d'une plaque dans son repère (s, y).
+
+    `bridges` : abscisses s des ponts (pleine hauteur sur s ± width/2). `slope` : avance max du fond de fente vers la
+    bande par mm de s, tan(surplomb)·d1 (z = zmin + s·d1 : s croissant ⇔ couches montantes). `margin` : zones pleines
+    autour des zones interdites et des fenêtres de bout (None = width). `clearance` : demi-largeur de ligne en pratique
+    (`diamond_profiles`)."""
+
+    bridges: tuple[float, ...]
+    width: float
+    keep_ratio: float
+    keep_min: float
+    slope: float
+    margin: float | None = None
+    # mm (selon Y) : la rampe s'arrête à cette hauteur au-dessus de la bande, puis marche verticale jusqu'à elle (voir
+    # `_hollow_cut`) ; ailleurs, le fond de fente évidé reste au moins à cette hauteur de la bande
+    clearance: float = 0.0
+
+
+def bridge_positions(
+    spec: HollowSpec, sign: int, c: float, d0: float, d1: float, lines, *, s_ref: float, s_lo: float, s_hi: float,
+) -> tuple[float, ...]:
+    """Abscisses s des ponts d'une plaque (famille `sign`, x = c + s·d0) dans [s_lo, s_hi] (± une demi-largeur).
+
+    croisements : là où passe une plaque de l'autre famille de la même couche (`lines`, voir `plate_lines`) sur le
+    plan médian : c + s·d0 = c' − s·d0 ⇒ s = (c' − c) / (2·d0), soit un pas spacing / (2·sin(angle)) le long de la
+    plaque. pas : s = s_ref + k·pitch, `s_ref` = abscisse du bas de la boîte de calage du motif (même z pour toutes les
+    plaques et tous les corps d'une aile découpée dans la CAO)."""
+    if spec.mode == "croisements":
+        s = [(co - c) / (2 * d0) for so, co in lines if so == -sign]
+    else:
+        k0 = math.ceil((s_lo - spec.bridge_width - s_ref) / spec.pitch)
+        k1 = math.floor((s_hi + spec.bridge_width - s_ref) / spec.pitch)
+        s = [s_ref + k * spec.pitch for k in range(k0, k1 + 1)]
+    half = spec.bridge_width / 2
+    return tuple(sorted(v for v in s if s_lo - half <= v <= s_hi + half))
+
+
+def _subtract(intervals, cuts) -> list[tuple[float, float]]:
+    """Intervalles `intervals` privés des intervalles fermés `cuts`."""
+    out = list(intervals)
+    for c0, c1 in cuts:
+        nxt = []
+        for a, b in out:
+            if c1 <= a or c0 >= b:
+                nxt.append((a, b))
+                continue
+            if c0 > a:
+                nxt.append((a, c0))
+            if c1 < b:
+                nxt.append((c1, b))
+        out = nxt
+    return out
+
+
+def _hollow_spans(ss, saving, runs, hollow: HollowEdge, zones, ends) -> list[list[tuple[float, float]]]:
+    """Par tronçon profond : intervalles de s évidés. Pleins : ponts, zones interdites et fenêtres de bout (± marge),
+    gain trop faible ; un évidement plus court qu'un pont est abandonné ; une borne d'évidement à moins de
+    `_HOLLOW_SNAP` d'une borne de tronçon est ramenée dessus (pas de micro-arête)."""
+    m = hollow.width if hollow.margin is None else hollow.margin
+    full = [(b - hollow.width / 2, b + hollow.width / 2) for b in hollow.bridges]
+    full += [(z.bounds[0] - m, z.bounds[2] + m) for z in zones if not z.is_empty]
+    full += [(a - h - m, a + h + m) for a, h in ends]
+    worth = _deep_runs(ss, saving >= _HOLLOW_MIN_SAVING) if (saving >= _HOLLOW_MIN_SAVING).any() else []
+    out = []
+    for lo, hi in runs:
+        spans = []
+        for a, b in _subtract([(max(a, lo), min(b, hi)) for a, b in worth if b > lo and a < hi], full):
+            a = lo if a - lo < _HOLLOW_SNAP else a
+            b = hi if hi - b < _HOLLOW_SNAP else b
+            if b - a >= hollow.width:
+                spans.append((a, b))
+        out.append(spans)
+    return out
+
+
+def _with_breaks(s_edge: np.ndarray, breaks, lo: float, hi: float) -> np.ndarray:
+    """Sommets du bord complétés des bornes d'évidement `breaks` ; un sommet à moins de `_MIN_VERTEX_GAP` d'une borne
+    est retiré (bornes de tronçon gardées)."""
+    b = np.asarray([v for v in breaks if lo < v < hi], dtype=float)
+    if not len(b):
+        return s_edge
+    s = np.asarray(s_edge, dtype=float)
+    near = (np.abs(s[:, None] - b[None, :]) < _MIN_VERTEX_GAP).any(axis=1) & (s != lo) & (s != hi)
+    return np.unique(np.concatenate([s[~near], b]))
+
+
+def _hollow_cut(ss, g_u, span, lo, hi, u_band, slope: float, sigma: int, clearance: float) -> Polygon:
+    """Région retirée d'une plaque sur un évidement [a, b], dans le repère u = sigma·y (u croissant vers la peau).
+
+    Bord : fond de fente évidé g_u, en marche verticale en a (le fond de fente recule d'un coup en montant : pas de
+    surplomb) et en rampe avant b : dans chaque couche, le fond de fente n'avance vers la bande que de `slope` par mm
+    de s au plus (passe à rebours). La rampe s'arrête à `clearance` au-dessus de la bande (`u_band`, bord de la plaque
+    pleine), puis marche verticale en b jusqu'au sommet (b, u_band(b)) du bord plein (« marche, pas rampe » contre la
+    bande) : en tranche, une rampe coupée par l'épaisseur de la plaque donne un fond de fente oblique ; deux fonds
+    obliques (haut et bas) au ras de la bande la pincent (contrôle de largeur de matière). Le fond de fente évidé reste
+    partout à `clearance` au moins de la bande."""
+    a, b = span
+    g = _MIN_VERTEX_GAP  # pas d'échantillon collé aux bornes (micro-arête)
+    pts = np.unique(np.concatenate([[a, b], ss[(ss > a + g) & (ss < b - g)]]))
+    floor = u_band(pts) + clearance
+    e = np.maximum(np.interp(pts, ss, g_u), floor)
+    ramp = b < hi
+    if ramp:
+        e[-1] = floor[-1]
+    for i in range(len(pts) - 2, -1, -1):
+        e[i] = max(min(e[i], e[i + 1] + slope * (pts[i + 1] - pts[i])), floor[i])
+    edge = list(LineString(list(zip(pts, e))).simplify(_HOLLOW_TOL).coords) if len(pts) > 2 else list(zip(pts, e))
+    left = a if a > lo else lo - 1.0
+    ring = [(left, -_FAR)] + ([(left, e[0])] if left != a else []) + edge
+    ring += [(b, -_FAR)] if ramp else [(hi + 1.0, e[-1]), (hi + 1.0, -_FAR)]
+    poly = Polygon([(s, sigma * u) for s, u in ring])
+    return poly if poly.is_valid else poly.buffer(0)
+
+
 _ZONE_SEGMENTS = 64
 # polygone circonscrit au cercle unité : aucun point du cercle n'est hors de la zone
 _CIRCUMSCRIBED = 1 / math.cos(math.pi / _ZONE_SEGMENTS)
@@ -266,7 +401,7 @@ def _band_vertices(ss, ym, lo: float, hi: float, s_edge: np.ndarray, tol: float)
 def plate_profiles_2d(
     ss, ym, th, zones, *, gap, min_depth, ytop, ybot, edge_vertices: int | None = None,
     depth: float | None = None, steep: np.ndarray | None = None, band_tol: float | None = None,
-    ends: Sequence[tuple[float, float]] = (),
+    ends: Sequence[tuple[float, float]] = (), hollow: HollowEdge | None = None,
 ) -> list[tuple[bool, Polygon]]:
     """Profils 2D des plaques haute et basse.
 
@@ -291,6 +426,16 @@ def plate_profiles_2d(
     `ends` : fenêtres de bout (a, h) — abscisse s du plan de bout de la pièce et demi-largeur. Les abscisses
     a − h, a, a + h doivent être dans `ss` (valeurs exactes). Aucune borne de tronçon dans une fenêtre, et seulement
     ces trois sommets dedans (voir `_END_CLAMP_SHARE`), conservés par la simplification finale.
+
+    `hollow` (None = sans évidement, profils inchangés) : la plaque ne descend qu'à max(keep_min, keep_ratio ×
+    demi-épaisseur) sous la peau, sauf aux ponts (pleine hauteur), près des zones interdites et des bouts (± marge) et
+    là où le gain serait < `_HOLLOW_MIN_SAVING`. En montant, le fond de fente rejoint la bande par une rampe au
+    surplomb max (`HollowEdge.slope`) arrêtée à `clearance` de la bande, puis marche verticale au pied du pont ; elle
+    la quitte par une marche verticale au-dessus du pont (voir `_hollow_cut`) ; jamais plus profond que le bord plein.
+    Zones pleines connues ici seulement : les coupes en Z et dans la corde sont planifiées après la génération des
+    nervures (la marche au-dessus des ponts réguliers est un plan critique de la découpe, `pipeline.rib_crossings`).
+    Les bornes d'évidement deviennent des sommets du bord plein (les coupes y
+    passent exactement : pas de micro-arête sur la bande).
     """
     ss, ym, th = (np.asarray(a, dtype=float) for a in (ss, ym, th))
     deep = th > gap + 2 * min_depth
@@ -302,6 +447,12 @@ def plate_profiles_2d(
         return []
     simplify = depth is not None and edge_vertices is not None
     coarse = ss if edge_vertices is None else np.linspace(ss[0], ss[-1], edge_vertices)
+    spans: list[list[tuple[float, float]]] = [[] for _ in runs]
+    if hollow is not None:
+        # écart à la surface médiane (mêmes valeurs en haut et en bas) : bord plein, bord évidé
+        full_off = gap / 2 if depth is None else np.maximum(gap / 2, th / 2 - depth)
+        hol_off = th / 2 - np.maximum(hollow.keep_min, hollow.keep_ratio * th / 2)
+        spans = _hollow_spans(ss, hol_off - full_off, runs, hollow, zones, ends)
     out = []
     for top in (True, False):
         far = ytop if top else ybot
@@ -310,7 +461,7 @@ def plate_profiles_2d(
         else:
             inner = ym - (gap / 2 if depth is None else np.maximum(gap / 2, th / 2 - depth))
         pieces = []
-        for lo, hi in runs:
+        for (lo, hi), run_spans in zip(runs, spans):
             s_edge = np.concatenate([[lo], coarse[(coarse > lo) & (coarse < hi)], [hi]])
             if band_tol is not None and edge_vertices is not None:
                 s_edge = _band_vertices(ss, ym, lo, hi, s_edge, band_tol)
@@ -320,10 +471,20 @@ def plate_profiles_2d(
             if simplify:
                 free = th[run] / 2 - depth > gap / 2 + _PARTIAL_EDGE_TOL
                 s_edge = _merge_close(_partial_edge_vertices(ss[run], inner[run], free, s_edge), keep=[lo, hi])
+            if run_spans:
+                s_edge = _with_breaks(s_edge, [v for span in run_spans for v in span], lo, hi)
             if ends:
                 s_edge = _end_vertices(s_edge, lo, hi, ends)
             y_edge = np.interp(s_edge, ss[run], inner[run])
-            pieces.append(Polygon(list(zip(s_edge, y_edge)) + [(hi, far), (lo, far)]).buffer(0))
+            piece = Polygon(list(zip(s_edge, y_edge)) + [(hi, far), (lo, far)]).buffer(0)
+            if run_spans:
+                sigma = 1 if top else -1
+                g_u = sigma * ym + hol_off
+                u_band = lambda s, s_edge=s_edge, y_edge=y_edge: sigma * np.interp(s, s_edge, y_edge)  # noqa: E731
+                cuts = [_hollow_cut(ss, g_u, span, lo, hi, u_band, hollow.slope, sigma, hollow.clearance)
+                        for span in run_spans]
+                piece = piece.difference(unary_union(cuts))
+            pieces.append(piece)
         poly = unary_union(pieces)
         if zones:
             shift = -_FAR if top else _FAR
@@ -398,7 +559,7 @@ def diamond_profiles(
     bb, mid: MidSurface, bores: list[Bore], layer: RibLayer, *, angle_deg: float, gap: float, slit: float,
     min_depth: float, line_width: float, max_mouth: float, exclude: Sequence[tuple[int, float]] = (),
     walls: bool = True, bays: Sequence[ServoBay] = (), pocket_strip: float = 0.0, anchor=None,
-    tubes: Sequence = (),
+    tubes: Sequence = (), hollow: HollowSpec | None = None,
 ) -> list[PlateProfile]:
     """Profils 2D des plaques d'un niveau, sans construire les solides (aperçu rapide).
 
@@ -409,7 +570,8 @@ def diamond_profiles(
     avec la même ombre que les trous, limitées à la peau d'ouverture le long de la plaque.
     `anchor` : boîte de calage du motif (voir `plate_lines`). `tubes` : SBAR transversales (`features.tubes.Tube`),
     zones = section exacte de leurs prismes sans nervure (trou + manchon, fentes + bande) par le plan de la plaque,
-    avec la même ombre que les trous.
+    avec la même ombre que les trous. `hollow` : évidements de la couche (None = plaques pleines), ponts placés par
+    `bridge_positions` (croisements avec l'autre famille de cette couche, ou pas calé sur `anchor`).
     """
     max_slope, margin = wall_limits(slit=slit, angle_deg=angle_deg, line_width=line_width, max_mouth=max_mouth)
     # deux bandes qui se croisent, chacune à band_tol de ym ± gap/2, se recouvrent d'au moins gap − 2·band_tol :
@@ -424,10 +586,19 @@ def diamond_profiles(
     ends = _end_windows(mid, zmin, zmax, math.cos(ang))
     ss = np.unique(np.concatenate([ss, [a + k * h for a, h in ends for k in (-1, 0, 1)]]))
     out: list[PlateProfile] = []
-    for sign, c in plate_lines(bb, layer, angle_deg, anchor):
+    lines = plate_lines(bb, layer, angle_deg, anchor)
+    s_ref = ((anchor if anchor is not None else bb).min.Z - zmin) / math.cos(ang)
+    for sign, c in lines:
         if any(es == sign and abs(ec - c) < _SAME_LINE for es, ec in exclude):
             continue
         d0, d1 = sign * math.sin(ang), math.cos(ang)
+        edge = None
+        if hollow is not None:
+            edge = HollowEdge(
+                bridge_positions(hollow, sign, c, d0, d1, lines, s_ref=s_ref, s_lo=ss[0], s_hi=ss[-1]),
+                hollow.bridge_width, hollow.keep_ratio, hollow.keep_min,
+                math.tan(math.radians(hollow.max_overhang_deg)) * d1, clearance=line_width / 2,
+            )
         x, z = c + ss * d0, zmin + ss * d1
         ym, th = mid.at(x, z)
         steep = np.zeros(len(ss), dtype=bool)
@@ -442,6 +613,7 @@ def diamond_profiles(
         for top, poly in plate_profiles_2d(
             ss, ym, th, zones, gap=gap, min_depth=min_depth, ytop=ytop, ybot=ybot, edge_vertices=layer.samples,
             depth=None if layer.depth == "full" else layer.depth, steep=steep, band_tol=band_tol, ends=ends,
+            hollow=edge,
         ):
             out.append(PlateProfile(sign, c, d0, d1, top, poly))
     return out
@@ -459,12 +631,13 @@ def diamond_plates(
     bb, mid: MidSurface, bores: list[Bore], layer: RibLayer, *, angle_deg: float, gap: float, slit: float,
     min_depth: float, line_width: float, max_mouth: float, exclude: Sequence[tuple[int, float]] = (),
     bays: Sequence[ServoBay] = (), pocket_strip: float = 0.0, anchor=None, tubes: Sequence = (),
+    hollow: HollowSpec | None = None,
 ) -> list[Solid]:
     """Plaques d'un niveau ; `exclude` : plans (famille, c) déjà coupés par un niveau plus profond ; `anchor` :
     boîte de calage du motif (voir `plate_lines`)."""
     profiles = diamond_profiles(
         bb, mid, bores, layer, angle_deg=angle_deg, gap=gap, slit=slit, min_depth=min_depth,
         line_width=line_width, max_mouth=max_mouth, exclude=exclude, bays=bays, pocket_strip=pocket_strip,
-        anchor=anchor, tubes=tubes,
+        anchor=anchor, tubes=tubes, hollow=hollow,
     )
     return [plate_solid(p.polygon, p.c, p.d0, p.d1, bb.min.Z, slit) for p in profiles]

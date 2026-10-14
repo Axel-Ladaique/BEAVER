@@ -235,7 +235,7 @@ def run(
         result = run_model(model, cfg, progress=lambda m: typer.echo(f"… {m}"))
         for b in result.bodies:
             typer.echo(format_text(b.report, title=b.name))
-            typer.echo(format_bores(b.bores, b.filled))
+            typer.echo(format_bores(b.bores, b.filled, b.tubes))
             if b.bays:
                 typer.echo(format_bays(b.bays, b.z_heights))
         plate = 1

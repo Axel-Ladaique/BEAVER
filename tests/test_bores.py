@@ -56,7 +56,7 @@ def test_spar_slit_side_override():
 
 
 def test_tilted_spar_rejected():
-    with pytest.raises(BoreError, match="P5"):
+    with pytest.raises(BoreError, match="non parallèle.*SBAR transversale"):
         spar_bores([("SBAR_x", Cylinder(7, 100).moved(Location((0, 0, 0), (0, 90, 0))))], CFG)
 
 

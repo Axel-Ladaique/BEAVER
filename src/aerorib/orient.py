@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -29,7 +30,13 @@ def choose_axis(model: Model, cfg: Config) -> tuple[np.ndarray, str]:
         return v / np.linalg.norm(v), "axe forcé"
     spars = model.of("spar")
     if spars:
-        return np.asarray(spars[0].spar.axis_dir, dtype=float), f"longeron {spars[0].body.name}"
+        # longerons non parallèles (SBAR transversales) : le plus long donne l'envergure
+        first = np.asarray(spars[0].spar.axis_dir, dtype=float)
+        limit = math.cos(math.radians(cfg.passages.max_tilt_deg))
+        if all(abs(float(np.dot(first, s.spar.axis_dir))) >= limit for s in spars):
+            return first, f"longeron {spars[0].body.name}"
+        main = max(spars, key=lambda s: s.spar.length)
+        return np.asarray(main.spar.axis_dir, dtype=float), f"longeron {main.body.name} (le plus long)"
     boxes = [s.body.solid.bounding_box() for s in model.of("skin")]
     lo = np.min([[b.min.X, b.min.Y, b.min.Z] for b in boxes], axis=0)
     hi = np.max([[b.max.X, b.max.Y, b.max.Z] for b in boxes], axis=0)

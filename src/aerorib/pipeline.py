@@ -21,6 +21,7 @@ from aerorib.features.bores import (
     Passage,
     bore_cut_tools,
     bore_extent,
+    bore_layer,
     extend_to_existing_bores,
     fill_radius,
     fill_tools,
@@ -29,14 +30,15 @@ from aerorib.features.bores import (
     passages_to_fill,
     spar_bores,
 )
-from aerorib.features.chord_cut import bay_obstacles, bore_obstacles, cut_lines, cut_segment, plan_layout
+from aerorib.features.chord_cut import LayoutPlan, bay_obstacles, bore_obstacles, cut_lines, cut_segment, plan_layout
 from aerorib.features.ribs import diamond_plates, emptied_by_walls, plate_lines
+from aerorib.features.tubes import Region, Tube, band, beyond, is_transversal, spar_tubes
 from aerorib.features.servo import ServoBay, ServoError, hole_meets_pocket, pocket_solid, reinforce_solids, reinforce_warnings, servo_bays
 from aerorib.layout import Placement, fit_on_bed, format_rotation
 from aerorib.midsurface import MidSurface
 from aerorib.orient import Orientation, orient
 from aerorib.segment import SegmentError, split_part
-from aerorib.slicing import section_sampler, slice_layers, to_mesh
+from aerorib.slicing import mesh_sections, section_sampler, slice_layers, to_mesh
 from aerorib.validate import Report, validate
 
 
@@ -61,6 +63,7 @@ class BodyResult:
     names: tuple[str, ...] = ()  # nom de chaque morceau (T1, T2… ; A, B / T1-A… avec une coupe dans la corde)
     spans: tuple[tuple[float, float], ...] = ()  # étendue en Z de chaque morceau (mm depuis l'emplanture)
     piece_reports: tuple[Report, ...] = ()  # validation de chaque morceau (coupe dans la corde seulement)
+    tubes: tuple[Tube, ...] = ()  # SBAR transversales / inclinées
 
     @property
     def z_heights(self) -> list[float]:
@@ -166,7 +169,9 @@ def fill_skin(skin: Solid, passages: list[tuple[str, Passage]], tol: float) -> S
     return solids[0]
 
 
-def rib_options(cfg: Config, bb, i: int, bays: Sequence[ServoBay] = (), anchor=None) -> dict:
+def rib_options(
+    cfg: Config, bb, i: int, bays: Sequence[ServoBay] = (), anchor=None, tubes: Sequence[Tube] = ()
+) -> dict:
     """Paramètres de `diamond_plates` / `diamond_profiles` pour le niveau i : un seul jeu pour la génération et
     l'aperçu, qui doivent produire exactement les mêmes plaques (`bays` : baies de servo à contourner ; `anchor` :
     boîte de calage du motif, la boîte globale des peaux quand le modèle en a plusieurs, voir `plate_lines`)."""
@@ -174,18 +179,19 @@ def rib_options(cfg: Config, bb, i: int, bays: Sequence[ServoBay] = (), anchor=N
     return dict(
         angle_deg=cfg.rib_angle(layer), gap=cfg.split.gap, slit=cfg.slit_width, min_depth=cfg.split.min_rib_depth,
         line_width=cfg.preset.line_width, max_mouth=cfg.validation.max_mouth_width, exclude=deeper_lines(cfg, bb, i, anchor),
-        bays=tuple(bays), pocket_strip=cfg.servo_strip(), anchor=anchor,
+        bays=tuple(bays), pocket_strip=cfg.servo_strip(), anchor=anchor, tubes=tuple(tubes),
     )
 
 
 def wall_warnings(
-    bb, mid, bores, cfg: Config, counts: Sequence[int], bays: Sequence[ServoBay] = (), anchor=None
+    bb, mid, bores, cfg: Config, counts: Sequence[int], bays: Sequence[ServoBay] = (), anchor=None,
+    tubes: Sequence[Tube] = (),
 ) -> list[str]:
     """Avertissements des niveaux de nervures vidés par l'arrêt avant les parois raides (`counts` : plaques par
     niveau). Calcul refait seulement pour un niveau sans plaque : rare, donc sans coût en temps normal."""
     out = []
     for i, (layer, n) in enumerate(zip(cfg.rib_layers, counts)):
-        if n == 0 and emptied_by_walls(bb, mid, list(bores), layer, **rib_options(cfg, bb, i, bays, anchor)):
+        if n == 0 and emptied_by_walls(bb, mid, list(bores), layer, **rib_options(cfg, bb, i, bays, anchor, tubes)):
             out.append(
                 f"niveau de nervures « {layer.name} » : aucune plaque — toutes écartées des parois trop raides pour "
                 f"la fente (slit_width {cfg.slit_width} mm, angle {cfg.rib_angle(layer)}°, "
@@ -244,6 +250,78 @@ class Generated(NamedTuple):
     # ouvertures voulues de la peau (poches des baies, trous qui débouchent dans une poche) : retirées de
     # l'original pour la validation
     openings: tuple[Solid, ...] = ()
+    tubes: tuple[Tube, ...] = ()  # SBAR transversales / inclinées
+    plan: LayoutPlan | None = None  # plan de découpe déjà calculé (SBAR transversales : coupes dans la corde)
+
+
+def split_spars(
+    spars: Sequence[tuple[str, Solid]], cfg: Config
+) -> tuple[list[tuple[str, Solid]], list[tuple[str, Solid]]]:
+    """(longerons parallèles à Z, à la tolérance `passages.max_tilt_deg` près ; longerons transversaux/inclinés)."""
+    vertical, transversal = [], []
+    for name, solid in spars:
+        (transversal if is_transversal(solid, cfg) else vertical).append((name, solid))
+    return vertical, transversal
+
+
+def chord_regions(plan: LayoutPlan | None, z_root: float) -> list[Region]:
+    """Morceaux de la coupe dans la corde (repère de la pièce, z absolu), nommés comme les morceaux (`plan.names`) ;
+    un seul sans coupe dans la corde (les coupes en Z ne relient aucune couche au contour : sans effet)."""
+    if plan is None or not plan.chord_cut:
+        return [Region()]
+    names = plan.names()
+    out, k = [], 0
+    last = len(plan.segments) - 1
+    for i, sp in enumerate(plan.segments):
+        zb = band(None if i == 0 else z_root + sp.z0, None if i == last else z_root + sp.z1)
+        lines = []
+        for p in sp.planes:  # x = xa + (z − z_root − za)·pente
+            slope = (p.xb - p.xa) / (p.zb - p.za)
+            lines.append((p.xa - (z_root + p.za) * slope, slope))
+        order = sp.order()
+        for j in range(sp.k):
+            hs = list(zb)
+            if j > 0:
+                hs.append(beyond(*lines[j - 1], 1))
+            if j < sp.k - 1:
+                hs.append(beyond(*lines[j], -1))
+            out.append(Region(tuple(hs), names[k + order.index(j)]))
+        k += sp.k
+    return out
+
+
+def layout_for(height: float, z0: float, sample, cfg: Config, bores, bays) -> LayoutPlan:
+    """Plan de découpe (coupes en Z puis dans la corde) d'une pièce d'étendue [z0, z0 + height] ; `sample` : zs absolus
+    → points des sections. Même calcul en génération (`segment_part`, SBAR transversales) et dans l'aperçu."""
+    seg = cfg.segment
+    (W, D, H), _ = _print_volume(cfg)
+    max_h = seg.max_height if seg.max_height is not None else H - seg.margin
+    obstacles = [*bore_obstacles(bores, z0, z0 + height), *bay_obstacles(bays, z0, cfg.servo_strip())]
+    return plan_layout(
+        height, max_h, lambda zs: sample([z0 + z for z in zs]), (W, D), seg.margin, seg.cuts_at or None,
+        chord=seg.chord, max_overhang_deg=cfg.preset.max_overhang_deg, obstacles=obstacles,
+    )
+
+
+def skin_tubes(
+    skin: Solid, transversal, cfg: Config, cables, bores, bays, mesh=None
+) -> tuple[list[tuple[Tube, Solid]], LayoutPlan | None]:
+    """SBAR transversales d'une peau orientée (avant rebouchage) et plan de découpe qui fixe leurs fentes.
+    Plan impossible (SegmentError) : None — l'erreur est signalée par la découpe."""
+    if not transversal:
+        return [], None
+    tol = cfg.validation.tessellation_tol
+    mesh = to_mesh(skin, tol) if mesh is None else mesh
+    obb = skin.bounding_box(optimal=True)
+    plan = None
+    if cfg.segment.mode != "off":
+        try:
+            plan = layout_for(obb.max.Z - obb.min.Z, obb.min.Z, mesh_sections(mesh), cfg, bores, bays)
+        except SegmentError:
+            plan = None
+    bb = skin.bounding_box()
+    others = lambda z: [g for b in bores for g in bore_layer(b, z, bb)]  # noqa: E731
+    return spar_tubes(transversal, cfg, mesh, bb, cables, chord_regions(plan, obb.min.Z), others), plan
 
 
 def generate_skin(
@@ -256,34 +334,40 @@ def generate_skin(
     bb = skin.bounding_box()
     nx, nz = cfg.split.grid
     mid = MidSurface.from_skin(skin, nx, nz, tol)
-    inside = spars_inside(skin, spars, tol)
+    vertical, transversal = split_spars(spars, cfg)
+    inside = spars_inside(skin, vertical, tol)
     try:
         found = find_passages(skin, cfg.passages.max_tilt_deg)  # une seule recherche des alésages
         bores = extend_to_existing_bores(spar_bores(inside, cfg, cables), skin, cfg, found)
         to_fill = passages_to_fill(skin, cfg, exclude=bores, found=found)
         bores += passage_bores(skin, cfg, exclude=bores, found=found)
         bays = servo_bays(servos, skin, mid, cfg, bores)
+        held, plan = skin_tubes(skin, transversal, cfg, cables, bores, bays)
     except (BoreError, ServoError) as exc:
         raise PipelineError(str(exc)) from exc
+    tubes = [t for t, _ in held]
     skin = fill_skin(skin, to_fill, tol)
     plates, counts = [], []
     for i, layer in enumerate(cfg.rib_layers):
-        layer_plates = diamond_plates(bb, mid, bores, layer, **rib_options(cfg, bb, i, bays, anchor))
+        layer_plates = diamond_plates(bb, mid, bores, layer, **rib_options(cfg, bb, i, bays, anchor, tubes))
         plates += layer_plates
         counts.append(len(layer_plates))
-    warns = wall_warnings(bb, mid, bores, cfg, counts, bays, anchor) + reinforce_warnings(bays)
+    warns = wall_warnings(bb, mid, bores, cfg, counts, bays, anchor, tubes) + reinforce_warnings(bays)
     # gaines et longerons qui entrent dans une baie : simplement découpés par la poche
     # poches et fentes de renfort : ouvertures voulues de la peau
     pockets = [t for b in bays for t in (pocket_solid(b), *reinforce_solids(b))]
-    result = skin.cut(*plates, *bore_cut_tools(bores, bb, mid), *pockets)
+    tube_tools = [tool for t in tubes for tool in t.tools()]
+    result = skin.cut(*plates, *bore_cut_tools(bores, bb, mid), *tube_tools, *pockets)
     part, slivers = main_solid(result)
-    for name, spar in inside:
+    for name, spar in [*inside, *((t.name, solid) for t, solid in held)]:
         blocked = spar_obstruction(spar, part)
         if blocked > MAX_SPAR_OBSTRUCTION:
             raise PipelineError(f"{name} : le longeron traverse la matière ({blocked:.0f} mm³) — vérifier son axe")
-    openings = (*pockets, *hole_openings(bores, bays, bb))
+    # trous des SBAR transversales : leurs bouches (peau, face de coupe dans la corde) sont des ouvertures voulues
+    openings = (*pockets, *hole_openings(bores, bays, bb), *(t.hole.solid() for t in tubes))
     return Generated(
         part, tuple(bores), len(plates), tuple(f for _, f in to_fill), slivers, tuple(warns), tuple(bays), openings,
+        tuple(tubes), plan,
     )
 
 
@@ -359,6 +443,7 @@ def _segment(
 def segment_part(
     body_name: str, result: Solid, cfg: Config, progress: Callable[[str], None], skin: Solid | None = None,
     original: Solid | None = None, bores: Sequence[Bore] = (), bays: Sequence[ServoBay] = (),
+    plan: LayoutPlan | None = None,
 ) -> Segmented:
     """Découpe en morceaux : tronçons en Z selon la hauteur et l'empreinte sur le plateau, puis coupe dans la corde
     des tronçons qui ne tiennent pas (`plan_layout`). L'empreinte est lue sur les sections de `skin` (peau d'origine,
@@ -389,14 +474,11 @@ def segment_part(
         progress(f"⚠ {w_}")
     z0 = bb.min.Z
     height = bb.max.Z - z0
-    sample = section_sampler(skin if skin is not None else result, cfg.validation.tessellation_tol)
-    obstacles = [*bore_obstacles(bores, z0, bb.max.Z), *bay_obstacles(bays, z0, cfg.servo_strip())]
     printer = cfg.printer.upper()
     try:
-        plan = plan_layout(
-            height, max_h, lambda zs: sample([z0 + z for z in zs]), (W, D), seg.margin, seg.cuts_at or None,
-            chord=seg.chord, max_overhang_deg=cfg.preset.max_overhang_deg, obstacles=obstacles,
-        )
+        if plan is None:  # plan déjà calculé par generate_skin quand il y a des SBAR transversales
+            sample = section_sampler(skin if skin is not None else result, cfg.validation.tessellation_tol)
+            plan = layout_for(height, z0, sample, cfg, bores, bays)
         cuts = plan.cuts
         names = plan.names()
         spans = tuple((s.z0, s.z1) for s in plan.segments for _ in range(s.k))
@@ -536,12 +618,14 @@ def servos_for(skin: Solid, servos: Sequence[tuple[str, Solid]], several: bool) 
 
 
 def check_spars_assigned(
-    skins: Sequence[tuple[str, Solid]], spars: Sequence[tuple[str, Solid]], tol: float
+    skins: Sequence[tuple[str, Solid]], spars: Sequence[tuple[str, Solid]], tol: float, cfg: Config | None = None
 ) -> None:
     """Plusieurs corps d'aile : un longeron (ou une gaine) dont la boîte recoupe celle d'un corps doit être logé dans
     au moins un corps (`spars_inside`). Sinon (axe sur une jonction dans la corde, entre deux contours), il serait
     ignoré en silence et traverserait la matière : PipelineError en français."""
     for name, solid in spars:
+        if cfg is not None and is_transversal(solid, cfg):
+            continue  # SBAR transversale : attribuée à chaque corps que son axe traverse (`spar_tubes`)
         sb = solid.bounding_box()
         touched = [n for n, skin in skins if _overlaps(sb, skin.bounding_box())]
         if touched and not any(spars_inside(skin, [(name, solid)], tol) for _, skin in skins):
@@ -576,7 +660,7 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
             if not any(servos_for(skin, [(name, solid)], True) for skin in oriented):
                 raise PipelineError(f"{name} : la boîte ne traverse aucun corps d'aile (elle est hors de la pièce)")
         check_spars_assigned(
-            [(s.body.name, skin) for s, skin in zip(skins, oriented)], spars, cfg.validation.tessellation_tol
+            [(s.body.name, skin) for s, skin in zip(skins, oriented)], spars, cfg.validation.tessellation_tol, cfg
         )
     for w in o.warnings:
         progress(f"⚠ {w}")
@@ -595,6 +679,7 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
         progress(
             f"{s.body.name} : {n} nervures, {spars_n} longeron(s), "
             + (f"{cables_n} gaine(s), " if cables_n else "")
+            + (f"{len(gen.tubes)} SBAR transversale(s), " if gen.tubes else "")
             + f"{len(bores) - spars_n - cables_n} passage(s) relié(s), "
             f"{len(filled)} rebouché(s)"
             + (f", {len(gen.bays)} baie(s) de servo" if gen.bays else "")
@@ -608,7 +693,8 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
         except GEOMETRY_ERRORS as exc:
             raise PipelineError(f"{s.body.name} : poche de servo impossible ({type(exc).__name__} : {exc})") from exc
         seg = segment_part(
-            s.body.name, result, cfg, progress, skin=skin, original=original, bores=bores, bays=gen.bays
+            s.body.name, result, cfg, progress, skin=skin, original=original, bores=bores, bays=gen.bays,
+            plan=gen.plan,
         )
         piece_reports: tuple[Report, ...] = ()
         if seg.checks:  # coupe dans la corde : chaque morceau validé avec la peau d'origine coupée de même
@@ -639,7 +725,7 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
         bodies.append(
             BodyResult(
                 s.body.name, skin, result, report, bores, n, filled, warns, seg.pieces, gen.bays, placements,
-                notices, seg.names, seg.spans, piece_reports,
+                notices, seg.names, seg.spans, piece_reports, gen.tubes,
             )
         )
     return RunResult(o, tuple(bodies))

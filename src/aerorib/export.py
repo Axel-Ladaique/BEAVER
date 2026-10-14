@@ -75,7 +75,7 @@ def _write_all(run, out_dir, stem, formats, template, single, pieces, written) -
                 path = out_dir / (f"{base}-{label}.stl" if multi else f"{base}.stl")
                 export_stl(solid, str(path), tolerance=0.02, angular_tolerance=0.3)
                 written.append(path)
-        details = [format_bores(b.bores, b.filled)] + ([format_bays(b.bays, b.z_heights)] if b.bays else [])
+        details = [format_bores(b.bores, b.filled, b.tubes)] + ([format_bays(b.bays, b.z_heights)] if b.bays else [])
         details += list(b.notices)
         if b.piece_reports:
             details.append("morceaux : " + ", ".join(

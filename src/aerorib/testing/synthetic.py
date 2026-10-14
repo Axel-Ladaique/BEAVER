@@ -248,3 +248,50 @@ def split_wing_bodies(
         hi = Box(big, big, 2 * big, align=(Align.MIN, Align.CENTER, Align.CENTER)).moved(Location((cut, 0, 0)))
     one, two = (wing & lo).solids()[0], (wing & hi).solids()[0]
     return [NamedBody(("WING_1",), one), NamedBody(("WING_2",), two), *bodies]
+
+
+def rod(p0: tuple[float, float, float], p1: tuple[float, float, float], d: float) -> Solid:
+    """Cylindre de diamètre d de p0 à p1 (axe quelconque)."""
+    a, b = np.asarray(p0, dtype=float), np.asarray(p1, dtype=float)
+    v = b - a
+    length = float(np.linalg.norm(v))
+    face = Cylinder(d / 2, length, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    z = np.array([0.0, 0.0, 1.0])
+    axis = np.cross(z, v / length)
+    ang = math.degrees(math.atan2(np.linalg.norm(axis), float(np.dot(z, v / length))))
+    if np.linalg.norm(axis) < 1e-12:
+        axis = np.array([1.0, 0.0, 0.0])
+    from build123d import Axis
+
+    return face.rotate(Axis((0, 0, 0), tuple(axis / np.linalg.norm(axis))), ang).moved(Location(tuple(a))).solids()[0]
+
+
+def cross_wing_bodies(
+    p0: tuple[float, float, float],
+    p1: tuple[float, float, float],
+    d: float = 4.0,
+    chord: float = 100.0,
+    span: float = 80.0,
+    spar_x: float | None = 25.0,
+    spar_d: float = 6.0,
+    code: str = "4412",
+    wide: bool = False,
+    name: str = "SBAR_T",
+) -> list["NamedBody"]:
+    """Aile droite (repère de construction : corde X, épaisseur Y, envergure Z, emplanture z = 0) traversée par une
+    SBAR transversale ou inclinée `name` (Ø d, de p0 à p1, retirée de la peau comme dans la CAO) ; longeron principal
+    `SBAR_8` parallèle à Z en x = spar_x sur la ligne de cambrure (oriente la pièce : le plus long). `wide` : aile
+    à grande corde de `wide_wing_bodies` (coupe dans la corde sur P1S)."""
+    from aerorib.io_step import NamedBody
+
+    pts, camber = naca4(code, chord)
+    wing = swept_wing(chord=chord, span=span, code=code) if wide else naca_wing(code, chord, span)[0]
+    bodies = []
+    if spar_x is not None:
+        loc = Location((spar_x, camber(spar_x), span / 2))
+        wing = wing - Cylinder(spar_d / 2, span * 2).moved(loc)
+        bodies.append(NamedBody(("SBAR_8",), Cylinder(spar_d / 2, span).moved(loc).solids()[0]))
+    tube = rod(p0, p1, d)
+    wing = wing - tube
+    bodies.append(NamedBody((name,), tube))
+    return [NamedBody(("Aile_T",), wing.solids()[0]), *bodies]

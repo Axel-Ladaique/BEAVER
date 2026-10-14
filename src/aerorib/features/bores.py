@@ -68,7 +68,7 @@ def spar_bores(
         if info is None:
             raise BoreError(f"{name} : aucun cylindre détecté")
         if abs(info.axis_dir[2]) < limit:
-            raise BoreError(f"{name} : longeron non parallèle à l'axe d'impression (pris en charge en P5)")
+            raise BoreError(f"{name} : longeron non parallèle à l'axe d'impression : SBAR transversale (features.tubes)")
         is_cable = name in cables
         s = cfg.spar_settings(name, cable=is_cable)
         tilt = _tilt_deg(info.axis_dir[2])
@@ -76,7 +76,9 @@ def spar_bores(
         if drift > s.clearance / 2:
             raise BoreError(
                 f"{name} : longeron incliné de {tilt:.1f}° par rapport à l'axe d'impression "
-                f"(dérive {drift:.1f} mm > jeu) — non pris en charge en P1"
+                f"(dérive {drift:.1f} mm > jeu) — ambigu : trop incliné pour un trou vertical, trop peu "
+                f"(≤ passages.max_tilt_deg = {cfg.passages.max_tilt_deg:g}°) pour une SBAR transversale ; "
+                "l'aligner sur l'envergure ou l'incliner franchement"
             )
         start = info.axis_point
         z_end = start[2] + info.length * info.axis_dir[2]
@@ -293,6 +295,19 @@ def anchor_tools(b: Bore, mid: MidSurface, bb) -> list[Solid]:
         ring = [Vector(b.x, y, z) for z, y in list(poly.exterior.coords)[:-1]]
         faces.append(Face(Wire.make_polygon(ring, close=True)))
     return [extrude(f, amount=b.slit / 2, dir=Vector(1, 0, 0), both=True) for f in faces]
+
+
+def bore_layer(b: Bore, z: float, bb) -> list[Polygon]:
+    """Trou et fente du trou `b` dans la couche z (sans l'attache), repère XY : sections des outils de coupe."""
+    from shapely.geometry import Point, box
+
+    lo, hi = bore_extent(b, bb.min.Z, bb.max.Z)
+    if not lo <= z <= hi:
+        return []
+    reach = (bb.max.Y - bb.min.Y) + 20
+    out = [Point(b.x, b.y).buffer(b.radius, quad_segs=32)] if b.cut_hole else []
+    y0, y1 = (b.y, b.y + reach) if b.side > 0 else (b.y - reach, b.y)
+    return [*out, box(b.x - b.slit / 2, y0, b.x + b.slit / 2, y1)]
 
 
 def bore_cut_tools(bores: list[Bore], bb, mid: MidSurface | None = None) -> list[Solid]:

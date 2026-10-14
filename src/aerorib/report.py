@@ -45,8 +45,9 @@ def format_text(report: Report, title: str = "") -> str:
     return "\n".join(lines)
 
 
-def format_bores(bores, filled=()) -> str:
-    """Trous traités (décisions autonomes rendues visibles), repère d'impression, 1 décimale."""
+def format_bores(bores, filled=(), tubes=()) -> str:
+    """Trous traités (décisions autonomes rendues visibles), repère d'impression, 1 décimale ; `tubes` : SBAR
+    transversales / inclinées (Ø du trou, angle de l'axe avec l'envergure)."""
     items = []
     for b in bores:
         if not b.cut_hole:
@@ -57,6 +58,8 @@ def format_bores(bores, filled=()) -> str:
             items.append(f"{b.name} (longeron, Ø{2 * b.radius:.1f}, attache {'intrados' if b.side > 0 else 'extrados'})")
         else:
             items.append(f"{b.name} (longeron, Ø{2 * b.radius:.1f})")
+    for t in tubes:
+        items.append(f"{t.name} (transversale, Ø{2 * t.radius:.1f}, axe {t.tilt:.0f}°)")
     groups: dict[str, list] = {}
     for f in filled:
         groups.setdefault(f"{2 * f.r:.1f}", []).append(f)

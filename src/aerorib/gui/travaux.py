@@ -183,7 +183,7 @@ def _run_job(step: str, config_path: str, out_dir: str, queue) -> None:
                 "morceaux": max(len(b.segments), 1),  # pièces imprimées (coupes dans la corde comprises)
                 "masse": round(s["mass_g"], 2), "trajet": round(s["path_length_m"], 2),
                 "couches": int(s["layers"]), "hauteur": round(s["height_mm"], 2),
-                "trous": format_bores(b.bores, b.filled).strip().removeprefix("trous : "),
+                "trous": format_bores(b.bores, b.filled, b.tubes).strip().removeprefix("trous : "),
                 "baies": format_bays(b.bays, b.z_heights).strip().removeprefix("baies : "),
             })
         rapports = sorted(p.name for p in out.glob("*-rapport.html"))

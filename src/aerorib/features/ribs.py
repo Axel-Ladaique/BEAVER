@@ -398,6 +398,7 @@ def diamond_profiles(
     bb, mid: MidSurface, bores: list[Bore], layer: RibLayer, *, angle_deg: float, gap: float, slit: float,
     min_depth: float, line_width: float, max_mouth: float, exclude: Sequence[tuple[int, float]] = (),
     walls: bool = True, bays: Sequence[ServoBay] = (), pocket_strip: float = 0.0, anchor=None,
+    tubes: Sequence = (),
 ) -> list[PlateProfile]:
     """Profils 2D des plaques d'un niveau, sans construire les solides (aperçu rapide).
 
@@ -406,7 +407,9 @@ def diamond_profiles(
     `walls=False` : sans cet arrêt (pour vérifier qu'il ne vide pas un niveau, voir `emptied_by_walls`).
     `bays` : baies de servo, zones interdites (poche + `pocket_strip`, ponts, anneaux des trous qui y débouchent)
     avec la même ombre que les trous, limitées à la peau d'ouverture le long de la plaque.
-    `anchor` : boîte de calage du motif (voir `plate_lines`).
+    `anchor` : boîte de calage du motif (voir `plate_lines`). `tubes` : SBAR transversales (`features.tubes.Tube`),
+    zones = section exacte de leurs prismes sans nervure (trou + manchon, fentes + bande) par le plan de la plaque,
+    avec la même ombre que les trous.
     """
     max_slope, margin = wall_limits(slit=slit, angle_deg=angle_deg, line_width=line_width, max_mouth=max_mouth)
     # deux bandes qui se croisent, chacune à band_tol de ym ± gap/2, se recouvrent d'au moins gap − 2·band_tol :
@@ -432,6 +435,7 @@ def diamond_profiles(
         if walls and cand.any():
             steep[cand] = steep_samples(mid, x[cand], z[cand], max_slope=max_slope, margin=margin)
         zones = [z for b in bores for z in bore_zones_2d(b, c, d0, d1, zmin, zmax, slit=slit)]
+        zones += [z for t in tubes for z in t.zones_2d(c, d0, d1, zmin)]
         for bay in bays:
             open_skin = np.where(th > 0, ym + bay.side * th / 2, np.nan)  # peau d'ouverture le long de la plaque
             zones += pocket_zones_2d(bay, c, d0, d1, zmin, zmax, strip=pocket_strip, slit=slit, skin=(ss, open_skin))
@@ -454,13 +458,13 @@ def emptied_by_walls(bb, mid: MidSurface, bores: list[Bore], layer: RibLayer, **
 def diamond_plates(
     bb, mid: MidSurface, bores: list[Bore], layer: RibLayer, *, angle_deg: float, gap: float, slit: float,
     min_depth: float, line_width: float, max_mouth: float, exclude: Sequence[tuple[int, float]] = (),
-    bays: Sequence[ServoBay] = (), pocket_strip: float = 0.0, anchor=None,
+    bays: Sequence[ServoBay] = (), pocket_strip: float = 0.0, anchor=None, tubes: Sequence = (),
 ) -> list[Solid]:
     """Plaques d'un niveau ; `exclude` : plans (famille, c) déjà coupés par un niveau plus profond ; `anchor` :
     boîte de calage du motif (voir `plate_lines`)."""
     profiles = diamond_profiles(
         bb, mid, bores, layer, angle_deg=angle_deg, gap=gap, slit=slit, min_depth=min_depth,
         line_width=line_width, max_mouth=max_mouth, exclude=exclude, bays=bays, pocket_strip=pocket_strip,
-        anchor=anchor,
+        anchor=anchor, tubes=tubes,
     )
     return [plate_solid(p.polygon, p.c, p.d0, p.d1, bb.min.Z, slit) for p in profiles]

@@ -13,6 +13,7 @@ import json
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass, field, replace
 from itertools import pairwise
@@ -41,6 +42,7 @@ from aerorib.features.bores import (
     spar_bores,
 )
 from aerorib.features.ribs import diamond_profiles, plate_solid
+from aerorib.features.tubes import Tube
 from aerorib.features.servo import ServoBay, ServoError, pocket_section, reinforce_section, reinforce_warnings, servo_bays
 from aerorib.io_step import StepReadError, read_step
 from aerorib.midsurface import MidSurface
@@ -52,7 +54,9 @@ from aerorib.pipeline import (
     check_spars_assigned,
     rib_options,
     servos_for,
+    skin_tubes,
     skins_anchor,
+    split_spars,
     spars_inside,
     _print_volume,
     usable_height,
@@ -125,6 +129,11 @@ class Prepared:
     # plusieurs corps d'aile : une préparation par corps (même ordre que la génération) ; cette préparation-ci
     # en est l'ensemble (boîte globale, trous, baies et maillage réunis), et les vues sont calculées corps par corps
     parts: tuple["Prepared", ...] = ()
+    tube_spars: tuple[tuple[str, Solid], ...] = ()  # SBAR transversales logées dans cette peau (orientées)
+    cables: frozenset[str] = frozenset()
+    # SBAR transversales par réglages (leurs fentes dépendent du plan de découpe) : calculées à la demande, sous
+    # `mesh_lock`
+    memo: dict = field(default_factory=dict, repr=False)
 
     @property
     def bounds(self) -> tuple[float, float, float, float, float, float]:
@@ -291,7 +300,7 @@ def _prepare(path: Path, cfg: Config, key: tuple[str, str]) -> Prepared:
                 raise PreviewError(f"{name} : la boîte ne traverse aucun corps d'aile (elle est hors de la pièce)")
         try:
             check_spars_assigned(
-                [(s.body.name, skin) for s, skin in zip(skins, oriented)], spars, cfg.validation.tessellation_tol
+                [(s.body.name, skin) for s, skin in zip(skins, oriented)], spars, cfg.validation.tessellation_tol, cfg
             )
         except PipelineError as exc:
             raise PreviewError(str(exc)) from exc
@@ -319,7 +328,8 @@ def _prepare_skin(
         bb = skin.bounding_box()
         nx, nz = cfg.split.grid
         mid = MidSurface.from_skin(skin, nx, nz, tol)
-        inside = spars_inside(skin, list(spars), tol)
+        vertical, transversal = split_spars(list(spars), cfg)
+        inside = spars_inside(skin, vertical, tol)
         found = find_passages(skin, cfg.passages.max_tilt_deg)
         bores = extend_to_existing_bores(spar_bores(inside, cfg, cables), skin, cfg, found)
         to_fill = passages_to_fill(skin, cfg, exclude=bores, found=found)
@@ -335,8 +345,30 @@ def _prepare_skin(
         raise PreviewError(f"{name} : préparation impossible ({type(exc).__name__} : {exc})") from exc
     return Prepared(
         name, skin, tuple(spars), o, bb, (obb.min.Z, obb.max.Z), mid, tuple(bores), tuple(to_fill), anchors, mesh,
-        time.perf_counter() - t0, key, bays=bays, anchor=anchor,
+        time.perf_counter() - t0, key, bays=bays, anchor=anchor, tube_spars=tuple(transversal), cables=cables,
     )
+
+
+_TUBE_MEMO = 4  # réglages gardés par préparation
+
+
+def tubes(prep: Prepared, cfg: Config) -> tuple[Tube, ...]:
+    """SBAR transversales d'une peau, exactement celles de `generate_skin` (même maillage, même plan de découpe)."""
+    if not prep.tube_spars:
+        return ()
+    key = cfg.model_dump_json()
+    with prep.mesh_lock:
+        if key in prep.memo:
+            return prep.memo[key]
+        try:
+            held, _ = skin_tubes(prep.skin, list(prep.tube_spars), cfg, prep.cables, prep.bores, prep.bays, prep.mesh)
+        except BoreError as exc:
+            raise PreviewError(f"{prep.name} : {exc}") from exc
+        out = tuple(t for t, _ in held)
+        prep.memo[key] = out
+        while len(prep.memo) > _TUBE_MEMO:
+            prep.memo.pop(next(iter(prep.memo)))
+        return out
 
 
 # --- plaques 2D ---------------------------------------------------------------------------------------------
@@ -383,7 +415,7 @@ def plates_2d(prep: Prepared, cfg: Config) -> list[Plate2D]:
     bb = prep.bb
     out = []
     for i, layer in enumerate(cfg.rib_layers):
-        opts = rib_options(cfg, bb, i, prep.bays, prep.anchor)
+        opts = rib_options(cfg, bb, i, prep.bays, prep.anchor, tubes(prep, cfg))
         for p in diamond_profiles(bb, prep.mid, list(prep.bores), layer, **opts):
             out.append(
                 Plate2D(i, layer.name, p.family, p.c, p.d0, p.d1, bb.min.Z, p.top, layer.depth, cfg.slit_width, p.polygon)
@@ -463,7 +495,7 @@ def _skin_slices(prep: Prepared, zs: list[float]) -> list[list[Polygon]]:
     return [list(s.polygons_full) if s is not None else [] for s in sections]
 
 
-def _bore_tools(prep: Prepared, z: float) -> list[Polygon]:
+def _bore_tools(prep: Prepared, z: float, tubes: Sequence[Tube] = ()) -> list[Polygon]:
     """Trous, fentes, attaches et poches de servo à la hauteur z (outils de coupe coupés par le plan z)."""
     bb = prep.bb
     reach = (bb.max.Y - bb.min.Y) + 20
@@ -480,6 +512,8 @@ def _bore_tools(prep: Prepared, z: float) -> list[Polygon]:
             cut = prof.intersection(LineString([(z, -_FAR), (z, _FAR)]))
             if not cut.is_empty:
                 tools.append(box(b.x - b.slit / 2, cut.bounds[1], b.x + b.slit / 2, cut.bounds[3]))
+    for t in tubes:
+        tools += t.section(z)
     for bay in prep.bays:
         pocket = pocket_section(bay, z)
         if pocket is not None:
@@ -497,7 +531,8 @@ def _section(prep: Prepared, plates: list[Plate2D], cfg: Config, z: float, raw: 
         fp = plate_footprint(p, z)
         if fp is not None and fp.intersects(skin_union):
             feet.append(Footprint(p.layer, p.family, p.top, fp))
-    tools = [f.polygon for f in feet] + _bore_tools(prep, z)
+    held = tubes(prep, cfg)
+    tools = [f.polygon for f in feet] + _bore_tools(prep, z, held)
     polys = _parts(skin_union.difference(unary_union(tools))) if tools else skin
     preset = cfg.preset
     closed = Layer(z, slicer_closing(polys, preset.min_slit_width))
@@ -505,7 +540,14 @@ def _section(prep: Prepared, plates: list[Plate2D], cfg: Config, z: float, raw: 
     defects += check_narrow_slits(Layer(z, tuple(polys)), preset.min_slit_width)
     ym, th = prep.mid.at(prep.mid.xs, np.full_like(prep.mid.xs, z))
     band = [(float(x), float(y)) for x, y, t in zip(prep.mid.xs, ym, th) if t > 0]
-    return SectionView(z, polys, skin, feet, defects, band, cfg.split.gap, prep.holes(z))
+    holes = prep.holes(z)
+    for t in held:
+        sec = t.hole.layer(z)
+        if sec is not None:
+            c = sec.centroid
+            holes.append({"nom": t.name, "type": "SBAR transversale", "x": _round(c.x), "y": _round(c.y),
+                          "r": _round(t.radius)})
+    return SectionView(z, polys, skin, feet, defects, band, cfg.split.gap, holes)
 
 
 def section(prep: Prepared, plates: list[Plate2D], cfg: Config, z: float) -> SectionView:
@@ -697,7 +739,7 @@ def estimates(prep: Prepared, plates: list[Plate2D], cfg: Config, *, cached: boo
     bounds = [0.0, *cuts, zhi - zlo]
     troncons = [b - a for a, b in pairwise(bounds)] if not warns else None
     warns = [
-        *wall_warnings(prep.bb, prep.mid, prep.bores, cfg, per_layer, prep.bays, prep.anchor),
+        *wall_warnings(prep.bb, prep.mid, prep.bores, cfg, per_layer, prep.bays, prep.anchor, tubes(prep, cfg)),
         *reinforce_warnings(prep.bays), *warns,
     ]
     bb = prep.bb

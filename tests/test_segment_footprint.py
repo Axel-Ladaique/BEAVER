@@ -213,8 +213,24 @@ def test_run_with_a_piece_too_big_is_not_printable(monkeypatch):
 
     cfg = load_config(overrides={"bambu": {"template": str(FIXTURE)}, "material_settings": {"layer_height": 1.0},
                                  "rib_layers": [{"spacing": 500, "phase": 250}]})  # sans nervure
-    model = classify(wide_wing_bodies(span=100, sweep_deg=35), cfg)  # morceaux en flèche : tournés sur le plateau
+    model = classify(wide_wing_bodies(span=100, sweep_deg=35), cfg)
     _never_fits(monkeypatch)
+    # coupes verticales : les morceaux tiennent droits ; plateau réduit à la pose seulement (pas au plan de découpe)
+    # pour passer par la recherche de rotation, qui échoue toujours ici
+    place, volume = pipeline.place_pieces, pipeline._print_volume
+
+    def small_bed(cfg):
+        (W, D, H), *rest = volume(cfg)
+        return ((150.0, 150.0, H), *rest)
+
+    def placing(*args, **kw):
+        monkeypatch.setattr(pipeline, "_print_volume", small_bed)
+        try:
+            return place(*args, **kw)
+        finally:
+            monkeypatch.setattr(pipeline, "_print_volume", volume)
+
+    monkeypatch.setattr(pipeline, "place_pieces", placing)
     run = pipeline.run_model(model, cfg)
     assert not run.ok
     (b,) = run.bodies

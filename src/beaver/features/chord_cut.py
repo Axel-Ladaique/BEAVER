@@ -1,10 +1,12 @@
 """Coupe plane dans la corde (spec découpe §4) : planification sans booléen, puis découpe des tronçons.
 
 Un tronçon (en Z) dont une section ne tient pas sur le plateau, même tournée, est coupé en k morceaux par des plans
-qui contiennent l'axe Y (épaisseur) et passent, aux deux bouts du tronçon, par les points i/k de la corde (bord
-d'attaque → bord de fuite) : ils suivent la flèche et l'effilement. Un plan qui traverserait un longeron ou une gaine
-(trou + manchon + bande) ou une baie de servo (poche + renfort + bande) est décalé parallèlement, en corde, vers la
-position libre la plus proche."""
+qui contiennent l'axe Y (épaisseur). Plans parallèles d'abord, verticaux de préférence (face de coupe sans surplomb,
+morceaux non cisaillés), sinon inclinés comme le bord d'attaque, le bord de fuite ou le milieu de la corde : le moins
+de morceaux, puis la plus faible inclinaison, puis des morceaux équilibrés ; chaque plan traverse toute la hauteur du
+tronçon. Repli : plans en éventail aux points i/k de la corde aux deux bouts du tronçon. Un plan qui traverserait un
+longeron ou une gaine (trou + manchon + bande) ou une baie de servo (poche + renfort + bande) est décalé
+parallèlement, en corde, vers la position libre la plus proche."""
 
 from __future__ import annotations
 
@@ -192,6 +194,21 @@ def _chord_segment(
             return False
         return prev is None or (p.xa - prev.xa >= MIN_PIECE and p.xb - prev.xb >= MIN_PIECE)
 
+    def make(planes: list[ChordPlane], places: list[Placement]) -> SegmentPlan:
+        return SegmentPlan(a, b, tuple(places), tuple(planes), le_min, size)
+
+    # plans parallèles (verticaux d'abord) : le moins de morceaux, puis la plus faible inclinaison
+    best = None
+    for sigma in _slopes(sections, za, zb, max_overhang):
+        got = _parallel(sigma, sections, za, zb, footprint, obstacles, a, b)
+        if got is not None and (best is None or len(got[0]) < len(best[0])):
+            best = got
+            if len(got[0]) == 1:
+                break
+    if best is not None:
+        return make(*best)
+
+    # repli : plans en éventail, aux points i/k de la corde aux deux bouts du tronçon
     steep: float | None = None
     blocked: set[str] = set()
     for k in range(2, MAX_PIECES + 1):
@@ -235,7 +252,7 @@ def _chord_segment(
                 blocked |= {n for _, _, n in forb}
                 break
         if len(chosen) == len(nominal):
-            return SegmentPlan(a, b, tuple(places), tuple(chosen), le_min, size)
+            return make(chosen, places)
     if blocked:
         raise SegmentError(
             f"coupe dans la corde impossible (z = {a:.0f} à {b:.0f} mm) : aucune position libre pour le plan de "
@@ -248,6 +265,140 @@ def _chord_segment(
         f"coupe dans la corde impossible (z = {a:.0f} à {b:.0f} mm) : la section {size[0]:.0f} × {size[1]:.0f} mm "
         f"ne tient pas sur le plateau même en {MAX_PIECES} morceaux"
     )
+
+
+_BISECT = 12  # itérations de dichotomie (position d'un plan, largeur maximale des morceaux)
+
+
+def _slopes(sections, za: float, zb: float, max_overhang: float) -> list[float]:
+    """Pentes dx/dz candidates des plans parallèles, de la plus faible à la plus forte : verticale, puis celles du
+    bord d'attaque, du bord de fuite et du milieu de la corde (flèche), si l'inclinaison reste ≤ surplomb."""
+    (_, ha), (_, hb) = sections[0], sections[-1]
+    dz = zb - za
+    lo_a, _, hi_a, _ = ha.bounds
+    lo_b, _, hi_b, _ = hb.bounds
+    cands = [0.0, (lo_b - lo_a) / dz, (hi_b - hi_a) / dz, ((lo_b + hi_b) - (lo_a + hi_a)) / (2 * dz)]
+    limit = math.tan(math.radians(max_overhang)) + 1e-9
+    out: list[float] = []
+    for c in sorted(cands, key=abs):
+        if abs(c) <= limit and not any(abs(c - o) < 1e-6 for o in out):
+            out.append(c)
+    return out
+
+
+def _parallel(
+    sigma: float, sections, za: float, zb: float, footprint, obstacles: Sequence[Obstacle], a: float, b: float,
+) -> tuple[list[ChordPlane], list[Placement]] | None:
+    """Plans parallèles de pente `sigma` (x = u + sigma·(z − za)). Positions nominales, sans obstacle : le moins de
+    morceaux qui tiennent sur le plateau, puis la plus petite largeur maximale (morceaux équilibrés), placés du bord
+    x petit vers x grand. Chaque plan est ensuite décalé vers la position libre la plus proche hors des obstacles, si
+    les morceaux tiennent encore ; sinon les plans sont replacés au plus loin, obstacles compris. Chaque plan
+    traverse toutes les sections du tronçon à MIN_PIECE au moins de leurs bords. None : pas de solution à
+    MAX_PIECES morceaux au plus."""
+    dz = zb - za
+    u_lo = max(h.bounds[0] - sigma * (z - za) for z, h in sections) + MIN_PIECE
+    u_hi = min(h.bounds[2] - sigma * (z - za) for z, h in sections) - MIN_PIECE
+    if u_hi < u_lo:
+        return None
+    l_u = min(h.bounds[0] - sigma * (z - za) for z, h in sections)
+    r_u = max(h.bounds[2] - sigma * (z - za) for z, h in sections)
+    span_u = r_u - l_u
+
+    def plane(u: float, shift: float = 0.0, avoided: tuple[str, ...] = ()) -> ChordPlane:
+        return ChordPlane(za, zb, u, u + sigma * dz, shift, avoided)
+
+    memo: dict[tuple, Placement | None] = {}
+
+    def fit(lu: float | None, ru: float | None) -> Placement | None:
+        key = (lu, ru)
+        if key not in memo:
+            pl = footprint(None if lu is None else plane(lu), None if ru is None else plane(ru))
+            memo[key] = pl if pl is not None and pl.fits else None
+        return memo[key]
+
+    def bounds(prev: float | None, cap: float) -> tuple[float, float]:
+        if prev is None:
+            return u_lo, min(u_hi, l_u + cap)
+        return max(u_lo, prev + MIN_PIECE), min(u_hi, prev + cap)
+
+    def farthest(prev: float | None, lo: float, hi: float) -> float | None:
+        """Plus grande position dans [lo, hi] où le morceau à gauche tient (dichotomie)."""
+        if hi < lo or fit(prev, lo) is None:
+            return None
+        if fit(prev, hi) is not None:
+            return hi
+        good, bad = lo, hi
+        for _ in range(_BISECT):
+            mid = 0.5 * (good + bad)
+            good, bad = (mid, bad) if fit(prev, mid) is not None else (good, mid)
+        return good
+
+    def nominal(cap: float) -> list[float] | None:
+        """Plans au plus loin, morceaux d'au plus `cap` de large, sans obstacle."""
+        us: list[float] = []
+        prev: float | None = None
+        while not (us and r_u - prev <= cap + 1e-9 and fit(prev, None) is not None):
+            if len(us) + 1 >= MAX_PIECES:
+                return None
+            u = farthest(prev, *bounds(prev, cap))
+            if u is None:
+                return None
+            us.append(u)
+            prev = u
+        return us
+
+    def avoid(targets: list[float] | None) -> tuple[list[ChordPlane], list[Placement]] | None:
+        """Plans aux positions `targets` décalées hors des obstacles ; None : au plus loin, obstacles compris."""
+        planes: list[ChordPlane] = []
+        places: list[Placement] = []
+        prev: float | None = None
+        while True:
+            if planes and (targets is None or len(planes) == len(targets)):
+                last = fit(prev, None)
+                if last is not None:
+                    return planes, places + [last]
+                if targets is not None:
+                    return None
+            if len(planes) + 1 >= MAX_PIECES:
+                return None
+            lo, hi = bounds(prev, span_u)
+            target = targets[len(planes)] if targets is not None else farthest(prev, lo, hi)
+            if target is None:
+                return None
+            forb = _forbidden(plane(target), a, b, obstacles)
+            cands = {0.0}
+            for f_lo, f_hi, _ in forb:
+                cands |= {f_lo - _OFF, f_hi + _OFF}
+            free = sorted(
+                (s for s in cands if not any(f_lo < s < f_hi for f_lo, f_hi, _ in forb)), key=lambda s: (abs(s), s)
+            )
+            on_target = tuple(n for f_lo, f_hi, n in forb if f_lo < 0 < f_hi)
+            for s in free:
+                u = target + s
+                if not lo <= u <= hi:
+                    continue
+                left = fit(prev, u)
+                if left is None:
+                    continue
+                planes.append(plane(u, s, on_target if s else ()))
+                places.append(left)
+                prev = u
+                break
+            else:
+                return None
+
+    us = nominal(span_u)
+    if us is None:
+        return None
+    good, bad = span_u, 0.0
+    for _ in range(_BISECT):  # largeur maximale la plus petite au même nombre de morceaux
+        mid = 0.5 * (good + bad)
+        got = nominal(mid)
+        if got is not None and len(got) <= len(us):
+            us, good = got, mid
+        else:
+            bad = mid
+    return avoid(us) or avoid(None)
 
 
 def _steep_message(e: _TooSteep, max_overhang: float) -> str:

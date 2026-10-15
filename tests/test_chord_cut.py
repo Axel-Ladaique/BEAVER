@@ -84,20 +84,38 @@ def test_no_free_position_lists_obstacles():
         _plan(swept_wing(chord=400, span=120, code="4412"), 120, obstacles=obs)
 
 
-def test_swept_plane_follows_sweep():
+def test_swept_wing_cut_is_vertical():
+    # plans parallèles verticaux en priorité : morceaux moins larges qu'en suivant la flèche, face de coupe sans
+    # surplomb ; le plan traverse la section à l'emplanture comme au saumon
     sweep = 20.0
     plan = _plan(swept_wing(chord=400, span=120, sweep_deg=sweep, code="4412"), 120)
-    (p,) = plan.segments[0].planes
-    assert p.xb - p.xa == pytest.approx(120 * math.tan(math.radians(sweep)), abs=0.5)
-    assert p.inclination_deg == pytest.approx(sweep, abs=0.3)
+    (seg,) = plan.segments
+    (p,) = seg.planes
+    shift = 120 * math.tan(math.radians(sweep))
+    assert p.inclination_deg == pytest.approx(0, abs=1e-6) and p.shift == 0
+    assert shift + 10 <= p.xa <= 400 - 10
+    assert all(pl.fits for pl in seg.placements)
+
+
+def test_tapered_swept_wing_vertical_planes_few_pieces():
+    # aile effilée à bord de fuite droit et forte flèche du bord d'attaque (corde 850 → 553 mm sur 250 mm, H2S) :
+    # les plans aux points i/k de la corde s'ouvraient en éventail (jusqu'à 44°) et donnaient 5 morceaux cisaillés ;
+    # des plans verticaux en donnent 3
+    height = 250.0
+
+    def sections(zs):
+        return [_lens(-237.0 + 1.19 * z, 850.0 - 1.19 * z) for z in zs]
+
+    plan = plan_layout(height, 335, sections, H2S, MARGIN)
+    (seg,) = plan.segments
+    assert seg.k == 3 and all(p.inclination_deg == pytest.approx(0, abs=1e-6) for p in seg.planes)
+    assert all(pl.fits for pl in seg.placements)
 
 
 def test_too_inclined_raises():
-    with pytest.raises(SegmentError, match="inclinée de 60°.*surplomb max 45°.*imprimante plus grande"):
-        _plan(swept_wing(chord=400, span=120, sweep_deg=60, code="4412"), 120)
-    # un surplomb plus permissif l'accepte
-    plan = _plan(swept_wing(chord=400, span=120, sweep_deg=60, code="4412"), 120, max_overhang_deg=61)
-    assert plan.segments[0].planes[0].inclination_deg == pytest.approx(60, abs=0.3)
+    # flèche telle qu'aucun plan vertical ne traverse la section aux deux bouts : plan incliné de la flèche
+    with pytest.raises(SegmentError, match="inclinée de 75°.*surplomb max 45°.*imprimante plus grande"):
+        _plan(swept_wing(chord=400, span=120, sweep_deg=75, code="4412"), 120, cuts_at=[])
 
 
 def test_inclination_reduced_by_more_z_segments():
@@ -191,15 +209,14 @@ def test_segment_part_wide_chord_pieces_valid():
     assert sum(p.volume for p in seg.pieces) == pytest.approx(wing.volume, rel=1e-3)
 
 
-def test_segment_part_swept_cut_follows_sweep():
+def test_segment_part_swept_cut_is_vertical():
     wing = swept_wing(chord=400, span=120, sweep_deg=20, code="4412")
     seg = pipeline.segment_part("B", wing, _cfg(), lambda m: None)
     a, b = seg.pieces
-    shift = 120 * math.tan(math.radians(20))
-    # le morceau A (bord d'attaque, x petits) s'arrête au plan incliné : à mi-corde en bas, décalé de la flèche en haut
+    # le morceau A (bord d'attaque, x petits) s'arrête au plan vertical : même x en bas et en haut
     top = [v.X for v in a.vertices() if v.Z > 119.9]
     bottom = [v.X for v in a.vertices() if v.Z < 0.1]
-    assert max(bottom) == pytest.approx(200, abs=1) and max(top) == pytest.approx(200 + shift, abs=1)
+    assert max(top) == pytest.approx(max(bottom), abs=0.5)
 
 
 def test_segment_part_h2s_no_chord_cut():
@@ -209,10 +226,11 @@ def test_segment_part_h2s_no_chord_cut():
     assert len(seg.pieces) == 1 and seg.notices == () and not seg.chord
 
 
-def test_segment_part_too_inclined_error():
-    wing = swept_wing(chord=400, span=120, sweep_deg=60, code="4412")
-    with pytest.raises(pipeline.PipelineError, match="inclinée"):
-        pipeline.segment_part("B", wing, _cfg(), lambda m: None)
+def test_segment_part_steep_sweep_gets_more_z_segments():
+    # flèche de 75° : pas de plan vertical sur toute la hauteur → tronçons en Z ajoutés, plans ≤ surplomb
+    wing = swept_wing(chord=400, span=120, sweep_deg=75, code="4412")
+    seg = pipeline.segment_part("B", wing, _cfg(), lambda m: None)
+    assert len(set(seg.spans)) >= 2 and seg.chord and any("tronçons" in n or "T2" in n for n in seg.notices)
 
 
 def test_segment_part_chord_off_error():

@@ -24,19 +24,72 @@ class Orientation:
     warnings: tuple[str, ...] = ()  # ex. sections des corps d'aile non réunies à l'emplanture
 
 
+_CAP_TOL = 0.1  # mm : une face plane est un bout de la pièce si son plan est à moins de cette distance de l'extrême
+_CAP_PARALLEL = math.cos(math.radians(2.0))
+
+
+def _cap_axes(solid: Solid) -> list[np.ndarray]:
+    """Directions n telles que la pièce a une face plane à chaque extrême le long de n (normales opposées, sortantes) :
+    l'emplanture et le saumon d'une aile lissée entre deux sections. Une boîte en a trois."""
+    verts = np.array([[v.X, v.Y, v.Z] for v in solid.vertices()], dtype=float)
+    planes = []
+    for f in solid.faces():
+        if f.geom_type.name != "PLANE":
+            continue
+        c, n = f.center(), f.normal_at(f.center())
+        planes.append((np.array([n.X, n.Y, n.Z]), np.array([c.X, c.Y, c.Z])))
+    out: list[np.ndarray] = []
+    for n, c in planes:
+        proj = verts @ n
+        if float(c @ n) < proj.max() - _CAP_TOL:
+            continue  # pas au bout de la pièce le long de sa normale (sortante)
+        if not any(
+            float(m @ n) <= -_CAP_PARALLEL and float(d @ n) <= proj.min() + _CAP_TOL for m, d in planes
+        ):
+            continue
+        if not any(abs(float(a @ n)) >= _CAP_PARALLEL for a in out):
+            out.append(n)
+    return out
+
+
+def cap_axis(model: Model) -> np.ndarray | None:
+    """Envergure lue sur les faces planes d'emplanture et de saumon des peaux, si elle est sans ambiguïté (une seule
+    direction pour toutes les peaux) ; prime sur les longerons, qui peuvent être transversaux (SBAR en diagonale)."""
+    axes: list[np.ndarray] = []
+    for s in model.of("skin"):
+        found = _cap_axes(s.body.solid)
+        if len(found) != 1:
+            return None
+        if not any(abs(float(a @ found[0])) >= _CAP_PARALLEL for a in axes):
+            axes.append(found[0])
+    if len(axes) != 1:
+        return None
+    a = axes[0]
+    return a if a[int(np.argmax(np.abs(a)))] > 0 else -a  # sens indifférent (l'emplanture est choisie à part)
+
+
 def choose_axis(model: Model, cfg: Config) -> tuple[np.ndarray, str]:
     if isinstance(cfg.orientation, OrientationAxis) and cfg.orientation.axis is not None:
         v = np.asarray(cfg.orientation.axis, dtype=float)
         return v / np.linalg.norm(v), "axe forcé"
+    caps = cap_axis(model)
     spars = model.of("spar")
     if spars:
         # longerons non parallèles (SBAR transversales) : le plus long donne l'envergure
         first = np.asarray(spars[0].spar.axis_dir, dtype=float)
         limit = math.cos(math.radians(cfg.passages.max_tilt_deg))
         if all(abs(float(np.dot(first, s.spar.axis_dir))) >= limit for s in spars):
-            return first, f"longeron {spars[0].body.name}"
-        main = max(spars, key=lambda s: s.spar.length)
-        return np.asarray(main.spar.axis_dir, dtype=float), f"longeron {main.body.name} (le plus long)"
+            axis, source = first, f"longeron {spars[0].body.name}"
+        else:
+            main = max(spars, key=lambda s: s.spar.length)
+            axis, source = np.asarray(main.spar.axis_dir, dtype=float), f"longeron {main.body.name} (le plus long)"
+        # faces d'emplanture et de saumon sans ambiguïté : elles priment sur un longeron transversal (seule SBAR
+        # en diagonale) ; d'accord avec elles, le longeron reste la source affichée
+        if caps is None or abs(float(np.dot(axis, caps))) >= _CAP_PARALLEL:
+            return axis, source
+        return caps, "faces d'emplanture et de saumon"
+    if caps is not None:
+        return caps, "faces d'emplanture et de saumon"
     boxes = [s.body.solid.bounding_box() for s in model.of("skin")]
     lo = np.min([[b.min.X, b.min.Y, b.min.Z] for b in boxes], axis=0)
     hi = np.max([[b.max.X, b.max.Y, b.max.Z] for b in boxes], axis=0)

@@ -200,3 +200,15 @@ def test_forced_root_ignores_axis_sign(root):
         ends.append(_cable_z(model, o, "SBAR_CABLES_hi")[1])
     assert ends[0] == pytest.approx(ends[1], abs=0.6)
     assert ends[0] == pytest.approx(80.0 if root == "debut" else 20.0, abs=0.6)
+
+
+def test_span_from_root_and_tip_faces_beats_a_diagonal_spar():
+    """Aile lissée entre deux sections planes + une seule SBAR en diagonale (transversale) : l'envergure est la
+    normale des faces d'emplanture et de saumon, pas l'axe du longeron."""
+    from build123d import Cylinder
+
+    wing, _ = naca_wing(chord=300.0, span=120.0)  # envergure Z
+    spar = Cylinder(4, 200).moved(Location((100, 0, 60), (0, 50, 0)))
+    model = classify([NamedBody(("Aile",), wing), NamedBody(("SBAR_diag",), spar)], load_config())
+    axis, src = choose_axis(model, load_config())
+    assert np.allclose(np.abs(axis), [0, 0, 1]) and src == "faces d'emplanture et de saumon"

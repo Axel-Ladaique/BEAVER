@@ -533,7 +533,7 @@ function construire() {
       ui.notices,
       ui.avertissements,
       el("div", { classe: "apercu-vues" }, [
-        el("div", {}, [
+        el("div", { classe: "vue" }, [
           el("h3", { texte: "Coupe à hauteur réglable (approximation)" }),
           el("div", { classe: "curseur-z" }, [el("label", { for: "curseur-z", texte: "Hauteur" }), ui.curseur, ui.valeurZ]),
           ui.coupe,
@@ -546,7 +546,7 @@ function construire() {
             el("span", {}, [el("span", { classe: "pastille", style: "border: 2px solid var(--erreur)" }), "défaut (survoler)"]),
           ]),
         ]),
-        el("div", {}, [
+        el("div", { classe: "vue" }, [
           el("h3", { texte: "Vue de dessus (envergure →, corde ↑)" }),
           ui.dessus,
           el("div", { classe: "legende" }, [
@@ -562,15 +562,15 @@ function construire() {
           ]),
         ]),
       ]),
-      el("h3", { texte: "Découpe (volume d'impression)" }),
-      ui.decoupe,
-      el("h3", { texte: "Chiffres estimés" }),
-      ui.chiffres,
-      el("h3", { texte: "3D approximative" }),
-      el("div", { classe: "actions" }, [ui.bouton3d, ui.note3d]),
-      ui.etat3d,
-      ui.erreur3d,
-      ui.boite3d,
+      el("section", { classe: "bloc" }, [el("h3", { texte: "Découpe (volume d'impression)" }), ui.decoupe]),
+      el("section", { classe: "bloc" }, [el("h3", { texte: "Chiffres estimés" }), ui.chiffres]),
+      el("section", { classe: "bloc" }, [
+        el("h3", { texte: "3D approximative" }),
+        el("div", { classe: "actions" }, [ui.bouton3d, ui.note3d]),
+        ui.etat3d,
+        ui.erreur3d,
+        ui.boite3d,
+      ]),
     ]),
   ]);
 }

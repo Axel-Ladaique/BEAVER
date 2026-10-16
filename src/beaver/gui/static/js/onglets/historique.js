@@ -85,16 +85,16 @@ async function charger() {
       ])]),
     ]));
   }
-  ui.tableau.append(el("table", {}, [
+  ui.tableau.append(el("div", { classe: "defile" }, [el("table", {}, [
     el("thead", {}, [el("tr", {}, [
       el("th", { texte: "Comparer" }), el("th", { texte: "Date" }), el("th", { texte: "Statut" }),
       el("th", { classe: "nombre", texte: "Nervures" }), el("th", { classe: "nombre", texte: "Tronçons" }),
       el("th", { classe: "nombre", texte: "Morceaux" }),
       el("th", { classe: "nombre", texte: "Masse" }), el("th", { classe: "nombre", texte: "Trajet" }),
-      el("th", { classe: "nombre", texte: "Durée" }), el("th", { texte: "Alertes" }), el("th", { texte: "Actions" }),
+      el("th", { classe: "nombre", texte: "Durée" }), el("th", { texte: "Alertes" }), el("th", { classe: "nombre", texte: "Actions" }),
     ])]),
     corps,
-  ]));
+  ])]));
 }
 
 async function detail() {
@@ -138,14 +138,14 @@ async function comparer() {
   const carte = el("div", { classe: "carte" }, [el("h3", { texte: `Différences de réglages : ${a} → ${b}` })]);
   if (!lignes.length) carte.append(el("p", { classe: "vide", texte: "Réglages identiques." }));
   else {
-    carte.append(el("table", {}, [
+    carte.append(el("div", { classe: "defile" }, [el("table", {}, [
       el("thead", {}, [el("tr", {}, [el("th", { texte: "Réglage" }), el("th", { texte: a }), el("th", { texte: b })])]),
       el("tbody", {}, lignes.map((l) => el("tr", {}, [
         el("td", {}, [el("code", { texte: l.chemin.join(".") })]),
         el("td", { texte: valeurTexte(l.a) }),
         el("td", { texte: valeurTexte(l.b) }),
       ]))),
-    ]));
+    ])]));
   }
   ui.diff.append(carte);
 }
@@ -166,8 +166,8 @@ export function init(panneau, contexte) {
         el("button", { type: "button", classe: "petit", texte: "Actualiser", onclick: () => charger() }),
       ]),
       ui.erreur,
-      el("div", { classe: "actions" }, [ui.comparer, ui.choix]),
       ui.tableau,
+      el("div", { classe: "actions" }, [ui.comparer, ui.choix]),
     ]),
     ui.diff,
     ui.detail,

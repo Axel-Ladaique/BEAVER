@@ -37,3 +37,36 @@ def test_midsurface_ignores_inner_bore():
     a = MidSurface.from_skin(wing, nx=61, nz=5).at(np.array([60.0]), np.array([50.0]))
     b = MidSurface.from_skin(bored, nx=61, nz=5).at(np.array([60.0]), np.array([50.0]))
     assert b[0][0] == pytest.approx(a[0][0], abs=1e-6) and b[1][0] == pytest.approx(a[1][0], abs=1e-6)
+
+
+def test_swept_leading_edge_has_no_thickness_in_front_of_the_nose():
+    # bord d'attaque en flèche de 50° : entre deux rangées de la grille, le nez avance de plusieurs mm ; lu à x fixe,
+    # un point devant le nez avait encore de l'épaisseur (les nervures y entaillaient la peau)
+    from beaver.testing.synthetic import swept_wing
+
+    m = MidSurface.from_skin(swept_wing(chord=200, span=120, sweep_deg=50, code="4412"), 101, 22)
+    z = np.full(3, 60.0)
+    le = 60 * np.tan(np.radians(50))
+    _, th = m.at(le + np.array([-1.0, -0.2, 50.0]), z)
+    assert th[0] == 0 and th[1] == 0 and th[2] == pytest.approx(23.8, abs=0.3)
+    # sans flèche ni effilement : identique à la lecture à x fixe
+    s = MidSurface.from_skin(swept_wing(chord=200, span=120, code="4412"), 101, 22)
+    fixed = MidSurface(s.xs, s.zs, s.ymid, s.thick)
+    xs, zs = np.linspace(-5, 205, 50), np.linspace(1, 119, 50)
+    assert np.allclose(s.at(xs, zs)[1], fixed.at(xs, zs)[1], atol=0.05)
+
+
+@pytest.mark.slow
+def test_swept_wing_ribs_leave_the_nose_intact():
+    from collections import Counter
+
+    from beaver import pipeline
+    from beaver.classify import classify
+    from beaver.config import load_config
+    from beaver.io_step import NamedBody
+    from beaver.testing.synthetic import swept_wing
+
+    cfg = load_config(overrides={"printer": "h2s"})
+    run = pipeline.run_model(classify([NamedBody(("Aile",), swept_wing(chord=200, span=120, sweep_deg=50, code="4412"))], cfg), cfg)
+    errors = Counter(i.check for i in run.bodies[0].report.errors)
+    assert run.ok, errors

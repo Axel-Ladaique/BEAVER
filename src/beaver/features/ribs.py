@@ -258,10 +258,14 @@ def wall_limits(*, slit: float, angle_deg: float, line_width: float, max_mouth: 
 
 
 def _row_edges(mid: MidSurface) -> tuple[np.ndarray, np.ndarray]:
-    """Abscisses du bord d'attaque et du bord de fuite de chaque rangée z de la grille (dernier nœud sans
-    matière avant / après la section ; bornes de la grille pour une rangée vide)."""
+    """Abscisses du bord d'attaque et du bord de fuite de chaque rangée z de la grille : bords exacts de la section
+    s'ils sont connus, sinon dernier nœud sans matière avant / après la section ; bornes de la grille pour une
+    rangée vide."""
     le, te = np.full(len(mid.zs), mid.xs[0]), np.full(len(mid.zs), mid.xs[-1])
     for j in range(len(mid.zs)):
+        if mid.le is not None and mid.te is not None and not (np.isnan(mid.le[j]) or np.isnan(mid.te[j])):
+            le[j], te[j] = mid.le[j], mid.te[j]  # bords exacts de la section (la grille peut être grossière)
+            continue
         full = np.flatnonzero(mid.thick[:, j] > 0)
         if len(full):
             le[j], te[j] = mid.xs[max(full[0] - 1, 0)], mid.xs[min(full[-1] + 1, len(mid.xs) - 1)]

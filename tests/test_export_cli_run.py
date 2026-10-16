@@ -57,7 +57,8 @@ def test_run_reports_hollow_setting_and_estimated_gain(tmp_path: Path):
     line = next(ln for ln in r.output.splitlines() if ln.startswith("  évidements : "))
     assert line.startswith("  évidements : ponts aux croisements, ponts 4 mm, 30 % de la demi-épaisseur — gain estimé ≈ ")
     assert "g sans évidement)" in line
-    assert line.strip() in (out / "aile-rapport.html").read_text(encoding="utf-8")
+    value = line.strip().removeprefix("évidements : ")
+    assert f"<dt>évidements</dt><dd>{value}</dd>" in (out / "aile-rapport.html").read_text(encoding="utf-8")
 
 
 def test_run_lists_filled_bores_by_default(tmp_path: Path):

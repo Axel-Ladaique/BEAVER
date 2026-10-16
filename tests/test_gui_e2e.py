@@ -216,7 +216,7 @@ def test_aile_fusion_v2_evidements_apercu_et_generation(tmp_path, monkeypatch):
         (corps,) = resume["corps"]
         assert corps["evidements"].startswith("ponts aux croisements, ponts 4 mm, 30 % de la demi-épaisseur — gain estimé ≈ ")
         rapport = (tmp_path / "projets" / "aile" / "essais" / st["essai"] / resume["rapport"]).read_text(encoding="utf-8")
-        assert "évidements : ponts aux croisements, ponts 4 mm, 30 % de la demi-épaisseur" in rapport
+        assert "<dt>évidements</dt><dd>ponts aux croisements, ponts 4 mm, 30 % de la demi-épaisseur" in rapport
     finally:
         app.state.travaux.shutdown()
         preview.clear_cache()

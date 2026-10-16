@@ -57,8 +57,20 @@ def test_html_lists_details_escaped(tmp_path: Path):
     out = write_html(Report((), STATS, {}), tmp_path / "r.html", title="aile",
                      details=["  trous : SBAR_CABLE_1 (gaine, Ø6.0)", "  baies : SERVO<1> (baie extrados, …)"])
     html = out.read_text(encoding="utf-8")
-    assert "<li>trous : SBAR_CABLE_1 (gaine, Ø6.0)</li>" in html
+    assert "<dt>trous</dt><dd>SBAR_CABLE_1 (gaine, Ø6.0)</dd>" in html
     assert "SERVO&lt;1&gt; (baie extrados" in html
+
+
+def test_html_summary_tiles_and_empty_layer(tmp_path: Path):
+    """En-tête structuré (statut, tuiles, encadré d'erreurs) ; une couche vide n'est pas dessinée (pas de SVG vide)."""
+    issues = (Issue("connectivity", "error", 209.5, "T1-A : couche vide"),)
+    out = write_html(Report(issues, STATS, {209.5: ()}), tmp_path / "r.html", title="aile")
+    html = out.read_text(encoding="utf-8")
+    assert "<span class='statut non-imprimable'>Non imprimable</span>" in html
+    assert "<strong>≈ 11.0 g</strong><span>Masse</span>" in html
+    assert "<strong>Non imprimable en vase mode</strong>" in html and "contour non unique : 1 couche, z = 209.5 mm" in html
+    assert "<svg" not in html and "Aucune matière à cette hauteur." in html
+    assert "<pre>" not in html
 
 
 def _body_with_pieces():
@@ -89,11 +101,14 @@ def test_html_pieces_table_and_notices(tmp_path: Path):
     out = write_html(Report((), STATS, {}), tmp_path / "r.html", title="aile", pieces=piece_rows(_body_with_pieces()),
                      notices=["découpe automatique : coupe dans la corde en 2 morceaux"])
     html = out.read_text(encoding="utf-8")
-    assert "<caption>Morceaux imprimés</caption>" in html and "<th>Rotation</th>" in html and "<th>Plateau</th>" in html
-    assert "<th>Marge (mm)</th>" in html
-    assert "<td>A</td><td>0 – 120</td><td>193.1 × 51.4</td><td>10</td><td>—</td><td>1</td><td>✔</td>" in html
-    assert "<td>B&lt;1&gt;</td><td>0 – 120</td><td>240 × 60</td><td>2</td><td>-37.5°</td><td>2</td><td>✘</td>" in html
-    assert "<li>ℹ découpe automatique : coupe dans la corde en 2 morceaux</li>" in html
+    assert "<h2>Morceaux imprimés</h2>" in html
+    assert "<th class='nombre'>Rotation</th>" in html and "<th class='nombre'>Plateau</th>" in html
+    assert "<th class='nombre'>Marge (mm)</th>" in html
+    flat = html.replace(" class='nombre'", "").replace(" class='centre'", "")  # cellules sans leurs classes d'alignement
+    assert "<td>A</td><td>0 – 120</td><td>193.1 × 51.4</td><td>10</td><td>—</td><td>1</td><td><span class=ok-oui>✔</span></td>" in flat
+    assert ("<td>B&lt;1&gt;</td><td>0 – 120</td><td>240 × 60</td><td>2</td><td>-37.5°</td><td>2</td>"
+            "<td><span class=ok-non>✘</span></td>") in flat
+    assert "<li>découpe automatique : coupe dans la corde en 2 morceaux</li>" in html
 
 
 def test_hollow_summary_modes_and_layer_overrides():

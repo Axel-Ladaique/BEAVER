@@ -146,20 +146,26 @@ def _pieces_table(rows: Sequence[dict]) -> str:
     def num(v, unit=""):
         return "—" if v is None else f"{v:g}{unit}"
 
-    head = "".join(f"<th>{h}</th>" for h in ("Morceau", "z (mm)", "Emprise (mm)", "Marge (mm)", "Rotation", "Plateau", "Vase mode"))
+    cols = (("Morceau", ""), ("z (mm)", "nombre"), ("Emprise (mm)", "nombre"), ("Marge (mm)", "nombre"),
+            ("Rotation", "nombre"), ("Plateau", "nombre"), ("Vase mode", "centre"))
+    head = "".join(f"<th class='{c}'>{h}</th>" if c else f"<th>{h}</th>" for h, c in cols)
     body = "".join(
-        "<tr>"
+        f"<tr{'' if r['tient'] in (None, True) else ' class=ne-tient-pas'}>"
         f"<td>{html.escape(r['nom'])}</td>"
-        f"<td>{num(r['z0'])} – {num(r['z1'])}</td>"
-        f"<td>{num(r['largeur'])} × {num(r['profondeur'])}{'' if r['tient'] in (None, True) else ' (ne tient pas)'}</td>"
-        f"<td>{num(r.get('marge'))}</td>"
-        f"<td>{'—' if not r['rotation'] else num(r['rotation'], '°')}</td>"
-        f"<td>{r['plateau']}</td>"
-        f"<td>{'✔' if r['ok'] else '✘'}</td>"
+        f"<td class='nombre'>{num(r['z0'])} – {num(r['z1'])}</td>"
+        f"<td class='nombre'>{num(r['largeur'])} × {num(r['profondeur'])}"
+        f"{'' if r['tient'] in (None, True) else ' (ne tient pas)'}</td>"
+        f"<td class='nombre'>{num(r.get('marge'))}</td>"
+        f"<td class='nombre'>{'—' if not r['rotation'] else num(r['rotation'], '°')}</td>"
+        f"<td class='nombre'>{r['plateau']}</td>"
+        f"<td class='centre'>{'<span class=ok-oui>✔</span>' if r['ok'] else '<span class=ok-non>✘</span>'}</td>"
         "</tr>"
         for r in rows
     )
-    return f"<table class='morceaux'><caption>Morceaux imprimés</caption><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+    return (
+        "<section class='carte'><h2>Morceaux imprimés</h2><div class='defile'><table class='morceaux'>"
+        f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div></section>"
+    )
 
 
 def _ring_path(coords) -> str:
@@ -168,8 +174,9 @@ def _ring_path(coords) -> str:
 
 
 def _svg(polys: tuple[Polygon, ...], issues: list[Issue]) -> str:
+    """Coupe de la couche, défauts encadrés ; chaîne vide pour une couche sans matière (rien à dessiner)."""
     if not polys:
-        return "<svg viewBox='0 0 1 1'></svg>"
+        return ""
     x0 = min(p.bounds[0] for p in polys)
     y0 = min(p.bounds[1] for p in polys)
     x1 = max(p.bounds[2] for p in polys)
@@ -189,23 +196,154 @@ def _svg(polys: tuple[Polygon, ...], issues: list[Issue]) -> str:
     )
 
 
+# Même direction visuelle que la GUI (gui/static/style.css) : jetons clair/sombre, encadrés à liseré gauche,
+# tuiles de chiffres, tableaux aux en-têtes en petites capitales. Le rapport reste autonome (aucune ressource externe).
 _CSS = """
-:root { --bg:#fafaf9; --fg:#1c1917; --muted:#78716c; --part:#d6d3d1; --stroke:#57534e; --bad:#dc2626; }
-@media (prefers-color-scheme: dark) {
-  :root { --bg:#1c1917; --fg:#f5f5f4; --muted:#a8a29e; --part:#44403c; --stroke:#d6d3d1; --bad:#f87171; }
+:root {
+  --fond:#f3f4f6; --surface:#ffffff; --surface-2:#f2f4f7; --texte:#15191e; --texte-doux:#5b6471;
+  --bord:#e2e5ea; --bord-fort:#cdd2da; --ombre:0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.04);
+  --accent:#2563eb; --marque:#b45309; --ok:#15803d; --attention:#a16207; --erreur:#c81e1e;
+  --matiere:#c9d1db; --matiere-bord:#57606a;
+  --rayon:8px; --rayon-carte:12px;
+  --police:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color-scheme:light dark;
 }
-body { background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; margin:0; padding:24px 16px; }
-main { max-width:960px; margin:0 auto; }
-pre { white-space:pre-wrap; color:var(--muted); }
-figure { margin:24px 0; }
-svg { width:100%; height:auto; max-height:420px; }
-.part { fill:var(--part); stroke:var(--stroke); stroke-width:0.1; vector-effect:non-scaling-stroke; }
-.bad { fill:none; stroke:var(--bad); stroke-width:2; vector-effect:non-scaling-stroke; }
-table { border-collapse:collapse; margin:16px 0; }
-caption { text-align:left; font-weight:600; padding-bottom:4px; }
-th, td { border-bottom:1px solid var(--part); padding:4px 12px 4px 0; text-align:left; }
-.notices { border-left:3px solid var(--stroke); padding-left:12px; }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fond:#0d1014; --surface:#151a20; --surface-2:#1b2129; --texte:#e8ebf0; --texte-doux:#9aa4b1;
+    --bord:#252d37; --bord-fort:#343e4b; --ombre:none;
+    --accent:#5b8cff; --marque:#f59e0b; --ok:#4ac26b; --attention:#e3b341; --erreur:#ff7b72;
+    --matiere:#3a4552; --matiere-bord:#a7b1bd;
+  }
+}
+* { box-sizing:border-box; }
+html, body { margin:0; }
+body { background:var(--fond); color:var(--texte); font:14.5px/1.5 var(--police); -webkit-font-smoothing:antialiased; }
+main { max-width:1000px; margin:0 auto; padding:1.5rem 1.25rem 4rem; }
+@media (max-width:600px) { main { padding:1rem 1rem 3rem; } }
+h1, h2 { line-height:1.25; margin:0; letter-spacing:-.005em; }
+h1 { font-size:1.35rem; font-weight:700; }
+h2 { font-size:1.02rem; font-weight:650; margin-bottom:.75rem; }
+.entete { display:flex; align-items:center; flex-wrap:wrap; gap:.4rem .9rem; margin-bottom:1.1rem; }
+.marque { display:flex; align-items:center; gap:.5rem; font-size:.72rem; font-weight:750; letter-spacing:.08em;
+  color:var(--texte-doux); flex-basis:100%; }
+.marque::before { content:""; width:.6rem; height:.6rem; border-radius:3px; background:var(--marque);
+  box-shadow:.26rem .26rem 0 -.05rem color-mix(in srgb, var(--marque) 45%, transparent); }
+.statut { --ton:var(--texte-doux); display:inline-flex; align-items:center; gap:.4rem; padding:.12rem .65rem;
+  border-radius:999px; font-size:.8rem; font-weight:600; white-space:nowrap; color:var(--ton);
+  background:color-mix(in srgb, var(--ton) 12%, transparent); }
+.statut::before { content:""; width:.45rem; height:.45rem; border-radius:50%; background:currentColor; }
+.statut.ok { --ton:var(--ok); }
+.statut.non-imprimable { --ton:var(--erreur); }
+.carte { background:var(--surface); border:1px solid var(--bord); border-radius:var(--rayon-carte);
+  box-shadow:var(--ombre); padding:1.15rem 1.3rem; margin-bottom:1.1rem; }
+.carte > :last-child { margin-bottom:0; }
+.chiffres { display:flex; flex-wrap:wrap; gap:.6rem; margin:0 0 1.1rem; padding:0; list-style:none; }
+.chiffre { flex:1 1 9rem; display:flex; flex-direction:column-reverse; justify-content:flex-end; gap:.15rem;
+  background:var(--surface); border:1px solid var(--bord); border-radius:var(--rayon); box-shadow:var(--ombre);
+  padding:.65rem .85rem .7rem; }
+.chiffre strong { font-size:1.3rem; font-weight:650; font-variant-numeric:tabular-nums; letter-spacing:-.01em;
+  line-height:1.2; }
+.chiffre span { font-size:.76rem; font-weight:500; color:var(--texte-doux); }
+.message { --ton:var(--texte-doux); padding:.65rem .9rem .7rem; border-radius:var(--rayon); margin:0 0 1.1rem;
+  background:color-mix(in srgb, var(--ton) 7%, var(--surface));
+  border:1px solid color-mix(in srgb, var(--ton) 22%, var(--surface)); border-left:3px solid var(--ton);
+  font-size:.9rem; }
+.message > strong { display:block; color:var(--ton); font-size:.85rem; font-weight:650; margin-bottom:.15rem; }
+.message.erreur { --ton:var(--erreur); }
+.message.attention { --ton:var(--attention); }
+.message.notice { --ton:var(--accent); }
+.message ul { margin:.2rem 0 0; padding-left:1.1rem; }
+.message li { margin:.12rem 0; }
+.message li::marker { color:var(--ton); }
+.message .ex { color:var(--texte-doux); }
+.details { display:grid; grid-template-columns:max-content 1fr; gap:.55rem 1.25rem; margin:0; font-size:.9rem; }
+.details dt { font-size:.7rem; font-weight:650; text-transform:uppercase; letter-spacing:.05em; color:var(--texte-doux);
+  padding-top:.18rem; }
+.details dd { margin:0; }
+.details ul { margin:0; padding:0; list-style:none; }
+.details li + li { margin-top:.12rem; }
+@media (max-width:600px) { .details { grid-template-columns:1fr; gap:.15rem; } .details dd { margin-bottom:.5rem; } }
+.defile { overflow-x:auto; }
+table { border-collapse:collapse; width:100%; font-size:.87rem; }
+th, td { text-align:left; padding:.5rem .65rem; border-bottom:1px solid var(--bord); vertical-align:middle; }
+th { font-size:.7rem; font-weight:650; text-transform:uppercase; letter-spacing:.05em; color:var(--texte-doux);
+  border-bottom-color:var(--bord-fort); white-space:nowrap; padding-top:.35rem; padding-bottom:.45rem; }
+th:first-child, td:first-child { padding-left:.2rem; }
+th:last-child, td:last-child { padding-right:.2rem; }
+tbody tr:last-child td { border-bottom:0; }
+td.nombre, th.nombre { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+td.centre, th.centre { text-align:center; }
+tr.ne-tient-pas td { color:var(--erreur); }
+.ok-oui { color:var(--ok); font-weight:700; }
+.ok-non { color:var(--erreur); font-weight:700; }
+.couches { display:grid; gap:1.1rem; }
+.couches > .carte { margin:0; }
+figure { margin:0; }
+figcaption { font-weight:650; font-variant-numeric:tabular-nums; margin-bottom:.5rem; }
+figure svg { display:block; width:100%; height:auto; max-height:420px; background:var(--surface-2);
+  border:1px solid var(--bord); border-radius:var(--rayon); margin-bottom:.6rem; }
+figure ul { margin:0; padding-left:1.1rem; font-size:.9rem; }
+figure li::marker { color:var(--erreur); }
+.vide { color:var(--texte-doux); font-style:italic; font-size:.9rem; margin:0 0 .4rem; }
+.part { fill:var(--matiere); stroke:var(--matiere-bord); stroke-width:1; vector-effect:non-scaling-stroke; }
+.bad { fill:color-mix(in srgb, var(--erreur) 12%, transparent); stroke:var(--erreur); stroke-width:2;
+  vector-effect:non-scaling-stroke; }
 """
+
+
+def _plural(n: int) -> str:
+    return f"{n} couche{'s' if n > 1 else ''}"
+
+
+def _z_range(zs: Sequence[float]) -> str:
+    lo, hi = f"{zs[0]:.1f}", f"{zs[-1]:.1f}"
+    return f"z = {lo} mm" if lo == hi else f"z = {lo} – {hi} mm"
+
+
+def _summary(report: Report) -> str:
+    """En-tête de page : tuiles de chiffres puis encadrés erreurs / avertissements (même contenu que `format_text`)."""
+    s = report.stats
+    tiles = (
+        ("couches", f"{int(s['layers'])}"), ("hauteur", f"{s['height_mm']:.1f} mm"),
+        ("trajet", f"{s['path_length_m']:.1f} m"), ("masse", f"≈ {s['mass_g']:.1f} g"),
+    )
+    out = "<ul class='chiffres'>" + "".join(
+        f"<li class='chiffre'><strong>{v}</strong><span>{k.capitalize()}</span></li>" for k, v in tiles
+    ) + "</ul>"
+    by_check: dict[str, list[Issue]] = defaultdict(list)
+    for issue in report.errors:
+        by_check[issue.check].append(issue)
+    if by_check:
+        items = "".join(
+            f"<li>{html.escape(LABELS.get(c, c))} : {_plural(len(zs := sorted({i.z for i in iss})))}, {_z_range(zs)}"
+            f"<span class='ex'> — ex. : {html.escape(iss[0].message)}</span></li>"
+            for c, iss in by_check.items()
+        )
+        out += f"<div class='message erreur'><strong>Non imprimable en vase mode</strong><ul>{items}</ul></div>"
+    warn: dict[str, list[Issue]] = defaultdict(list)
+    for issue in report.warnings:
+        warn[issue.check].append(issue)
+    if warn:
+        items = "".join(
+            f"<li>{html.escape(LABELS.get(c, c))} : {_plural(len(zs := sorted({i.z for i in iss})))}, {_z_range(zs)}</li>"
+            for c, iss in warn.items()
+        )
+        out += f"<div class='message attention'><strong>Avertissements</strong><ul>{items}</ul></div>"
+    return out
+
+
+def _details(details: Sequence[str]) -> str:
+    """Lignes « clé : valeur ; valeur… » (trous, baies, morceaux, plateau) en liste de définitions."""
+    rows = []
+    for line in details:
+        key, sep, value = line.strip().partition(" : ")
+        if not sep:
+            key, value = "", key
+        vals = [v for v in value.split(" ; ") if v]
+        dd = f"<ul>{''.join(f'<li>{html.escape(v)}</li>' for v in vals)}</ul>" if len(vals) > 1 else html.escape(value)
+        rows.append(f"<dt>{html.escape(key)}</dt><dd>{dd}</dd>")
+    return f"<section class='carte'><h2>Détails</h2><dl class='details'>{''.join(rows)}</dl></section>" if rows else ""
 
 
 def write_html(
@@ -222,23 +360,34 @@ def write_html(
         items = "".join(
             f"<li>{html.escape(LABELS.get(i.check, i.check))} : {html.escape(i.message)}</li>" for i in issues
         )
+        drawing = _svg(polys, issues) or "<p class='vide'>Aucune matière à cette hauteur.</p>"
         figures.append(
-            f"<figure><figcaption>z = {z:.2f} mm</figcaption>{_svg(polys, issues)}<ul>{items}</ul></figure>"
+            f"<figure class='carte'><figcaption>z = {z:.2f} mm</figcaption>{drawing}<ul>{items}</ul></figure>"
         )
-    items = "".join(f"<li>{html.escape(d.strip())}</li>" for d in details)
-    extra = f"<ul class='details'>{items}</ul>" if items else ""
-    if notices:
-        extra += "<ul class='notices'>" + "".join(f"<li>ℹ {html.escape(n)}</li>" for n in notices) + "</ul>"
-    if pieces:
-        extra += _pieces_table(pieces)
-    body = (
-        f"<main><h1>{html.escape(title)}</h1><pre>{html.escape(format_text(report))}</pre>{extra}"
-        f"{''.join(figures)}</main>"
+    status = (
+        "<span class='statut ok'>Imprimable en vase mode</span>" if report.ok
+        else "<span class='statut non-imprimable'>Non imprimable</span>"
     )
+    parts = [
+        f"<header class='entete'><span class='marque'>BEAVER · rapport d'essai</span>"
+        f"<h1>{html.escape(title)}</h1>{status}</header>",
+        _summary(report),
+    ]
+    if notices:
+        parts.append(
+            "<div class='message notice'><strong>Découpe</strong><ul>"
+            + "".join(f"<li>{html.escape(n)}</li>" for n in notices) + "</ul></div>"
+        )
+    if pieces:
+        parts.append(_pieces_table(pieces))
+    parts.append(_details(details))
+    if figures:
+        parts.append(f"<h2>Couches en défaut</h2><div class='couches'>{''.join(figures)}</div>")
     path.write_text(
         "<!doctype html><html lang='fr'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-        f"<title>{html.escape(title)}</title><style>{_CSS}</style></head><body>{body}</body></html>",
+        f"<title>{html.escape(title)}</title><style>{_CSS}</style></head>"
+        f"<body><main>{''.join(parts)}</main></body></html>",
         encoding="utf-8",
     )
     return path

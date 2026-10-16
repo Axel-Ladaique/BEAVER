@@ -134,4 +134,4 @@ def test_run_shows_chord_cut_notices_and_pieces(tmp_path: Path, monkeypatch):
     assert (out / "aile-a.stl").exists() and (out / "aile-b.stl").exists()
     assert [x.path[-1] for x in read_step(out / "aile.step")] == ["Aile_test_a", "Aile_test_b"]
     html = (out / "aile-rapport.html").read_text(encoding="utf-8")
-    assert "découpe automatique : coupe dans la corde" in html and "morceaux : A ✔, B ✔" in html
+    assert "découpe automatique : coupe dans la corde" in html and "<dt>morceaux</dt><dd>A ✔, B ✔</dd>" in html

@@ -596,7 +596,7 @@ def test_html_report_lists_bays_and_conduits(run_of, tmp_path):
     (path,) = [p for p in export_results(run, tmp_path, "aile", []) if p.suffix == ".html"]
     html = path.read_text(encoding="utf-8")
     assert "SBAR_CABLE_SERVO (gaine, Ø" in html
-    assert "baies : SERVO_1 (baie extrados" in html and "renfort)" in html
+    assert "<dt>baies</dt><dd>SERVO_1 (baie extrados" in html and "renfort)" in html
 
 
 def test_format_bays_names_the_segments():

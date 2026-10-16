@@ -52,6 +52,8 @@ MOUTH_MIN_ANGLE = 5.0  # ° : sortie la plus rasante admise (longueur max d'une 
 _MIN_PIERCE = 0.01  # mm² : percée de la peau négligeable (bruit numérique)
 _PLATEAU_STEPS = 3  # pas de _REACH_STEP : D (axe–peau) qui ne croît plus sur cette longueur ⇒ fin de la bouche
 BRIDGE_LINES = 2.0  # largeurs de ligne : paroi trou ↔ face de coupe en dessous de laquelle le trou s'ouvre sur la face
+SPINE_HALF = 2.0  # mm : demi-hauteur du couloir sans nervure devant les pointes d'un trou incliné (bande médiane)
+SPINE_REACH = 4.0  # mm : longueur de ce couloir au-delà du manchon
 FACETS = 64  # facettes de la goutte d'eau (polygone circonscrit au cercle)
 _FAR = 1e4
 # couches de l'analyse : pas = hauteur du trou / _MAX_SAMPLES, borné à [_MIN_STEP, _MAX_STEP] mm (au-delà de 100 mm de
@@ -734,6 +736,14 @@ def _tube(
     hole = _prism(a2, b2, profile, e_t, e_s, caps(0.0))
     opening = _prism(ref_ends[0], ref_ends[1], profile, e_t, e_s, caps(0.0))
     zone = _prism(a2 - d * pad, b2 + d * pad, teardrop(radius + pad, tilt, overhang), e_t, e_s, caps(pad))
+    # couloir de la bande médiane devant les pointes du trou : une SBAR sur la cambrure coupe la bande médiane, par
+    # laquelle les cellules du losange se relient ; devant le trou, les nervures s'arrêtent à ±SPINE_HALF de l'axe
+    # (et non à ±gap/2) sur SPINE_REACH, sinon la matière devant le trou ne tient que par un col de 0,6 mm
+    corridor = np.array([
+        (-(radius + pad + SPINE_REACH), -SPINE_HALF), (radius + pad + SPINE_REACH, -SPINE_HALF),
+        (radius + pad + SPINE_REACH, SPINE_HALF), (-(radius + pad + SPINE_REACH), SPINE_HALF),
+    ])
+    spine = _prism(a2 - d * pad, b2 + d * pad, corridor, e_t, e_s, caps(pad))
     u = _unit(np.array([d[0], d[1], 0.0]))
     n = np.cross(Z, u)
     hz0, hz1 = hole.zrange()
@@ -817,8 +827,15 @@ def _tube(
                 continue
             for fam, sh in options[opt - 1].shadows(hole, region, reach, lo, hi):
                 slits.append(fam.slab(sh, s.slit_width / 2))
-                zones.append(fam.slab(sh.buffer(plate_pad, join_style="mitre"), s.strip / 2 + plate_pad))
+                # fente « le long de l'axe » : elle suit la bande médiane (SBAR sur la cambrure), là où passent les
+                # deux moitiés de chaque nervure ; une nervure qui la croise entre le trou et la peau isolerait la
+                # matière devant elle (reliée par un couloir plus fin qu'une ligne) — pas de nervure sur son trajet,
+                # sur toute l'épaisseur
+                half = reach if fam is along else s.strip / 2 + plate_pad
+                zones.append(fam.slab(sh.buffer(plate_pad, join_style="mitre"), half))
     _check_wall(name, hole, profile, a, b, d, (open_a, open_b), zs, envs, inside, env_at, zr, rules.line_width)
+    if tilt > overhang:  # axe incliné : section étirée le long de la corde, pointes sur la bande médiane
+        zones.append(spine)
     tube = Tube(
         name, info.diameter, radius, s.sleeve, s.strip, s.slit_width, tilt, name in cables,
         tuple(map(float, a2)), tuple(map(float, b2)), open_a, open_b, hole, zone, tuple(slits), tuple(zones),

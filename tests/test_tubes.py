@@ -11,7 +11,7 @@ from shapely.geometry import Point
 from beaver import pipeline
 from beaver.classify import classify
 from beaver.config import load_config
-from beaver.features.tubes import Prism, Region, band, beyond, is_transversal, teardrop
+from beaver.features.tubes import Prism, Region, band, beyond, bridges, is_transversal, teardrop
 from beaver.io_step import NamedBody
 from build123d import Location
 from beaver.slicing import Layer, slice_layers, to_mesh
@@ -561,3 +561,32 @@ def test_short_sbar_open_at_both_ends_gets_no_blanket_excuse(y, refused):
             check()
     else:
         check()
+
+
+def test_bridge_opens_a_grazing_hole_onto_the_cut_face():
+    # trou carré 2 × 2 le long de Z, à 0.5 mm de la face x = 10 d'un morceau x ≤ 10 : le pont va du trou à la face
+    square = np.array([[7.5, 0, 0], [9.5, 0, 0], [9.5, 2, 0], [7.5, 2, 0]], dtype=float)
+    hole = Prism(square, square + [0, 0, 10])
+    piece = Region((beyond(10.0, 0.0, -1),))
+    (b,) = bridges(hole, piece, 1.0)
+    g = b.layer(5.0)
+    assert g.bounds == pytest.approx((9.0, 0.0, 10.0, 2.0))  # partie du trou à moins de 1 mm + jusqu'à la face
+    assert bridges(hole, piece, 0.4) == []  # paroi plus épaisse que la largeur : pas de pont
+    assert bridges(hole, Region((beyond(30.0, 0.0, -1),)), 1.0) == []  # face loin du trou
+    assert b.solid().volume == pytest.approx(1.0 * 2.0 * 10.0, rel=1e-6)
+
+
+def test_tilted_sbar_grazing_a_chord_cut_opens_onto_the_face():
+    # SBAR inclinée à ~51° qui traverse en biais la coupe dans la corde : au début et à la fin de la traversée, le
+    # trou frôle la face de coupe — sans pont, la paroi entre eux serait plus fine qu'une ligne
+    cfg, _ = _wide([{"spacing": 500, "phase": 250}])  # sans nervure : le test porte sur le trou
+    _, camber = naca4("4412", 400)
+    bodies = cross_wing_bodies(
+        (150, camber(150), 20), (250, camber(250), 100), d=6, chord=400, span=120, spar_x=120, spar_d=8, wide=True,
+    )
+    run = pipeline.run_model(classify(bodies, cfg), cfg)
+    (b,) = run.bodies
+    assert b.names == ("A", "B")
+    assert [r.ok for r in b.piece_reports] == [True, True], [r.errors[:3] for r in b.piece_reports]
+    (t,) = b.tubes
+    assert len(t.bridges) >= 2  # un pont de chaque côté de la face, à chaque bout de la traversée

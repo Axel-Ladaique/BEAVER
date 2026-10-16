@@ -518,7 +518,7 @@ def generate_skin(
     # trous des SBAR transversales entre leurs bouts réels, bouches comprises (`Tube.opening`) : ouvertures voulues
     # de la peau. Pas le prolongement d'outil au-delà (une entaille par lui reste « peau entamée »), et le trou ne
     # touche la peau qu'à ses bouches (sinon TubeError, `tubes._check_wall`)
-    openings = (*pockets, *hole_openings(bores, bays, bb), *(t.opening_solid() for t in tubes))
+    openings = (*pockets, *hole_openings(bores, bays, bb), *(o for t in tubes for o in t.opening_solids()))
     return Generated(
         part, tuple(bores), len(plates), tuple(f for _, f in to_fill), slivers, tuple(warns), tuple(bays), openings,
         tuple(tubes), plan, saved,

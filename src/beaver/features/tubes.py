@@ -31,7 +31,9 @@ from dataclasses import dataclass
 
 import numpy as np
 import trimesh
-from build123d import Align, Box, Face, Location, Plane, Solid, Vector, Wire, extrude
+from build123d import Align, Box, Face, Location, Plane, Shell, Solid, Vector, Wire, extrude
+from scipy.optimize import linprog
+from scipy.spatial import ConvexHull, HalfspaceIntersection, QhullError
 from shapely.errors import ShapelyError
 from shapely.geometry import LineString, MultiPoint, Point, Polygon
 from shapely.ops import unary_union
@@ -49,6 +51,7 @@ _Z_ROUND = 0.05  # mm : arrondi des hauteurs des enveloppes le long de l'axe (se
 MOUTH_MIN_ANGLE = 5.0  # ° : sortie la plus rasante admise (longueur max d'une bouche le long de l'axe)
 _MIN_PIERCE = 0.01  # mm² : percée de la peau négligeable (bruit numérique)
 _PLATEAU_STEPS = 3  # pas de _REACH_STEP : D (axe–peau) qui ne croît plus sur cette longueur ⇒ fin de la bouche
+BRIDGE_LINES = 2.0  # largeurs de ligne : paroi trou ↔ face de coupe en dessous de laquelle le trou s'ouvre sur la face
 FACETS = 64  # facettes de la goutte d'eau (polygone circonscrit au cercle)
 _FAR = 1e4
 # couches de l'analyse : pas = hauteur du trou / _MAX_SAMPLES, borné à [_MIN_STEP, _MAX_STEP] mm (au-delà de 100 mm de
@@ -62,7 +65,7 @@ class TubeError(BoreError):
 
 
 # erreurs de calcul géométrique (shapely, trimesh, numpy) traduites en TubeError
-GEOMETRY_ERRORS = (ShapelyError, ValueError, IndexError, ZeroDivisionError, FloatingPointError)
+GEOMETRY_ERRORS = (ShapelyError, ValueError, IndexError, ZeroDivisionError, FloatingPointError, QhullError)
 
 
 def _unit(v) -> np.ndarray:
@@ -187,6 +190,129 @@ class Prism:
         return out
 
 
+@dataclass(frozen=True, eq=False)
+class Hull:
+    """Polyèdre convexe : enveloppe convexe de `points` (N × 3), demi-espaces `equations` (n·p + d ≤ 0, N × 4)."""
+
+    points: np.ndarray
+    equations: np.ndarray
+
+    @staticmethod
+    def of(points: np.ndarray) -> "Hull | None":
+        try:
+            h = ConvexHull(points)
+        except (QhullError, ValueError):
+            return None
+        if h.volume <= 1e-6:
+            return None
+        return Hull(points[h.vertices], h.equations)
+
+    def zrange(self) -> tuple[float, float]:
+        z = self.points[:, 2]
+        return float(z.min()), float(z.max())
+
+    def section(self, origin, ex, ey) -> Polygon | None:
+        """Intersection avec le plan (origin, ex, ey), coordonnées ((p − origin)·ex, (p − origin)·ey)."""
+        origin, ex, ey = (np.asarray(a, dtype=float) for a in (origin, ex, ey))
+        rel = self.points - origin
+        r = float(np.abs(np.column_stack([rel @ ex, rel @ ey])).max()) + 1.0
+        pts = np.array([(-r, -r), (r, -r), (r, r), (-r, r)])
+        for e in self.equations:
+            n, off = e[:3], e[3]
+            pts = _clip(pts, -float(n @ ex), -float(n @ ey), -float(n @ origin + off))
+            if len(pts) < 3:
+                return None
+        poly = Polygon(pts)
+        return poly if poly.is_valid and poly.area > 1e-9 else None
+
+    def layer(self, z: float) -> Polygon | None:
+        return self.section((0.0, 0.0, z), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+
+    def solid(self) -> Solid:
+        h = ConvexHull(self.points)
+        facets: dict[tuple, set[int]] = {}
+        for simplex, e in zip(h.simplices, h.equations):
+            facets.setdefault(tuple(np.round(e, 6)), set()).update(int(i) for i in simplex)
+        faces = []
+        for key, idx in facets.items():
+            n = np.asarray(key[:3])
+            pts = self.points[sorted(idx)]
+            c = pts.mean(axis=0)
+            u = _unit(pts[0] - c)
+            v = np.cross(n, u)
+            pts = pts[np.argsort(np.arctan2((pts - c) @ v, (pts - c) @ u))]
+            faces.append(Face(Wire.make_polygon([Vector(*map(float, p)) for p in pts], close=True)))
+        return Solid(Shell(faces))
+
+
+def _grown(hull: Hull, pad: float) -> Hull | None:
+    """Polyèdre convexe grossi de `pad` dans toutes les directions (somme de Minkowski avec un cube : par excès)."""
+    cube = np.array([(i, j, k) for i in (-pad, pad) for j in (-pad, pad) for k in (-pad, pad)])
+    return Hull.of((hull.points[:, None, :] + cube[None, :, :]).reshape(-1, 3))
+
+
+def _halfspaces(prism: Prism) -> np.ndarray:
+    """Demi-espaces (n·p + d ≤ 0) d'un prisme convexe, bouts limités (`clips`) compris."""
+    eq = [ConvexHull(prism.vertices).equations]
+    for c, k in prism.clips:  # c·p + k ≥ 0
+        eq.append(np.array([[-c[0], -c[1], -c[2], -k]], dtype=float))
+    return np.vstack(eq)
+
+
+def _vertices(eq: np.ndarray) -> np.ndarray | None:
+    """Sommets du polyèdre {n·p + d ≤ 0} (None : vide ou plat)."""
+    norm = np.linalg.norm(eq[:, :3], axis=1)
+    # point le plus intérieur (centre de Tchebychev) : max t, n·p + d + t·|n| ≤ 0
+    res = linprog(
+        c=[0, 0, 0, -1], A_ub=np.column_stack([eq[:, :3], norm]), b_ub=-eq[:, 3],
+        bounds=[(None, None)] * 3 + [(0, None)], method="highs",
+    )
+    if not res.success or res.x[3] <= 1e-6:
+        return None
+    try:
+        return HalfspaceIntersection(eq, res.x[:3]).intersections
+    except QhullError:
+        return None
+
+
+def bridges(
+    hole: Prism, region: Region, width: float, beyond: float = 0.0, axis=None, step: float = 0.0,
+    steps: float = 1.0,
+) -> list[Hull]:
+    """Ponts entre le trou et les faces de coupe du morceau `region` : là où le trou passe à moins de `width` d'une
+    face (plan non horizontal du morceau), la paroi qui les sépare serait plus fine que le slicer ne l'imprime ; le
+    trou s'ouvre sur la face, comme s'il la traversait. Chaque pont : la partie du trou dans le morceau à moins de
+    `width` de la face, prolongée jusqu'à la face (enveloppe convexe avec sa projection sur la face) ; `beyond` : au-delà
+    de la face d'autant (analyse des couches : le trou y débouche franchement, comme un trou qui traverse la face).
+    `axis`, `step` : le pont s'élargit de ce dont le trou se rapproche de la face en `steps` × `step` de hauteur (pas
+    des échantillons de l'analyse), pour qu'aucune couche entre deux échantillons ne garde une paroi trop fine."""
+    if not region.halfspaces:
+        return []
+    base = np.vstack([_halfspaces(hole), *(
+        np.array([[-c[0], -c[1], -c[2], -k]], dtype=float) for c, k in region.halfspaces
+    )])
+    out = []
+    for c, k in region.halfspaces:
+        c = np.asarray(c, dtype=float)
+        if abs(c[0]) < 1e-12 and abs(c[1]) < 1e-12:
+            continue  # bande en Z (coupe en Z) : le trou n'y débouche pas
+        m = float(np.linalg.norm(c))
+        grow = 0.0
+        if axis is not None and step > 0:
+            a = np.asarray(axis, dtype=float)
+            grow = steps * step * abs(float(a @ c)) / m / max(abs(float(a[2])), 1e-6)
+        near = np.array([[c[0], c[1], c[2], k - (width + grow) * m]])  # distance à la face ≤ width (+ grow)
+        pts = _vertices(np.vstack([base, near]))
+        if pts is None:
+            continue
+        n = c / m
+        dist = (pts @ c + k) / m
+        h = Hull.of(np.vstack([pts, pts - (dist + beyond)[:, None] * n]))
+        if h is not None:
+            out.append(h)
+    return out
+
+
 # --- morceaux de la coupe dans la corde --------------------------------------------------------------------------
 
 
@@ -268,9 +394,15 @@ class Tube:
     # le trou ; bout débouchant : + OPEN_END + rayon max de la section, la bouche d'une sortie oblique), jamais le
     # prolongement d'outil au-delà — ce qu'il entaille reste une « peau entamée »
     opening: Prism | None = None
+    # ponts trou ↔ face de coupe (`bridges`) : retirés comme le trou, ouvertures voulues pour la validation
+    bridges: tuple[Hull, ...] = ()
+    bridge_zones: tuple[Hull, ...] = ()  # ponts + manchon + demi-épaisseur de plaque : sans nervure
 
     def opening_solid(self) -> Solid:
         return (self.opening if self.opening is not None else self.hole).solid()
+
+    def opening_solids(self) -> list[Solid]:
+        return [self.opening_solid(), *(b.solid() for b in self.bridges)]
 
     @property
     def axis(self) -> np.ndarray:
@@ -283,16 +415,16 @@ class Tube:
         return not self.slits
 
     def tools(self) -> list[Solid]:
-        return [self.hole.solid(), *(s.solid() for s in self.slits)]
+        return [self.hole.solid(), *(s.solid() for s in self.slits), *(b.solid() for b in self.bridges)]
 
     def section(self, z: float) -> list[Polygon]:
-        """Trou et fentes dans la couche z (repère XY) : mêmes prismes que les outils de coupe."""
-        return [g for g in (p.layer(z) for p in (self.hole, *self.slits)) if g is not None]
+        """Trou, fentes et ponts dans la couche z (repère XY) : mêmes polyèdres que les outils de coupe."""
+        return [g for g in (p.layer(z) for p in (self.hole, *self.slits, *self.bridges)) if g is not None]
 
     def zones_2d(self, c: float, d0: float, d1: float, zmin: float) -> list[Polygon]:
         """Zones sans nervure dans le repère (s, y) d'une plaque (x = c + s·d0, z = zmin + s·d1)."""
         out = []
-        for p in (self.zone, *self.slit_zones):
+        for p in (self.zone, *self.slit_zones, *self.bridge_zones):
             g = p.section((c, 0.0, zmin), (d0, 0.0, d1), (0.0, 1.0, 0.0))
             if g is not None:
                 out.append(g)
@@ -611,7 +743,14 @@ def _tube(
     envs = env_at(zs)
     slits: list[Prism] = []
     zones: list[Prism] = []
+    joins: list[Hull] = []
     for region in regions:
+        # ponts : l'analyse les voit (`near`, au-delà de la face) jusqu'à BRIDGE_LINES lignes + le rapprochement du
+        # trou en un pas ; l'outil (`joins`) est posé seulement autour des échantillons qui s'en servent, élargi
+        # d'un pas de plus (couches entre deux échantillons)
+        width = BRIDGE_LINES * rules.line_width
+        near = bridges(hole, region, width, beyond=OPEN_END, axis=d, step=step)
+        used: list[bool] = []
         along = _Family("le long de l'axe", a2, u, Z)
         if tilt <= overhang:  # plan de l'axe et de n : parois inclinées de l'angle de l'axe, imprimables
             across = [(_Family("en travers", a2, n, d), None, None)]
@@ -629,6 +768,9 @@ def _tube(
             h = hole.layer(z)
             if clip is None or h is None or env.is_empty:
                 continue
+            parts = [g for g in (b.layer(z) for b in near) if g is not None]
+            if parts:
+                h = unary_union([h, *parts])
             if h.intersection(clip).area <= 1e-9:
                 continue  # trou hors de ce morceau (le trou n'est pas limité au morceau : au-delà d'une face de
                 # coupe, il est à l'extérieur du morceau, la bouche est sur la face)
@@ -648,6 +790,7 @@ def _tube(
             rows.append(row)
             kept.append(z)
             seen.append((e, h))
+            used.append(bool(parts))
         if not rows:
             continue
         path = _choose(rows)
@@ -657,6 +800,18 @@ def _tube(
             cause = _cause(*seen[i], rules, ((a, open_a), (b, open_b)), zr[0])
             raise TubeError(f"{name}{where} : à z = {kept[i] - zr[0]:.1f} mm de l'emplanture, aucune fente ne relie le "
                             f"trou à l'extérieur sans couper la couche en deux{cause}")
+        i = 0
+        while i < len(path):  # échantillons dont l'analyse compte sur un pont (avec ou sans fente) : outil autour
+            if not used[i]:
+                i += 1
+                continue
+            j = i
+            while j + 1 < len(path) and used[j + 1]:
+                j += 1
+            lo, hi = kept[i] - step / 2, kept[j] + step / 2
+            joins += bridges(Prism(hole.ring0, hole.ring1, (*hole.clips, *band(lo, hi))), region, width, axis=d,
+                             step=step, steps=2.0)
+            i = j + 1
         for opt, lo, hi in _runs(path, kept):
             if opt == 0:
                 continue
@@ -667,7 +822,7 @@ def _tube(
     tube = Tube(
         name, info.diameter, radius, s.sleeve, s.strip, s.slit_width, tilt, name in cables,
         tuple(map(float, a2)), tuple(map(float, b2)), open_a, open_b, hole, zone, tuple(slits), tuple(zones),
-        opening,
+        opening, tuple(joins), tuple(z for z in (_grown(b, pad) for b in joins) if z is not None),
     )
     return tube
 

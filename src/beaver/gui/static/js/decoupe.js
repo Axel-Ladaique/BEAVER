@@ -97,7 +97,7 @@ export function panneauDecoupe(plan) {
       + `${(plan.plans_corde || []).length} coupe(s) dans la corde.`;
   const table = el("table", { classe: "table-morceaux" }, [
     el("thead", {}, [el("tr", {}, ["Morceau", "z (mm)", "Corde x (mm)", "Emprise sur le plateau (mm)", "Rotation", "Plateau"]
-      .map((t) => el("th", { texte: t })))]),
+      .map((t, i) => el("th", { classe: i ? "nombre" : null, texte: t })))]),
     el("tbody", {}, morceaux.map((m, i) => el("tr", { classe: m.tient ? null : "ne-tient-pas" }, [
       el("td", {}, [el("span", { classe: "pastille-morceau", style: `background: ${couleurMorceau(i)}` }), nomMorceau(m, plusieurs)]),
       el("td", { classe: "nombre", texte: `${nombre(m.z0, 1)} – ${nombre(m.z1, 1)}` }),
@@ -118,7 +118,7 @@ export function tableauMorceauxEssai(corps) {
   if (!lignes.length) return null;
   return el("table", { classe: "table-morceaux" }, [
     el("thead", {}, [el("tr", {}, ["Morceau", "z (mm)", "Emprise (mm)", "Marge (mm)", "Rotation", "Plateau", "Vase mode"]
-      .map((t) => el("th", { texte: t })))]),
+      .map((t, i) => el("th", { classe: i === 0 ? null : i === 6 ? "centre" : "nombre", texte: t })))]),
     el("tbody", {}, lignes.map((m) => el("tr", {}, [
       el("td", { texte: nomMorceau(m, plusieurs) }),
       el("td", { classe: "nombre", texte: m.z0 === null ? "—" : `${nombre(m.z0, 1)} – ${nombre(m.z1, 1)}` }),
@@ -127,7 +127,7 @@ export function tableauMorceauxEssai(corps) {
       el("td", { classe: "nombre", texte: nombre(m.marge, 1) }),
       el("td", { classe: "nombre", texte: rotationTexte(m.rotation) }),
       el("td", { classe: "nombre", texte: String(m.plateau) }),
-      el("td", { texte: m.ok ? "✔" : "✘" }),
+      el("td", { classe: `centre ${m.ok ? "ok-oui" : "ok-non"}`, texte: m.ok ? "✔" : "✘" }),
     ]))),
   ]);
 }

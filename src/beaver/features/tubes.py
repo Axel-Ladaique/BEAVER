@@ -52,6 +52,8 @@ MOUTH_MIN_ANGLE = 5.0  # ° : sortie la plus rasante admise (longueur max d'une 
 _MIN_PIERCE = 0.01  # mm² : percée de la peau négligeable (bruit numérique)
 _PLATEAU_STEPS = 3  # pas de _REACH_STEP : D (axe–peau) qui ne croît plus sur cette longueur ⇒ fin de la bouche
 BRIDGE_LINES = 2.0  # largeurs de ligne : paroi trou ↔ face de coupe en dessous de laquelle le trou s'ouvre sur la face
+# mm : le pont dépasse la face de coupe d'autant (pas de pellicule au booléen sur le plan de coupe)
+BRIDGE_OVERSHOOT = 0.05
 SPINE_HALF = 2.0  # mm : demi-hauteur du couloir sans nervure devant les pointes d'un trou incliné (bande médiane)
 SPINE_REACH = 4.0  # mm : longueur de ce couloir au-delà du manchon
 FACETS = 64  # facettes de la goutte d'eau (polygone circonscrit au cercle)
@@ -819,8 +821,8 @@ def _tube(
             while j + 1 < len(path) and used[j + 1]:
                 j += 1
             lo, hi = kept[i] - step / 2, kept[j] + step / 2
-            joins += bridges(Prism(hole.ring0, hole.ring1, (*hole.clips, *band(lo, hi))), region, width, axis=d,
-                             step=step, steps=2.0)
+            joins += bridges(Prism(hole.ring0, hole.ring1, (*hole.clips, *band(lo, hi))), region, width,
+                             beyond=BRIDGE_OVERSHOOT, axis=d, step=step, steps=2.0)
             i = j + 1
         for opt, lo, hi in _runs(path, kept):
             if opt == 0:

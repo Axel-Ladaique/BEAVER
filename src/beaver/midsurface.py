@@ -61,7 +61,8 @@ class MidSurface:
                 continue
             env = unary_union([Polygon(p.exterior) for p in layer.polygons])
             ymid[:, j], thick[:, j] = mid_line(env, xs, bb.min.Y - 5, bb.max.Y + 5)
-            le[j], te[j] = env.bounds[0], env.bounds[2]
+            if env.geom_type == "Polygon":  # plusieurs corps dans la rangée (aileron…) : lecture à x fixe
+                le[j], te[j] = env.bounds[0], env.bounds[2]
         for j in range(nz):
             ok = ~np.isnan(ymid[:, j])
             ymid[:, j] = np.interp(xs, xs[ok], ymid[ok, j]) if ok.any() else 0.0

@@ -212,3 +212,15 @@ def test_span_from_root_and_tip_faces_beats_a_diagonal_spar():
     model = classify([NamedBody(("Aile",), wing), NamedBody(("SBAR_diag",), spar)], load_config())
     axis, src = choose_axis(model, load_config())
     assert np.allclose(np.abs(axis), [0, 0, 1]) and src == "faces d'emplanture et de saumon"
+
+
+def test_slightly_tilted_spar_still_gives_the_span():
+    # longeron droit à 3° des faces d'emplanture et de saumon (aile effilée, emplanture pas d'équerre) : il reste
+    # l'envergure — seules les SBAR franchement transversales cèdent la place aux faces
+    from build123d import Cylinder
+
+    wing, _ = naca_wing(chord=150.0, span=100.0)  # envergure Z
+    spar = Cylinder(3, 90).moved(Location((40, 0, 50), (0, 3, 0)))
+    model = classify([NamedBody(("Aile",), wing), NamedBody(("SBAR_a",), spar)], load_config())
+    axis, src = choose_axis(model, load_config())
+    assert src == "longeron SBAR_a" and abs(axis[2]) < 0.9999

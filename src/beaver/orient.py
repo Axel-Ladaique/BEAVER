@@ -83,9 +83,10 @@ def choose_axis(model: Model, cfg: Config) -> tuple[np.ndarray, str]:
         else:
             main = max(spars, key=lambda s: s.spar.length)
             axis, source = np.asarray(main.spar.axis_dir, dtype=float), f"longeron {main.body.name} (le plus long)"
-        # faces d'emplanture et de saumon sans ambiguïté : elles priment sur un longeron transversal (seule SBAR
-        # en diagonale) ; d'accord avec elles, le longeron reste la source affichée
-        if caps is None or abs(float(np.dot(axis, caps))) >= _CAP_PARALLEL:
+        # faces d'emplanture et de saumon sans ambiguïté : elles priment sur un longeron franchement transversal
+        # (seule SBAR en diagonale, au-delà de passages.max_tilt_deg) ; un longeron à peine incliné (aile effilée,
+        # emplanture pas tout à fait d'équerre) reste l'envergure, comme avant
+        if caps is None or abs(float(np.dot(axis, caps))) >= limit:
             return axis, source
         return caps, "faces d'emplanture et de saumon"
     if caps is not None:

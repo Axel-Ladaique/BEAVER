@@ -276,6 +276,7 @@ return { resume: resume.textContent, apercu: lignes(table), essai: lignes(essai)
                             ["WING_2 : T1", "0,0 – 40,0", "100 × 12", "—", "12°", "2", "✘"]]  # marge absente : —
     assert out["vide"] is None and out["sansNotice"] is None
     assert out["notice"][0] == "message notice" and "coupe dans la corde en 2 morceaux" in out["notice"][1]
+    assert "découpe automatique :" not in out["notice"][1]  # le titre de l'encadré le dit déjà
     assert "indisponible" in out["indispo"]
 
 

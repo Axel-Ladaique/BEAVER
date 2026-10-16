@@ -80,7 +80,10 @@ export function encadreNotices(notices, titre = "Découpe automatique") {
   if (!notices || !notices.length) return null;
   return el("div", { classe: "message notice", role: "status" }, [
     el("strong", { texte: titre }),
-    el("ul", { classe: "liste-messages" }, notices.map((n) => el("li", { texte: n }))),
+    // « Wing_1 : découpe automatique : … » → « Wing_1 : … » (le titre de l'encadré le dit déjà)
+    el("ul", { classe: "liste-messages" }, notices.map((n) => el("li", {
+      texte: String(n).replace(/^(.*? : )?découpe automatique : /, (_, corps) => corps || ""),
+    }))),
   ]);
 }
 

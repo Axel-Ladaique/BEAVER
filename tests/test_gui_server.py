@@ -1,4 +1,5 @@
 import errno
+import re
 import socket
 import time
 
@@ -180,9 +181,11 @@ def test_hote_inconnu_refuse(tmp_path):
 
 
 def test_commande_gui_help():
-    r = CliRunner().invoke(app, ["gui", "--help"])
+    # en CI, Rich colore l'aide et peut couper les options avec des codes ANSI : sans couleur, large, codes retirés
+    r = CliRunner().invoke(app, ["gui", "--help"], env={"NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "200"})
     assert r.exit_code == 0
-    assert "--dossier" in r.output and "--sans-navigateur" in r.output
+    out = re.sub(r"\x1b\[[0-9;]*m", "", r.output)
+    assert "--dossier" in out and "--sans-navigateur" in out
 
 
 def test_commande_gui_appelle_run_gui(tmp_path, monkeypatch):

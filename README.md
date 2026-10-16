@@ -213,9 +213,10 @@ avant toute génération.
   2. **coupes en Z** (perpendiculaires à l'envergure) : selon la hauteur utile, puis, si un tronçon ne tient pas
      même tourné (flèche, dièdre), en tronçons plus nombreux ;
   3. **coupe dans la corde** : si une section seule ne tient pas même en diagonale, le tronçon est coupé par un
-     ou plusieurs plans qui contiennent l'épaisseur et passent aux points i/k de la corde (au milieu pour 2
-     morceaux) à l'emplanture et au saumon du tronçon : ils suivent la flèche et l'effilement ; k est le plus petit
-     nombre de morceaux qui tiennent. Le plan est décalé si besoin pour éviter un longeron,
+     ou plusieurs plans parallèles qui contiennent l'épaisseur, **verticaux** de préférence (face de coupe sans
+     surplomb, morceaux non cisaillés), sinon inclinés comme le bord d'attaque, le bord de fuite ou le milieu de la
+     corde ; k est le plus petit nombre de morceaux qui tiennent, puis les morceaux sont équilibrés (repli : plans aux
+     points i/k de la corde à l'emplanture et au saumon du tronçon). Le plan est décalé si besoin pour éviter un longeron,
      une gaine (trou + manchon + bande) ou une baie de servo. Les nervures sont générées sur la pièce entière
      **puis** coupées : le motif est continu d'un morceau à l'autre. Chaque morceau est validé séparément.
 - **Nommage** : `T1`, `T2`… pour les tronçons en Z (emplanture = T1) ; `A`, `B`… du bord d'attaque au bord de

@@ -28,7 +28,9 @@
 - `cuts_at` explicite : respecté ; si un tronçon imposé ne rentre pas ⇒ coupe dans la corde (et avertissement).
 
 ### 4. Coupe dans la corde
-- Nombre de morceaux k minimal tel que chaque morceau rentre (tourné). Plans de coupe : contiennent l'axe Y (épaisseur) et passent par les points i/k de la corde à l'emplanture et au saumon du tronçon (suivent la flèche et l'effilement) ; plan unique par coupe.
+- Nombre de morceaux k minimal tel que chaque morceau rentre (tourné). Plans de coupe : contiennent l'axe Y (épaisseur) ; plan unique par coupe.
+  - *Révision 2026-10-16 (aile réelle effilée à forte flèche : 5 morceaux cisaillés au lieu de 3)* : plans **parallèles**, verticaux de préférence, sinon de la pente du bord d'attaque, du bord de fuite ou du milieu de la corde ; le moins de morceaux, puis la plus faible inclinaison, puis des morceaux équilibrés ; chaque plan traverse toute la hauteur du tronçon. Repli : plans aux points i/k de la corde à l'emplanture et au saumon (suivent la flèche et l'effilement).
+  - Une SBAR transversale qui traverse une coupe en biais la frôle au début et à la fin de la traversée : là où la paroi trou ↔ face serait sous 2 largeurs de ligne, le trou s'ouvre sur la face (« pont »), sans nervure autour.
 - **Inclinaison** du plan par rapport à Z ≤ `max_overhang_deg` de la matière, sinon erreur française (proposer coupes en Z plus courtes / imprimante plus grande).
 - **Évitement** : un plan qui coupe un longeron/gaine *parallèle à l'envergure* (+ manchon + bande), une baie servo (+ bande) est décalé vers la position libre la plus proche (en corde) ; s'il n'y en a pas ⇒ erreur française listant les obstacles. Les SBAR transversales **traversent** la coupe (c'est voulu).
 - Les nervures sont générées sur la pièce entière **puis** la pièce est coupée (comme les tronçons) ⇒ motif continu. La face coupée devient une paroi ; les fentes qui y débouchent restent valides (reliées à l'extérieur). Chaque morceau est **validé** séparément.

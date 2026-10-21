@@ -196,7 +196,7 @@ def test_aile_fusion_v2_evidements_apercu_et_generation(tmp_path, monkeypatch):
         assert r.status_code == 200, r.text
         est = r.json()["estimates"]
         g = est["evidements"]
-        assert est["plaques"] == 84 and g["resume"] == "ponts aux croisements, ponts 4 mm, 30 % de la demi-épaisseur"
+        assert est["plaques"] == 84 and g["resume"] == "ponts à 1 croisement sur 3, ponts 4 mm, 20 % de la demi-épaisseur"
         assert g["masse_sans_g"] == pytest.approx(61.1, abs=1.0) and est["masse_g"] < 0.9 * g["masse_sans_g"]
         assert 0.12 < g["gain_masse"] < 0.22
 
@@ -214,9 +214,9 @@ def test_aile_fusion_v2_evidements_apercu_et_generation(tmp_path, monkeypatch):
         resume = c.get(f"/api/projets/aile/essais/{st['essai']}", headers=H).json()["resume"]
         assert resume["statut"] == "ok" and resume["nervures"] == 84 and resume["masse"] < 61
         (corps,) = resume["corps"]
-        assert corps["evidements"].startswith("ponts aux croisements, ponts 4 mm, 30 % de la demi-épaisseur — gain estimé ≈ ")
+        assert corps["evidements"].startswith("ponts à 1 croisement sur 3, ponts 4 mm, 20 % de la demi-épaisseur — gain estimé ≈ ")
         rapport = (tmp_path / "projets" / "aile" / "essais" / st["essai"] / resume["rapport"]).read_text(encoding="utf-8")
-        assert "<dt>évidements</dt><dd>ponts aux croisements, ponts 4 mm, 30 % de la demi-épaisseur" in rapport
+        assert "<dt>évidements</dt><dd>ponts à 1 croisement sur 3, ponts 4 mm, 20 % de la demi-épaisseur" in rapport
     finally:
         app.state.travaux.shutdown()
         preview.clear_cache()

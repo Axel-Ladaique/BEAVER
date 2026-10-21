@@ -55,7 +55,7 @@ def test_run_reports_hollow_setting_and_estimated_gain(tmp_path: Path):
     r = runner.invoke(app, ["run", str(src), "-c", str(p), "--out", str(out)])
     assert r.exit_code == 0, r.output
     line = next(ln for ln in r.output.splitlines() if ln.startswith("  évidements : "))
-    assert line.startswith("  évidements : ponts aux croisements, ponts 4 mm, 30 % de la demi-épaisseur — gain estimé ≈ ")
+    assert line.startswith("  évidements : ponts à 1 croisement sur 3, ponts 4 mm, 20 % de la demi-épaisseur — gain estimé ≈ ")
     assert "g sans évidement)" in line
     value = line.strip().removeprefix("évidements : ")
     assert f"<dt>évidements</dt><dd>{value}</dd>" in (out / "aile-rapport.html").read_text(encoding="utf-8")

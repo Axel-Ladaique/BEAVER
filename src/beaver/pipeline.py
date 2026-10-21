@@ -200,7 +200,8 @@ def hollow_spec(cfg: Config, i: int) -> HollowSpec | None:
     if h.mode == "off":
         return None
     return HollowSpec(
-        h.mode, h.bridge_width, h.pitch, h.keep_ratio, h.keep_min, cfg.preset.max_overhang_deg, h.ramp_factor
+        h.mode, h.bridge_width, h.pitch, h.keep_ratio, h.keep_min, cfg.preset.max_overhang_deg, h.ramp_factor,
+        h.every,
     )
 
 
@@ -378,9 +379,9 @@ def rib_crossings(cfg: Config, origin: float, zmin: float, zmax: float) -> list[
     arêtes de croisement (parallèles à Y) sont dans ces plans : une coupe en Z posée dessus fait échouer le booléen
     (aile ×3, coupe à 420 mm). `origin` : bas de la boîte de calage du motif (`skins_anchor`, sinon la peau).
 
-    Évidements : marches verticales au pied et au-dessus de chaque pont (arêtes parallèles à Y à z = pont ±
-    bridge_width·d1/2),
-    pont aux croisements ou tous les `pitch` le long de la plaque à partir de `origin` (`ribs.bridge_positions`)."""
+    Évidements : marches verticales (arêtes parallèles à Y) à ± bridge_width·d1/2 de chaque rangée de croisements
+    (pont, ou borne d'évidement écartée d'un croisement sans pont, `ribs._hollow_spans`) et, en mode pas, de chaque
+    pont, tous les `pitch` le long de la plaque à partir de `origin` (`ribs.bridge_positions`)."""
     out = []
     for i, layer in enumerate(cfg.rib_layers):
         ang = math.radians(cfg.rib_angle(layer))
@@ -396,12 +397,14 @@ def rib_crossings(cfg: Config, origin: float, zmin: float, zmax: float) -> list[
         if hollow is None:
             continue
         lift = hollow.bridge_width * math.cos(ang) / 2
-        if hollow.mode == "pas":
-            step = hollow.pitch * math.cos(ang)
-        for off in (-lift, lift):  # marche au pied du pont (fin de rampe) et au-dessus
-            j0, j1 = math.ceil((zmin - off - origin) / step - 1e-9), math.floor((zmax - off - origin) / step + 1e-9)
-            if j1 - j0 <= 100_000:
-                out += [origin + j * step + off for j in range(j0, j1 + 1)]
+        # marches à ± lift de chaque rangée de croisements (ponts, ou bornes d'évidement écartées des croisements sans
+        # pont : `ribs._hollow_spans`) et, en mode pas, de chaque pont
+        for step in [step] + ([hollow.pitch * math.cos(ang)] if hollow.mode == "pas" else []):
+            for off in (-lift, lift):  # marche au pied du pont (fin de rampe) et au-dessus
+                j0 = math.ceil((zmin - off - origin) / step - 1e-9)
+                j1 = math.floor((zmax - off - origin) / step + 1e-9)
+                if j1 - j0 <= 100_000:
+                    out += [origin + j * step + off for j in range(j0, j1 + 1)]
     return out
 
 

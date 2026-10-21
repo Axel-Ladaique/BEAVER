@@ -304,5 +304,5 @@ def test_estimations_avec_gain_des_evidements(client):
     evide = {**CFG, "rib_layers": [{"spacing": 30}], "ribs_hollow": {"mode": "croisements"}}
     est = _attendre(client, config=evide).json()["estimates"]
     g = est["evidements"]
-    assert g["resume"] == "ponts aux croisements, ponts 4 mm, 30 % de la demi-épaisseur"
+    assert g["resume"] == "ponts à 1 croisement sur 3, ponts 4 mm, 20 % de la demi-épaisseur"
     assert est["masse_g"] < g["masse_sans_g"] and 0 < g["gain_masse"] < 1

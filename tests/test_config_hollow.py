@@ -8,7 +8,8 @@ from beaver.config import ConfigError, HollowSettings, load_config
 def test_hollow_defaults_off():
     cfg = load_config()
     h = cfg.ribs_hollow
-    assert (h.mode, h.bridge_width, h.pitch, h.keep_ratio, h.keep_min, h.ramp_factor) == ("off", 4.0, 30.0, 0.3, 2.0, 1.0)
+    assert (h.mode, h.bridge_width, h.pitch, h.keep_ratio, h.keep_min, h.ramp_factor) == ("off", 4.0, 30.0, 0.2, 2.0, 1.0)
+    assert h.every == 3
     assert cfg.layer_hollow(cfg.rib_layers[0]) == h
 
 
@@ -36,11 +37,18 @@ def test_hollow_global_and_layer_override():
         ({"mode": "pas", "pitch": 4, "bridge_width": 4}, r"pitch 4.0 mm ≤ largeur de pont"),
         ({"ramp_factor": 0}, r"ramp_factor : facteur de pente des rampes entre 0 et 1"),
         ({"ramp_factor": 1.2}, r"ramp_factor : facteur de pente des rampes entre 0 et 1"),
+        ({"every": 0}, r"every : un pont tous les N croisements, entier ≥ 1"),
+        ({"every": 2.5}, r"every : un pont tous les N croisements, entier ≥ 1"),
+        ({"every": True}, r"every : un pont tous les N croisements, entier ≥ 1"),
     ],
 )
 def test_hollow_settings_errors_in_french(over, msg):
     with pytest.raises(ConfigError, match=msg):
         load_config(overrides={"ribs_hollow": over})
+
+
+def test_hollow_every_accepts_whole_float():
+    assert load_config(overrides={"ribs_hollow": {"every": 4.0}}).ribs_hollow.every == 4
 
 
 def test_layer_override_validated_with_layer_name():
@@ -54,3 +62,4 @@ def test_hollow_settings_schema_keeps_bounds_for_the_gui():
     props = HollowSettings.model_json_schema()["properties"]
     assert props["mode"]["enum"] == ["off", "croisements", "pas"]
     assert props["bridge_width"]["exclusiveMinimum"] == 0
+    assert props["every"]["minimum"] == 1

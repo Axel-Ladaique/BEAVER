@@ -233,13 +233,13 @@ TEMPLATES = sorted((Path(__file__).parents[1] / "src" / "beaver" / "templates").
 
 @pytest.mark.parametrize("path", TEMPLATES, ids=lambda p: p.name)
 def test_templates_no_bottom_layers_and_brim(path):
-    """Aucune couche inférieure (pièce ouverte en bas) ; vraie bordure sur H2S, P1S inchangée (auto)."""
+    """Aucune couche inférieure (pièce ouverte en bas), bordure extérieure de 5 mm, pas de jupe."""
     import json
 
     s = json.loads(_settings_bytes(path))
     assert s["bottom_shell_layers"] == "0"
-    assert s["brim_type"] == ("outer_only" if path.name.startswith("h2s_") else "auto_brim")
-    assert s["brim_width"] == "5"
+    assert s["brim_type"] == "outer_only" and s["brim_width"] == "5"
+    assert s["skirt_loops"] == "0"
 
 
 def test_old_template_bottom_layers_forced_to_zero(tmp_path):

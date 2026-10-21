@@ -175,9 +175,9 @@ uv run beaver run piece.step -c examples/config-2-troncons.yaml --3mf --out out
   l'emporte ; `null` = aucun gabarit.
 - **Fond ouvert** : aucune couche inférieure (`bottom_shell_layers: 0`), la 1re couche est un tour fermé (imposé par Bambu Studio
   avec une bordure), la spirale part de la 2e.
-  **Bordure** : les gabarits H2S imposent une vraie bordure extérieure (`brim_type: outer_only`, 5 mm) ;
-  le brim « auto » de Bambu Studio calcule sa propre largeur et l'omet souvent. Les gabarits P1S gardent
-  le brim auto.
+  **Bordure** : les gabarits embarqués (P1S et H2S) ont une bordure extérieure (`brim_type: outer_only`,
+  5 mm) pour l'accroche au plateau ; le brim « auto » de Bambu Studio calcule sa propre largeur et l'omet
+  souvent. Pas de jupe (`skirt_loops: 0`).
 - **Un plateau par tronçon** (en vase mode, un seul objet par plateau), disposés comme dans Bambu Studio,
   chaque tronçon centré et posé sur son plateau, emplanture en bas.
 - Découpe automatique quand la pièce dépasse la hauteur utile = hauteur du gabarit − marge. La découpe

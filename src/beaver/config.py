@@ -105,11 +105,15 @@ class HollowSettings(_Strict):
 
     # off : nervures pleines (défaut) ; croisements : ponts aux nœuds du losange ; pas : ponts à pas régulier
     mode: HollowMode = "off"
+    # mode croisements : un pont tous les `every` croisements (rangées de nœuds communes aux deux familles) ; 1 = à
+    # chaque croisement. Les rampes au surplomb max mangent ~1,4 mm de nervure par mm évidé : sur une aile épaisse,
+    # des ponts à chaque croisement ne laissent que de petits triangles (−17 % de nervures sur Dotitos, −44 % à 3)
+    every: int = Field(default=3, ge=1)
     # mm, le long de la plaque : longueur pleine hauteur d'un pont
     bridge_width: float = Field(default=4.0, json_schema_extra={"exclusiveMinimum": 0})
     pitch: float = Field(default=30.0, json_schema_extra={"exclusiveMinimum": 0})  # mm, mode pas : distance entre ponts
     # hauteur gardée sous la peau = keep_ratio × demi-épaisseur locale, au moins keep_min (mm)
-    keep_ratio: float = Field(default=0.3, json_schema_extra={"exclusiveMinimum": 0, "maximum": 1})
+    keep_ratio: float = Field(default=0.2, json_schema_extra={"exclusiveMinimum": 0, "maximum": 1})
     keep_min: float = Field(default=2.0, json_schema_extra={"exclusiveMinimum": 0})
     # ≤ 1 : flancs plus doux que le surplomb max matière (pente des rampes × ramp_factor)
     ramp_factor: float = Field(default=1.0, json_schema_extra={"exclusiveMinimum": 0, "maximum": 1})
@@ -119,6 +123,15 @@ class HollowSettings(_Strict):
     def _known_mode(cls, v: object) -> object:
         if v not in ("off", "croisements", "pas"):
             raise ValueError(f"ribs_hollow.mode : off, croisements ou pas (reçu {v!r})")
+        return v
+
+    @field_validator("every", mode="before")
+    @classmethod
+    def _every(cls, v: object) -> object:
+        if isinstance(v, float) and v.is_integer():  # 3.0 venu d'un champ numérique
+            v = int(v)
+        if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+            raise ValueError(f"every : un pont tous les N croisements, entier ≥ 1 attendu, reçu {v!r}")
         return v
 
     @field_validator("bridge_width")

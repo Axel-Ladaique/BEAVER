@@ -26,6 +26,7 @@ TH = np.full_like(SS, 20.0)
 KW = dict(gap=0.6, min_depth=1.0, ytop=15.0, ybot=-15.0, edge_vertices=16, band_tol=0.045)
 D1 = math.cos(math.radians(45))
 K = math.tan(math.radians(45)) * D1  # avance max du fond de fente par mm de s (surplomb 45°, plaque à 45°)
+KEEP_RATIO = load_config().ribs_hollow.keep_ratio  # défaut
 CLEAR = 0.21  # demi-largeur de ligne : la rampe s'arrête à cette hauteur au-dessus de la bande
 
 
@@ -93,6 +94,20 @@ def test_no_hollow_where_saving_is_small():
         assert tip(poly, s) == pytest.approx(0.3, abs=0.05)
 
 
+def test_no_hollow_bound_at_a_crossing_without_bridge():
+    """Croisement sans pont (1 sur N) : l'autre plaque y passe au même point (x, z). Une borne d'évidement qui y tombe
+    (ici, fin du gain ≥ 1 mm en s = 50, au milieu de deux échantillons) mettrait les marches des deux plaques au même
+    point : micro-faces que le maillage ne triangule pas (Dotitos, morceau T1-C). Elle est ramenée à une demi-largeur de
+    pont du croisement, côté évidement ; un évidement qui contient le croisement loin de ses bornes est inchangé."""
+    th = np.where(SS < 50, 20.0, 4.0)
+    free = side(plate_profiles_2d(SS, YM, th, [], **KW, hollow=hollow(bridges=())), True)
+    near = side(plate_profiles_2d(SS, YM, th, [], **KW, hollow=hollow(bridges=(), crossings=(50.1, 25.0))), True)
+    assert tip(free, 49.0) > 0.3 + CLEAR  # sans croisement : rampe jusqu'en s = 50
+    for s in (48.1, 49.0, 49.9):  # borne ramenée en 50,1 − 2 = 48,1 : plein jusqu'à la bande au-delà
+        assert tip(near, s) == pytest.approx(0.3, abs=0.05), s
+    assert tip(near, 25.0) == pytest.approx(7.0, abs=0.06)  # croisement au milieu de l'évidement : évidé
+
+
 def test_partial_depth_layer_hollowed_only_below_kept_depth():
     shallow = plate_profiles_2d(SS, YM, TH, [], **KW, depth=3.0)
     assert plate_profiles_2d(SS, YM, TH, [], **KW, depth=3.0, hollow=hollow()) == shallow  # 3 mm = profondeur gardée
@@ -148,6 +163,51 @@ def test_bridges_at_crossings_with_the_other_family():
             assert min(abs(x - (co - s * sign * d0)) for so, co in lines if so == -sign) < 1e-9
 
 
+@pytest.mark.parametrize("s_ref", [0.0, -12.7])
+def test_bridges_every_third_crossing_shared_by_both_families(s_ref):
+    class BB:
+        class min:
+            X, Y, Z = 0.0, -10.0, 5.0
+
+        class max:
+            X, Y, Z = 100.0, 10.0, 185.0
+
+    layer = RibLayer(spacing=20.0, phase=3.0)
+    lines = plate_lines(BB, layer, 45.0)
+    d0 = math.sin(math.radians(45))
+    every = HollowSpec(mode="croisements", **SPEC, every=3)
+    each = HollowSpec(mode="croisements", **SPEC)
+    zs = {1: set(), -1: set()}
+    for sign, c in lines:
+        kw = dict(s_ref=s_ref, s_lo=-5.0, s_hi=250.0, spacing=layer.spacing)
+        s_b = bridge_positions(every, sign, c, sign * d0, lines, **kw)
+        assert set(s_b) <= set(bridge_positions(each, sign, c, sign * d0, lines, **kw))
+        if len(s_b) >= 2:
+            assert np.allclose(np.diff(s_b), 3 * 20.0 / (2 * d0))  # un croisement sur trois le long de la plaque
+        for s in s_b:  # rang de croisement multiple de 3, compté depuis s_ref
+            assert round((s - s_ref) * 2 * d0 / 20.0) % 3 == 0
+            zs[sign].add(round(s * d0, 6))  # z relatif du nœud (d1 = d0 à 45°)
+    # nœuds gardés : mêmes rangées de z pour les deux familles (les deux plaques d'un nœud y ont leur pont)
+    assert zs[1] and zs[1] == zs[-1]
+
+
+def test_bridges_every_needs_spacing():
+    spec = HollowSpec(mode="croisements", **SPEC, every=2)
+    with pytest.raises(ValueError, match="spacing"):
+        bridge_positions(spec, 1, 0.0, 0.7, [(-1, 10.0)], s_ref=0.0, s_lo=-5.0, s_hi=100.0)
+
+
+def test_every_third_crossing_hollows_more():
+    bb, mid = _box_mid()
+    inside = box(-1e3, -10.0, 1e3, 10.0)
+    area = lambda ps: sum(p.polygon.intersection(inside).area for p in ps)  # noqa: E731
+    layer = RibLayer(spacing=20.0)
+    each = diamond_profiles(bb, mid, [], layer, **OPTS, hollow=HollowSpec(mode="croisements", **SPEC))
+    third = diamond_profiles(bb, mid, [], layer, **OPTS, hollow=HollowSpec(mode="croisements", **SPEC, every=3))
+    assert area(third) < 0.9 * area(each)
+    assert all(p.polygon.is_valid and not p.polygon.interiors for p in third)
+
+
 def test_bridges_at_regular_pitch_anchored_on_global_box():
     spec = HollowSpec(mode="pas", **SPEC)
     s_b = bridge_positions(spec, 1, 0.0, 0.7, [], s_ref=-12.0, s_lo=-5.0, s_hi=100.0)
@@ -190,22 +250,28 @@ def test_rib_options_carry_layer_hollow():
     })
     bb, _ = _box_mid()
     h = rib_options(cfg, bb, 0)["hollow"]
-    assert h == HollowSpec(mode="pas", bridge_width=4.0, pitch=25.0, keep_ratio=0.3, keep_min=2.0,
-                           max_overhang_deg=cfg.preset.max_overhang_deg, ramp_factor=1.0)
+    assert h == HollowSpec(mode="pas", bridge_width=4.0, pitch=25.0, keep_ratio=KEEP_RATIO, keep_min=2.0,
+                           max_overhang_deg=cfg.preset.max_overhang_deg, ramp_factor=1.0, every=3)
     assert rib_options(cfg, bb, 1)["hollow"] is None
 
 
-@pytest.mark.parametrize("mode, period", [("croisements", 15.0), ("pas", 30.0 * math.cos(math.radians(45)))])
-def test_bridge_steps_are_critical_planes_for_z_cuts(mode, period):
+@pytest.mark.parametrize("mode, every, period", [
+    ("croisements", 1, 15.0), ("croisements", 3, 45.0), ("pas", 3, 30.0 * math.cos(math.radians(45))),
+])
+def test_bridge_steps_are_critical_planes_for_z_cuts(mode, every, period):
     off = load_config(overrides={"rib_layers": [{"spacing": 30}]})
-    on = load_config(overrides={"rib_layers": [{"spacing": 30}], "ribs_hollow": {"mode": mode}})
-    base = rib_crossings(off, 0.0, 0.0, 100.0)
-    planes = rib_crossings(on, 0.0, 0.0, 100.0)
+    on = load_config(overrides={"rib_layers": [{"spacing": 30}], "ribs_hollow": {"mode": mode, "every": every}})
+    base = rib_crossings(off, 0.0, 0.0, 200.0)
+    planes = rib_crossings(on, 0.0, 0.0, 200.0)
     lift = 4.0 * math.cos(math.radians(45)) / 2  # marches au pied et au-dessus du pont : pont ∓ w·d1/2
     assert set(base) <= set(planes)
     for k in (1, 2, 3):
         for off_ in (-lift, lift):
             assert any(abs(p - (k * period + off_)) < 1e-9 for p in planes), (k, off_)
+    # marches possibles à ± lift de chaque croisement, même sans pont (bornes d'évidement écartées des croisements)
+    for k in (1, 2, 4):
+        for off_ in (-lift, lift):
+            assert any(abs(p - (k * 15.0 + off_)) < 1e-9 for p in planes), (k, off_)
 
 
 def _tips_along(prof, top=True):

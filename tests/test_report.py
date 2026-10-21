@@ -117,15 +117,19 @@ def test_hollow_summary_modes_and_layer_overrides():
 
     assert hollow_summary(load_config()) is None  # désactivés par défaut : pas de ligne
     assert hollow_summary(load_config(overrides={"ribs_hollow": {"mode": "croisements"}})) == (
-        "ponts aux croisements, ponts 4 mm, 30 % de la demi-épaisseur"
+        "ponts à 1 croisement sur 3, ponts 4 mm, 20 % de la demi-épaisseur"
     )
+    each = load_config(overrides={"ribs_hollow": {"mode": "croisements", "every": 1, "keep_ratio": 0.3}})
+    assert hollow_summary(each) == "ponts aux croisements, ponts 4 mm, 30 % de la demi-épaisseur"
     pas = load_config(overrides={"ribs_hollow": {"mode": "pas", "pitch": 25, "bridge_width": 3.5, "keep_ratio": 0.25,
                                                  "ramp_factor": 0.5}})
     assert hollow_summary(pas) == "ponts à pas régulier (25 mm), ponts 3,5 mm, 25 % de la demi-épaisseur, rampes × 0,5"
     # surcharge par couche : une ligne par couche quand elles diffèrent
     two = load_config(overrides={"ribs_hollow": {"mode": "croisements"},
                                  "rib_layers": [{"name": "a"}, {"name": "b", "spacing": 10, "depth": 3, "hollow": {"mode": "off"}}]})
-    assert hollow_summary(two) == "couche « a » : ponts aux croisements, ponts 4 mm, 30 % de la demi-épaisseur ; couche « b » : désactivés"
+    assert hollow_summary(two) == (
+        "couche « a » : ponts à 1 croisement sur 3, ponts 4 mm, 20 % de la demi-épaisseur ; couche « b » : désactivés"
+    )
 
 
 def test_format_hollow_with_estimated_gain():

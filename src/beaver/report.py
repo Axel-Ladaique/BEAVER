@@ -83,7 +83,10 @@ def _fr(v: float, digits: int = 1) -> str:
 def _hollow_text(h) -> str:
     if h.mode == "off":
         return "désactivés"
-    where = "ponts aux croisements" if h.mode == "croisements" else f"ponts à pas régulier ({_fr(h.pitch)} mm)"
+    if h.mode == "croisements":
+        where = "ponts aux croisements" if h.every == 1 else f"ponts à 1 croisement sur {h.every}"
+    else:
+        where = f"ponts à pas régulier ({_fr(h.pitch)} mm)"
     out = f"{where}, ponts {_fr(h.bridge_width)} mm, {_fr(100 * h.keep_ratio)} % de la demi-épaisseur"
     if h.ramp_factor < 1:
         out += f", rampes × {_fr(h.ramp_factor, 2)}"

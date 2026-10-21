@@ -308,7 +308,7 @@ def test_estimates_hollow_gain(step):
     est = preview.estimates(prep, preview.plates_2d(prep, evide), evide)
     json.dumps(est)
     g = est["evidements"]
-    assert g["resume"] == "ponts aux croisements, ponts 4 mm, 30 % de la demi-épaisseur"
+    assert g["resume"] == "ponts à 1 croisement sur 3, ponts 4 mm, 20 % de la demi-épaisseur"
     assert est["masse_g"] < g["masse_sans_g"] and est["trajet_m"] < g["trajet_sans_m"]
     assert g["masse_sans_g"] == pytest.approx(off["masse_g"]) and g["trajet_sans_m"] == pytest.approx(off["trajet_m"])
     assert g["gain_masse"] == pytest.approx(1 - est["masse_g"] / off["masse_g"]) and g["gain_masse"] > 0.02

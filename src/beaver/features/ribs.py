@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 from build123d import Face, Solid, Vector, Wire, extrude
@@ -72,6 +72,7 @@ class HollowSpec:
     keep_min: float
     max_overhang_deg: float
     ramp_factor: float = 1.0  # ≤ 1 : rampes plus douces que le surplomb max (pente × ramp_factor)
+    every: int = 1  # croisements : un pont tous les `every` croisements
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,9 @@ class HollowEdge:
     # mm (selon Y) : la rampe s'arrête à cette hauteur au-dessus de la bande, puis marche verticale jusqu'à elle (voir
     # `_hollow_cut`) ; ailleurs, le fond de fente évidé reste au moins à cette hauteur de la bande
     clearance: float = 0.0
+    # abscisses s des croisements avec l'autre famille sans pont (un sur `every`, ou mode pas) : aucune borne
+    # d'évidement à moins de width/2 (voir `_hollow_spans`)
+    crossings: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -121,15 +125,22 @@ class CutGuides:
 
 def bridge_positions(
     spec: HollowSpec, sign: int, c: float, d0: float, lines, *, s_ref: float, s_lo: float, s_hi: float,
+    spacing: float | None = None,
 ) -> tuple[float, ...]:
     """Abscisses s des ponts d'une plaque (famille `sign`, x = c + s·d0) dans [s_lo, s_hi] (± une demi-largeur).
 
     croisements : là où passe une plaque de l'autre famille de la même couche (`lines`, voir `plate_lines`) sur le
     plan médian : c + s·d0 = c' − s·d0 ⇒ s = (c' − c) / (2·d0), soit un pas spacing / (2·sin(angle)) le long de la
-    plaque. pas : s = s_ref + k·pitch, `s_ref` = abscisse du bas de la boîte de calage du motif (même z pour toutes les
+    plaque. Avec `every` = N > 1, seulement les croisements de rang j ≡ 0 (mod N), j = (s − s_ref)·2·|d0| / spacing
+    (`spacing` requis) : les croisements de rang j sont tous dans le plan z = bas de la boîte de calage + j·spacing /
+    (2·tan(angle)), donc les deux plaques d'un nœud gardé y ont toutes deux leur pont, sur chaque corps. pas : s = s_ref + k·pitch, `s_ref` = abscisse du bas de la boîte de calage du motif (même z pour toutes les
     plaques et tous les corps d'une aile découpée dans la CAO)."""
     if spec.mode == "croisements":
         s = [(co - c) / (2 * d0) for so, co in lines if so == -sign]
+        if spec.every > 1:
+            if spacing is None:
+                raise ValueError("bridge_positions : spacing requis pour un pont tous les N croisements")
+            s = [v for v in s if round((v - s_ref) * 2 * abs(d0) / spacing) % spec.every == 0]
     else:
         k0 = math.ceil((s_lo - spec.bridge_width - s_ref) / spec.pitch)
         k1 = math.floor((s_hi + spec.bridge_width - s_ref) / spec.pitch)
@@ -158,7 +169,13 @@ def _subtract(intervals, cuts) -> list[tuple[float, float]]:
 def _hollow_spans(ss, saving, runs, hollow: HollowEdge, zones, ends) -> list[list[tuple[float, float]]]:
     """Par tronçon profond : intervalles de s évidés. Pleins : ponts, zones interdites et fenêtres de bout (± marge),
     gain trop faible ; un évidement plus court qu'un pont est abandonné ; une borne d'évidement à moins de
-    `_HOLLOW_SNAP` d'une borne de tronçon est ramenée dessus (pas de micro-arête)."""
+    `_HOLLOW_SNAP` d'une borne de tronçon est ramenée dessus (pas de micro-arête).
+
+    Croisements sans pont (`HollowEdge.crossings`) : l'autre plaque passe au même point (x, z) et, l'épaisseur y étant
+    la même, une borne de gain (≥ `_HOLLOW_MIN_SAVING`) qui y tombe pour l'une y tombe pour l'autre, au même milieu
+    d'échantillons : marches des deux plaques au même point, micro-faces que le maillage ne triangule pas (trou dans
+    le STL). Une borne à moins de width/2 d'un tel croisement est ramenée à width/2, côté évidement (comme les marches
+    d'un pont)."""
     m = hollow.width
     full = [(b - hollow.width / 2, b + hollow.width / 2) for b in hollow.bridges] + list(hollow.full)
     full += [(z.bounds[0] - m, z.bounds[2] + m) for z in zones if not z.is_empty]
@@ -170,6 +187,11 @@ def _hollow_spans(ss, saving, runs, hollow: HollowEdge, zones, ends) -> list[lis
         for a, b in _subtract([(max(a, lo), min(b, hi)) for a, b in worth if b > lo and a < hi], full):
             a = lo if a - lo < _HOLLOW_SNAP else a
             b = hi if hi - b < _HOLLOW_SNAP else b
+            for c in hollow.crossings:
+                if abs(a - c) < m / 2:
+                    a = c + m / 2
+                if abs(b - c) < m / 2:
+                    b = c - m / 2
             if b - a >= hollow.width:
                 spans.append((a, b))
         out.append(spans)
@@ -693,12 +715,16 @@ def diamond_profiles(
         d0, d1 = sign * math.sin(ang), math.cos(ang)
         edge = None
         if hollow is not None:
+            at = dict(s_ref=s_ref, s_lo=ss[0], s_hi=ss[-1], spacing=layer.spacing)
+            bridges = bridge_positions(hollow, sign, c, d0, lines, **at)
+            every = bridge_positions(replace(hollow, mode="croisements", every=1), sign, c, d0, lines, **at)
             edge = HollowEdge(
-                bridge_positions(hollow, sign, c, d0, lines, s_ref=s_ref, s_lo=ss[0], s_hi=ss[-1]),
+                bridges,
                 hollow.bridge_width, hollow.keep_ratio, hollow.keep_min,
                 math.tan(math.radians(hollow.max_overhang_deg)) * d1 * hollow.ramp_factor,
                 full=() if cuts is None else cuts.windows(c, d0, d1, zmin, hollow.bridge_width, ss[0], ss[-1]),
                 clearance=line_width / 2,
+                crossings=tuple(v for v in every if not any(abs(v - b) < _SAME_LINE for b in bridges)),
             )
         x, z = c + ss * d0, zmin + ss * d1
         ym, th = mid.at(x, z)

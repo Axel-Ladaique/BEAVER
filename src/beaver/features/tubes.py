@@ -401,6 +401,9 @@ class Tube:
     # ponts trou ↔ face de coupe (`bridges`) : retirés comme le trou, ouvertures voulues pour la validation
     bridges: tuple[Hull, ...] = ()
     bridge_zones: tuple[Hull, ...] = ()  # ponts + manchon + demi-épaisseur de plaque : sans nervure
+    # zones de `slit_zones` portées par les murs de leur fente (fente « en travers » : la plaque qui la recouvre
+    # s'y appuie sur toute sa largeur) : pas de toit au-dessus (`zones_2d`)
+    carried: frozenset[int] = frozenset()
 
     def opening_solid(self) -> Solid:
         return (self.opening if self.opening is not None else self.hole).solid()
@@ -425,13 +428,16 @@ class Tube:
         """Trou, fentes et ponts dans la couche z (repère XY) : mêmes polyèdres que les outils de coupe."""
         return [g for g in (p.layer(z) for p in (self.hole, *self.slits, *self.bridges)) if g is not None]
 
-    def zones_2d(self, c: float, d0: float, d1: float, zmin: float) -> list[Polygon]:
-        """Zones sans nervure dans le repère (s, y) d'une plaque (x = c + s·d0, z = zmin + s·d1)."""
+    def zones_2d(self, c: float, d0: float, d1: float, zmin: float, flags: bool = False) -> list:
+        """Zones sans nervure dans le repère (s, y) d'une plaque (x = c + s·d0, z = zmin + s·d1) ; `flags` : paires
+        (zone, toit) — toit : la plaque n'a rien dessous au-dessus de la zone (trou + manchon, fente « le long de
+        l'axe » et couloir sur toute leur largeur, ponts), il lui faut un toit au surplomb max (`ribs.roof_2d`)."""
         out = []
-        for p in (self.zone, *self.slit_zones, *self.bridge_zones):
+        roofs = (True, *(i not in self.carried for i in range(len(self.slit_zones))), *(True,) * len(self.bridge_zones))
+        for p, roof in zip((self.zone, *self.slit_zones, *self.bridge_zones), roofs):
             g = p.section((c, 0.0, zmin), (d0, 0.0, d1), (0.0, 1.0, 0.0))
             if g is not None:
-                out.append(g)
+                out.append((g, roof) if flags else g)
         return out
 
 
@@ -755,6 +761,7 @@ def _tube(
     envs = env_at(zs)
     slits: list[Prism] = []
     zones: list[Prism] = []
+    carried: set[int] = set()  # indices dans `zones` des fentes « en travers » (Tube.carried)
     joins: list[Hull] = []
     for region in regions:
         # ponts : l'analyse les voit (`near`, au-delà de la face) jusqu'à BRIDGE_LINES lignes + le rapprochement du
@@ -834,6 +841,8 @@ def _tube(
                 # matière devant elle (reliée par un couloir plus fin qu'une ligne) — pas de nervure sur son trajet,
                 # sur toute l'épaisseur
                 half = reach if fam is along else s.strip / 2 + plate_pad
+                if fam is not along:
+                    carried.add(len(zones))
                 zones.append(fam.slab(sh.buffer(plate_pad, join_style="mitre"), half))
     _check_wall(name, hole, profile, a, b, d, (open_a, open_b), zs, envs, inside, env_at, zr, rules.line_width)
     if tilt > overhang:  # axe incliné : section étirée le long de la corde, pointes sur la bande médiane
@@ -841,7 +850,7 @@ def _tube(
     tube = Tube(
         name, info.diameter, radius, s.sleeve, s.strip, s.slit_width, tilt, name in cables,
         tuple(map(float, a2)), tuple(map(float, b2)), open_a, open_b, hole, zone, tuple(slits), tuple(zones),
-        opening, tuple(joins), tuple(z for z in (_grown(b, pad) for b in joins) if z is not None),
+        opening, tuple(joins), tuple(z for z in (_grown(b, pad) for b in joins) if z is not None), frozenset(carried),
     )
     return tube
 

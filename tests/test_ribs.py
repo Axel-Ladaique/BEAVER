@@ -3,7 +3,7 @@ import math
 import numpy as np
 import pytest
 from build123d import Box, Location
-from shapely.geometry import LineString, Point
+from shapely.geometry import LineString, Point, box
 
 from beaver.config import RibLayer
 from beaver.features.bores import Bore
@@ -13,6 +13,8 @@ from beaver.features.ribs import (
     diamond_plates,
     diamond_profiles,
     plate_profiles_2d,
+    _clear_band,
+    roof_2d,
     steep_samples,
     wall_limits,
 )
@@ -432,3 +434,114 @@ def test_band_vertices_are_capped():
     (poly,) = [p for t, p in plate_profiles_2d(ss, ym, th, [], **dict(KW, ytop=40.0, ybot=-40.0), edge_vertices=16,
                                               band_tol=0.045) if t]
     assert len(poly.exterior.coords) <= 16 + _MAX_BAND_VERTICES + 4
+
+
+# --- toit des zones sans nervure (fin de SBAR) -------------------------------------------------------------------
+
+
+def test_roof_on_a_flat_topped_zone_is_a_triangle_at_the_max_overhang():
+    zone = box(0.0, -4.0, 10.0, 4.0)
+    roofed = roof_2d(zone, 0.5)  # la plaque avance de 0,5 en y par unité de s au plus
+    assert roofed.bounds == pytest.approx((0.0, -4.0, 18.0, 4.0))  # sommet : 4 / 0,5 au-dessus du haut plat
+    assert roofed.area == pytest.approx(80.0 + 0.5 * 8.0 * 8.0)
+    for s in (11.0, 14.0, 17.0):
+        (seg,) = column(roofed, s)
+        assert seg.bounds[3] - seg.bounds[1] == pytest.approx(8.0 - 2 * 0.5 * (s - 10.0))
+
+
+def test_roof_follows_the_widest_chord_of_a_round_zone():
+    # cercle de rayon 3 : chaque corde porte son triangle ; au-dessus, la largeur ne décroît jamais plus vite que 2k
+    k = 1.0
+    roofed = roof_2d(Point(0.0, 0.0).buffer(3.0, quad_segs=32), k)
+    assert roofed.bounds[2] == pytest.approx(3.0 * math.sqrt(2), abs=0.02)  # tangente à 45° au cercle
+    prev = None
+    for s in np.linspace(-3.0, roofed.bounds[2] - 0.01, 120):
+        (seg,) = column(roofed, s)
+        w = seg.bounds[3] - seg.bounds[1]
+        if prev is not None and w < prev:
+            assert prev - w <= 2 * k * (s - prev_s) + 1e-6
+        prev, prev_s = w, s
+
+
+def test_roof_of_a_full_thickness_zone_starts_from_the_skin():
+    # fente « le long de l'axe » : zone sur toute l'épaisseur (y ±1e4) — limitée à la peau avant le toit
+    roofed = roof_2d(box(0.0, -1e4, 5.0, 1e4), 1.0, ylim=(-3.0, 5.0))
+    assert roofed.bounds == pytest.approx((0.0, -3.0, 9.0, 5.0))
+
+
+def test_closed_bore_zone_gets_a_roof_and_its_band_does_not():
+    d = math.sin(math.radians(45))
+    b = Bore("S", 30.0 * d, 0.0, 4.0, 0.5, 2.0, 1, True, 0.0, 30.0, 0.1, 0.15)  # bout haut fermé en z = 30
+    k = d * math.tan(math.radians(45))
+    flat, band_flat = bore_zones_2d(b, 0.0, d, d, 0.0, 100.0, slit=0.1)
+    sleeve, band_roofed = bore_zones_2d(b, 0.0, d, d, 0.0, 100.0, slit=0.1, roof=k)
+    assert band_roofed.equals(band_flat)  # les murs de la fente portent la plaque qui la recouvre
+    assert sleeve.contains(flat.buffer(-1e-6)) and sleeve.bounds[2] > flat.bounds[2] + 1.0
+    # au-dessus du haut plat, le vide de la plaque se referme de 2k en y par unité de s au plus
+    top = flat.bounds[2]
+    widths = [(s, column(sleeve, s)) for s in np.linspace(top, sleeve.bounds[2] - 0.01, 40)]
+    for (s0, a), (s1, c) in zip(widths, widths[1:]):
+        w0, w1 = a[0].bounds[3] - a[0].bounds[1], c[0].bounds[3] - c[0].bounds[1]
+        assert w0 - w1 <= 2 * k * (s1 - s0) + 1e-6
+
+
+def test_roof_touching_the_band_clears_it_straight():
+    # pointe d'un toit dans la bande ym ± 0,3 : sur l'étendue en s du contact, la bande ± 0,51 est dégagée (bouts
+    # droits des deux demi-plaques, pas de pointe de fente en biais contre la bande)
+    ss = np.linspace(-5, 100, 211)
+    ym = np.full_like(ss, 0.5)
+    roofed = roof_2d(box(20.0, -4.0, 30.0, 4.0), 1.0)  # sommet en (34, 0)
+    cleared = _clear_band(roofed, ss, ym, 0.51)
+    s0, _, s1, _ = roofed.intersection(box(-5, 0.5 - 0.51, 100, 0.5 + 0.51)).bounds
+    for s in (s0 + 0.01, (s0 + s1) / 2, s1 - 0.01):
+        assert cleared.contains(Point(s, 0.5 + 0.5)) and cleared.contains(Point(s, 0.5 - 0.5))
+    assert not cleared.contains(Point(s1 + 0.1, 0.5))
+    assert _clear_band(box(20.0, 5.0, 30.0, 8.0), ss, ym, 0.51).equals(box(20.0, 5.0, 30.0, 8.0))  # loin de la bande
+
+
+def _unsupported(shape, zs, dz: float, area) -> float:
+    """Écart max (mm) entre le contour de la couche z + dz et celui de la couche z, dans `area` (XY) : en vase
+    mode, une portion de mur sans mur dessous à plus de dz·tan(surplomb) près est en surplomb."""
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+
+    from beaver.slicing import slice_layers
+
+    heights = sorted({float(z) for z0 in zs for z in (z0, z0 + dz)})
+    rings = {round(layer.z, 6): unary_union([Polygon(p.exterior) for p in layer.polygons]).boundary
+             for layer in slice_layers(shape, heights)}
+    worst = 0.0
+    for z in zs:
+        below, above = rings[round(float(z), 6)], rings[round(float(z + dz), 6)]
+        bad = above.intersection(area).difference(below.buffer(dz + 0.03))
+        for g in getattr(bad, "geoms", [bad]):
+            if g.is_empty or g.length < 0.05:
+                continue
+            worst = max(worst, max(below.distance(Point(q)) for q in g.segmentize(0.05).coords))
+    return worst
+
+
+def test_ribs_above_the_closed_top_of_a_vertical_sbar_start_from_the_skin():
+    # SBAR verticale débouchant à l'emplanture, arrêtée à z = 30 dans l'aile, là où les deux familles de plaques
+    # se croisent au-dessus du trou : sans toit, les plaques repartaient en l'air au-dessus du manchon (≈ 2,8 mm
+    # sans appui en une couche) ; avec, elles partent de la peau, à 45° dans leur plan
+    from beaver import pipeline
+    from beaver.classify import classify
+    from beaver.config import load_config
+    from beaver.testing.synthetic import cross_wing_bodies, naca4
+
+    cfg = load_config(overrides={
+        "material_settings": {"layer_height": 1.0}, "rib_layers": [{"spacing": 20}], "orientation": {"root": "debut"},
+    })
+    _, camber = naca4("4412", 100)
+    bodies = cross_wing_bodies((50.0, camber(50.0), -1.0), (50.0, camber(50.0), 30.0), d=6, spar_x=25)
+    run = pipeline.run_model(classify(bodies, cfg), cfg)
+    assert run.ok
+    (body,) = run.bodies
+    (b,) = [b for b in body.bores if b.name == "SBAR_T"]
+    assert b.z1 == pytest.approx(30.0)
+    near = Point(b.x, b.y).buffer(b.radius + b.sleeve + 2.0)
+    zs = np.arange(b.z1 + 0.1, b.z1 + 6.0, 0.2)
+    # 0,2 mm de dérive de la plaque à 45° + 0,2 mm de toit par couche ; première couche : bout de l'attache
+    # (anchor_gap) sous le toit
+    assert _unsupported(body.result, zs, 0.2, near) <= 0.6

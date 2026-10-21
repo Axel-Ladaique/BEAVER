@@ -216,18 +216,78 @@ def _hollow_cut(ss, g_u, span, lo, hi, u_band, slope: float, sigma: int, clearan
     return poly if poly.is_valid else poly.buffer(0)
 
 
+def roof_2d(zone: Polygon, k: float, ylim: tuple[float, float] | None = None) -> Polygon:
+    """Zone sans nervure convexe `zone` (repère (s, y) d'une plaque, s vers le haut) + son toit : au-dessus, la
+    plaque ne reprend qu'en avançant de `k` en y par unité de s au plus (k = tan(surplomb max)·d1 : surplomb max
+    de la matière). Sans toit, une zone coupée à plat (bout fermé d'un trou, fin d'une fente ou d'un pont) laisse la
+    plaque repartir d'un coup, en l'air, sur toute la largeur de la zone ; au-dessus de l'arc d'un manchon, ses
+    bouts glissent plus vite que le surplomb max.
+
+    Toit = réunion des triangles posés sur chaque corde horizontale (s fixé) de la zone, sommet à (s + l/(2k),
+    milieu) : la plaque repart des deux bouts de la corde (manchon, peau). Réunion convexe pour une zone convexe :
+    enveloppe convexe de la zone et des sommets, exacte en prenant les cordes aux sommets de la zone (largeur et
+    milieu affines entre deux). `ylim` : peau (y bas, y haut) le long de la zone — une zone plus large (fente « le
+    long de l'axe », toute l'épaisseur) y est d'abord limitée : la plaque repart de la peau."""
+    if zone.is_empty or k <= 0:
+        return zone
+    if ylim is not None:
+        s0, _, s1, _ = zone.bounds
+        zone = zone.intersection(box(s0 - 1, ylim[0], s1 + 1, ylim[1]))
+        if zone.is_empty or zone.area <= 1e-9:
+            return zone
+    apexes = []
+    for s in np.unique(np.asarray(zone.exterior.coords)[:, 0]):
+        cut = zone.intersection(LineString([(s, -_FAR), (s, _FAR)]))
+        if cut.is_empty:
+            continue
+        y0, y1 = cut.bounds[1], cut.bounds[3]
+        apexes.append((s + (y1 - y0) / (2 * k), (y0 + y1) / 2))
+    out = unary_union([zone, *(Point(p) for p in apexes)]).convex_hull
+    return out if isinstance(out, Polygon) else zone
+
+
+def _clear_band(zone: Polygon, ss: np.ndarray, ym: np.ndarray, half: float) -> Polygon:
+    """Zone + la bande ym ± `half` sur l'étendue en s où elle la touche. Le bord oblique d'un toit coupe le bout
+    d'une demi-plaque en biais : en tranche, une pointe de fente aiguë contre la bande de séparation, que le slicer
+    (et la validation, érosion en onglet) voit pincer la matière entre les deux demi-plaques. Ainsi les bouts y sont
+    droits, à `half` de ym au moins, ou plus loin (bord du toit)."""
+    ok = np.isfinite(ym)
+    if ok.sum() < 2:
+        return zone
+    ss, ym = ss[ok], ym[ok]
+    strip = Polygon(list(zip(ss, ym + half)) + list(zip(ss[::-1], ym[::-1] - half)))
+    if not strip.is_valid:
+        strip = strip.buffer(0)
+    touch = zone.intersection(strip)
+    if touch.is_empty or touch.area <= 1e-9:
+        return zone
+    s0, _, s1, _ = touch.bounds
+    return unary_union([zone, strip.intersection(box(s0, -_FAR, s1, _FAR))])
+
+
+def _skin_span(ss: np.ndarray, ym: np.ndarray, th: np.ndarray, zone: Polygon) -> tuple[float, float] | None:
+    """Peau (y bas, y haut) le long de la zone (échantillons de la plaque dans son étendue en s ± 1 mm)."""
+    s0, _, s1, _ = zone.bounds
+    m = (ss >= s0 - 1) & (ss <= s1 + 1) & (th > 0)
+    if not m.any():
+        return None
+    return float(np.min(ym[m] - th[m] / 2)), float(np.max(ym[m] + th[m] / 2))
+
+
 _ZONE_SEGMENTS = 64
 # polygone circonscrit au cercle unité : aucun point du cercle n'est hors de la zone
 _CIRCUMSCRIBED = 1 / math.cos(math.pi / _ZONE_SEGMENTS)
 
 
 def bore_zones_2d(
-    b: Bore, c: float, d0: float, d1: float, zmin: float, zmax: float, *, slit: float
+    b: Bore, c: float, d0: float, d1: float, zmin: float, zmax: float, *, slit: float, roof: float = 0.0
 ) -> list[Polygon]:
     """Zones sans nervure d'un trou dans le repère (s, y) de la plaque (x = c + s·d0, z = zmin + s·d1).
 
     Agrandies de la demi-épaisseur de plaque (slit/2 en y, slit/(2·|d0|) en s) : c'est la plaque
-    réelle, pas son plan médian, qui doit rester hors du manchon.
+    réelle, pas son plan médian, qui doit rester hors du manchon. `roof` > 0 : manchon coiffé de son toit
+    (`roof_2d`, pente k = roof), au-dessus d'un bout fermé surtout ; la bande de la fente n'en a pas besoin (les
+    murs de la fente portent la plaque qui la recouvre).
     """
     pad_s = slit / (2 * abs(d0))
     r = b.radius + b.sleeve + slit / 2
@@ -241,7 +301,10 @@ def bore_zones_2d(
     # limitées à l'étendue du trou le long de Z (même marge que les outils de coupe)
     lo, hi = bore_extent(b, zmin, zmax)
     extent = box((lo - zmin) / d1 - pad_s, -_FAR, (hi - zmin) / d1 + pad_s, _FAR)
-    return [z for z in (ellipse.intersection(extent), band.intersection(extent)) if not z.is_empty]
+    sleeve = ellipse.intersection(extent)
+    if roof > 0 and not sleeve.is_empty:
+        sleeve = roof_2d(sleeve, roof)
+    return [z for z in (sleeve, band.intersection(extent)) if not z.is_empty]
 
 
 def wall_limits(*, slit: float, angle_deg: float, line_width: float, max_mouth: float) -> tuple[float, float]:
@@ -592,6 +655,7 @@ def diamond_profiles(
     min_depth: float, line_width: float, max_mouth: float, exclude: Sequence[tuple[int, float]] = (),
     walls: bool = True, bays: Sequence[ServoBay] = (), pocket_strip: float = 0.0, anchor=None,
     tubes: Sequence = (), hollow: HollowSpec | None = None, cuts: CutGuides | None = None,
+    max_overhang: float | None = None,
 ) -> list[PlateProfile]:
     """Profils 2D des plaques d'un niveau, sans construire les solides (aperçu rapide).
 
@@ -604,7 +668,9 @@ def diamond_profiles(
     zones = section exacte de leurs prismes sans nervure (trou + manchon, fentes + bande) par le plan de la plaque,
     avec la même ombre que les trous. `hollow` : évidements de la couche (None = plaques pleines), ponts placés par
     `bridge_positions` (croisements avec l'autre famille de cette couche, ou pas calé sur `anchor`). `cuts` : coupes du
-    plan de découpe, plaques pleines à ± bridge_width (évidements seulement).
+    plan de découpe, plaques pleines à ± bridge_width (évidements seulement). `max_overhang` (°) : zones des trous et
+    des SBAR coiffées d'un toit à ce surplomb (`roof_2d`) — la plaque ne repart jamais en l'air au-dessus d'une zone
+    (None : sans toit).
     """
     max_slope, margin = wall_limits(slit=slit, angle_deg=angle_deg, line_width=line_width, max_mouth=max_mouth)
     # deux bandes qui se croisent, chacune à band_tol de ym ± gap/2, se recouvrent d'au moins gap − 2·band_tol :
@@ -640,8 +706,13 @@ def diamond_profiles(
         cand = th > gap + 2 * min_depth  # seuls les échantillons assez épais peuvent recevoir une fente
         if walls and cand.any():
             steep[cand] = steep_samples(mid, x[cand], z[cand], max_slope=max_slope, margin=margin)
-        zones = [z for b in bores for z in bore_zones_2d(b, c, d0, d1, zmin, zmax, slit=slit)]
-        zones += [z for t in tubes for z in t.zones_2d(c, d0, d1, zmin)]
+        roof = d1 * math.tan(math.radians(max_overhang)) if max_overhang is not None else 0.0
+        zones = [z for b in bores for z in bore_zones_2d(b, c, d0, d1, zmin, zmax, slit=slit, roof=roof)]
+        for t in tubes:
+            for z, roofed in t.zones_2d(c, d0, d1, zmin, flags=True):
+                zones.append(roof_2d(z, roof, _skin_span(ss, ym, th, z)) if roofed and roof > 0 else z)
+        if roof > 0:
+            zones = [_clear_band(z, ss, ym, gap / 2 + line_width / 2) for z in zones]
         for bay in bays:
             open_skin = np.where(th > 0, ym + bay.side * th / 2, np.nan)  # peau d'ouverture le long de la plaque
             zones += pocket_zones_2d(bay, c, d0, d1, zmin, zmax, strip=pocket_strip, slit=slit, skin=(ss, open_skin))
@@ -666,13 +737,13 @@ def diamond_plates(
     bb, mid: MidSurface, bores: list[Bore], layer: RibLayer, *, angle_deg: float, gap: float, slit: float,
     min_depth: float, line_width: float, max_mouth: float, exclude: Sequence[tuple[int, float]] = (),
     bays: Sequence[ServoBay] = (), pocket_strip: float = 0.0, anchor=None, tubes: Sequence = (),
-    hollow: HollowSpec | None = None, cuts: CutGuides | None = None,
+    hollow: HollowSpec | None = None, cuts: CutGuides | None = None, max_overhang: float | None = None,
 ) -> list[Solid]:
     """Plaques d'un niveau ; `exclude` : plans (famille, c) déjà coupés par un niveau plus profond ; `anchor` :
     boîte de calage du motif (voir `plate_lines`)."""
     profiles = diamond_profiles(
         bb, mid, bores, layer, angle_deg=angle_deg, gap=gap, slit=slit, min_depth=min_depth,
         line_width=line_width, max_mouth=max_mouth, exclude=exclude, bays=bays, pocket_strip=pocket_strip,
-        anchor=anchor, tubes=tubes, hollow=hollow, cuts=cuts,
+        anchor=anchor, tubes=tubes, hollow=hollow, cuts=cuts, max_overhang=max_overhang,
     )
     return [plate_solid(p.polygon, p.c, p.d0, p.d1, bb.min.Z, slit) for p in profiles]

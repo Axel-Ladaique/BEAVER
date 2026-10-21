@@ -190,7 +190,7 @@ def rib_options(
         angle_deg=cfg.rib_angle(layer), gap=cfg.split.gap, slit=cfg.slit_width, min_depth=cfg.split.min_rib_depth,
         line_width=cfg.preset.line_width, max_mouth=cfg.validation.max_mouth_width, exclude=deeper_lines(cfg, bb, i, anchor),
         bays=tuple(bays), pocket_strip=cfg.servo_strip(), anchor=anchor, tubes=tuple(tubes), hollow=hollow_spec(cfg, i),
-        cuts=cuts,
+        cuts=cuts, max_overhang=cfg.preset.max_overhang_deg,
     )
 
 

@@ -28,8 +28,8 @@ _GAP = 1.2  # espacement inter-plateaux de Bambu Studio (PartPlate)
 
 # Réglages vase mode imposés à l'écriture (valeurs du gabarit PLA Aero, qui est en vase mode).
 # Jamais de clé filament / matière ni imprimante : elles restent celles du gabarit.
-# bottom_shell_layers = 0 : pièces ouvertes en bas, la spirale démarre dès la 1re couche (ou la 2e
-# s'il y a une bordure). La bordure (brim_type) est un réglage du gabarit : outer_only sur les
+# bottom_shell_layers = 0 : pièces ouvertes en bas. La 1re couche reste un tour fermé (Bambu Studio
+# n'y met jamais la spirale avec une bordure ou skirt_height ≥ 1), la spirale part de la 2e. La bordure (brim_type) est un réglage du gabarit : outer_only sur les
 # gabarits H2S, dont le brim « auto » ne sortait pas.
 VASE_SETTINGS = {
     "spiral_mode": "1",

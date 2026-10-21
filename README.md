@@ -173,7 +173,8 @@ uv run beaver run piece.step -c examples/config-2-troncons.yaml --3mf --out out
   le réglage `printer: p1s | h2s` (menu « Imprimante » de la GUI) choisit le gabarit, donc le plateau
   (P1S 256 × 256 × 250, H2S 340 × 320 × 340) et le volume utile. `bambu.template` (chemin) impose le sien et
   l'emporte ; `null` = aucun gabarit.
-- **Fond ouvert** : aucune couche inférieure (`bottom_shell_layers: 0`), la spirale part du plateau.
+- **Fond ouvert** : aucune couche inférieure (`bottom_shell_layers: 0`), la 1re couche est un tour fermé (imposé par Bambu Studio
+  avec une bordure), la spirale part de la 2e.
   **Bordure** : les gabarits H2S imposent une vraie bordure extérieure (`brim_type: outer_only`, 5 mm) ;
   le brim « auto » de Bambu Studio calcule sa propre largeur et l'omet souvent. Les gabarits P1S gardent
   le brim auto.

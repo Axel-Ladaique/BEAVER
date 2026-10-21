@@ -225,3 +225,39 @@ def test_asa_template_resolves_and_run_writes_3mf(tmp_path):
     assert r.exit_code in (0, 1) and "erreur" not in r.output.lower(), r.output
     assert "gabarit p1s_asa_aero.3mf : réglages vase mode imposés" in r.output
     assert b'"spiral_mode": "1"' in _settings_bytes(tmp_path / "res" / "aile.3mf")
+
+
+# --- fond ouvert et bordure -----------------------------------------------------------------------
+TEMPLATES = sorted((Path(__file__).parents[1] / "src" / "beaver" / "templates").glob("*.3mf"))
+
+
+@pytest.mark.parametrize("path", TEMPLATES, ids=lambda p: p.name)
+def test_templates_no_bottom_layers_and_brim(path):
+    """Aucune couche inférieure (pièce ouverte en bas), bordure extérieure de 5 mm, pas de jupe."""
+    import json
+
+    s = json.loads(_settings_bytes(path))
+    assert s["bottom_shell_layers"] == "0"
+    assert s["brim_type"] == "outer_only" and s["brim_width"] == "5"
+    assert s["skirt_loops"] == "0"
+
+
+def test_old_template_bottom_layers_forced_to_zero(tmp_path):
+    """Gabarit utilisateur en vase mode mais avec 3 couches inférieures : 0 imposé, avertissement."""
+    import json
+
+    from beaver.bambu import vase_warning
+
+    src = tmp_path / "ancien.3mf"
+    with zipfile.ZipFile(FIXTURE) as zt, zipfile.ZipFile(src, "w") as z:
+        for n in zt.namelist():
+            data = zt.read(n)
+            if n == "Metadata/project_settings.config":
+                data = data.replace(b'"bottom_shell_layers": "0"', b'"bottom_shell_layers": "3"')
+            z.writestr(n, data)
+    t = read_template(src)
+    assert vase_warning(t) == "gabarit ancien.3mf : réglages vase mode imposés (bottom_shell_layers)"
+    out = write_project(t, [_box()], tmp_path / "o.3mf")
+    new, old = json.loads(_settings_bytes(out)), json.loads(_settings_bytes(src))
+    assert new["bottom_shell_layers"] == "0"
+    assert {k for k in new if new[k] != old.get(k)} == {"bottom_shell_layers"}

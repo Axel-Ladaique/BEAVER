@@ -173,6 +173,11 @@ uv run beaver run piece.step -c examples/config-2-troncons.yaml --3mf --out out
   le réglage `printer: p1s | h2s` (menu « Imprimante » de la GUI) choisit le gabarit, donc le plateau
   (P1S 256 × 256 × 250, H2S 340 × 320 × 340) et le volume utile. `bambu.template` (chemin) impose le sien et
   l'emporte ; `null` = aucun gabarit.
+- **Fond ouvert** : aucune couche inférieure (`bottom_shell_layers: 0`), la 1re couche est un tour fermé (imposé par Bambu Studio
+  avec une bordure), la spirale part de la 2e.
+  **Bordure** : les gabarits embarqués (P1S et H2S) ont une bordure extérieure (`brim_type: outer_only`,
+  5 mm) pour l'accroche au plateau ; le brim « auto » de Bambu Studio calcule sa propre largeur et l'omet
+  souvent. Pas de jupe (`skirt_loops: 0`).
 - **Un plateau par tronçon** (en vase mode, un seul objet par plateau), disposés comme dans Bambu Studio,
   chaque tronçon centré et posé sur son plateau, emplanture en bas.
 - Découpe automatique quand la pièce dépasse la hauteur utile = hauteur du gabarit − marge. La découpe
@@ -296,7 +301,7 @@ uv run beaver profils --copier asa_aero  # copie le profil embarqué dans ./prof
 
 L'**ASA Aero** a ses gabarits Bambu embarqués (`p1s_asa_aero.3mf`, `h2s_asa_aero.3mf`, filament Bambu ASA-Aero). Ce gabarit
 n'est pas en vase mode : à l'écriture du `.3mf`, BEAVER **impose les réglages vase mode** (`spiral_mode`,
-`wall_loops`, `top_shell_layers`, densités de remplissage…) et affiche un avertissement ; les réglages filament
+`wall_loops`, `top_shell_layers`, `bottom_shell_layers`, densités de remplissage…) et affiche un avertissement ; les réglages filament
 et imprimante restent ceux de l'ASA. Pour un gabarit déjà en vase mode (PLA Aero), le fichier est recopié à
 l'identique.
 

@@ -39,6 +39,8 @@ def test_run_3mf(run_out):
     with zipfile.ZipFile(out / "aile.3mf") as z:
         assert "Metadata/model_settings.config" in z.namelist()
         assert z.read("Metadata/model_settings.config").count(b"<plate>") == 3
+        assert b'"bottom_shell_layers": "0"' in z.read("Metadata/project_settings.config")
+    assert "vase mode imposés" not in r.output  # gabarit PLA déjà à 0 couche inférieure
 
 
 def test_open_calls_popen_once(tmp_path, monkeypatch):

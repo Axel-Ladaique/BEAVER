@@ -69,6 +69,8 @@ def test_h2s_3mf_written_with_h2s_model_and_vase(tmp_path):
     settings = json.loads(members["Metadata/project_settings.config"])
     assert settings["printer_model"] == "Bambu Lab H2S"
     assert str(settings["spiral_mode"]) == "1"
+    assert settings["bottom_shell_layers"] == "0"
+    assert settings["brim_type"] == "outer_only" and settings["brim_width"] == "5"
 
 
 @pytest.mark.slow  # ≈ 13 s : deux générations complètes

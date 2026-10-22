@@ -8,8 +8,8 @@ signal périodique."""
 from __future__ import annotations
 
 import functools
+import multiprocessing
 import os
-import resource
 import sys
 import threading
 import time
@@ -17,7 +17,6 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import contextmanager
-import multiprocessing
 
 from beaver.env import lire_env
 
@@ -35,18 +34,48 @@ def duration(seconds: float) -> str:
     return f"{m} min {s:02d} s"
 
 
+@functools.lru_cache(maxsize=1)
+def _libproc():
+    import ctypes
+
+    try:
+        return ctypes.CDLL("/usr/lib/libproc.dylib")
+    except OSError:
+        return None
+
+
+def _footprint(pid: int) -> int | None:
+    """macOS : empreinte physique (`phys_footprint`, celle du Moniteur d'activité). Le RSS n'y compte pas la mémoire
+    compressée : un booléen de plusieurs Go sous pression mémoire y paraît peser 50 Mo."""
+    import ctypes
+
+    lib = _libproc()
+    if lib is None:
+        return None
+    info = (ctypes.c_uint64 * 40)()  # rusage_info_v2 : uuid (2 mots), 6 compteurs, resident_size, phys_footprint…
+    if lib.proc_pid_rusage(int(pid), 2, ctypes.byref(info)) != 0:
+        return None
+    return int(info[9])
+
+
+def _process_memory(proc) -> int:
+    if sys.platform == "darwin" and (fp := _footprint(proc.pid)) is not None:
+        return fp
+    return proc.memory_info().rss
+
+
 def memory_bytes() -> int | None:
-    """Mémoire résidente du processus et de ses fils (booléen isolé, pool de validation) ; None si inconnue."""
+    """Mémoire du processus et de ses fils (booléen isolé, pool de validation) ; None si inconnue (sans psutil)."""
     try:
         import psutil
     except ImportError:
-        return None
+        return _footprint(os.getpid()) if sys.platform == "darwin" else None
     try:
         me = psutil.Process()
-        total = me.memory_info().rss
+        total = _process_memory(me)
         for child in me.children(recursive=True):
             try:
-                total += child.memory_info().rss
+                total += _process_memory(child)
             except psutil.Error:
                 pass
         return total
@@ -54,15 +83,12 @@ def memory_bytes() -> int | None:
         return None
 
 
-def peak_memory_bytes() -> int:
-    """Pic de mémoire résidente du processus (sans ses fils)."""
-    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return peak if sys.platform == "darwin" else peak * 1024  # octets sous macOS, Kio sous Linux
-
-
 def memory_text() -> str:
+    """« mémoire 3,2 Go » (« 450 Mo » sous 1 Go), vide si inconnue."""
     mem = memory_bytes()
-    return f"mémoire {mem / 1e9:.1f} Go".replace(".", ",") if mem is not None else ""
+    if mem is None:
+        return ""
+    return f"mémoire {mem / 1e9:.1f} Go".replace(".", ",") if mem >= 1e9 else f"mémoire {mem / 1e6:.0f} Mo"
 
 
 @contextmanager
@@ -105,8 +131,3 @@ def isolated(fn: Callable, *args):
             return pool.submit(fn, *args).result()
     except (BrokenProcessPool, OSError):
         return fn(*args)
-
-
-@functools.lru_cache(maxsize=1)
-def cpu_count() -> int:
-    return os.cpu_count() or 1

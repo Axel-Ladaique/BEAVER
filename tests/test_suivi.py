@@ -22,7 +22,7 @@ def test_step_reports_duration_and_heartbeat(monkeypatch):
     beats = [m for m in msgs if "en cours depuis" in m]
     assert len(beats) >= 2 and all(m.startswith("W : découpe : en cours depuis ") for m in beats)
     assert msgs[-1].startswith("W : découpe : ") and msgs[-1].endswith(" s")
-    assert "mémoire" in beats[0] and "Go" in beats[0]  # psutil présent dans l'environnement
+    assert "mémoire" in beats[0] and beats[0].endswith((" Go", " Mo"))  # psutil présent dans l'environnement
 
 
 def test_short_step_is_silent():

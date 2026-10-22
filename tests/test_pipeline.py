@@ -5,7 +5,7 @@ from build123d import Cylinder, Location
 from shapely.geometry import LineString, Point, Polygon, box
 from shapely.ops import unary_union
 
-from beaver import pipeline
+from beaver import pipeline, suivi
 from beaver.classify import classify
 from beaver.config import load_config
 from beaver.io_step import NamedBody
@@ -35,6 +35,19 @@ def test_synthetic_wing_is_printable():
     assert any("nervures" in m for m in messages)
     # longeron et passage relié comptés séparément
     assert any("1 longeron(s), 1 passage(s) relié(s), 0 rebouché(s)" in m for m in messages), messages
+    # journal : nombre de plaques annoncé avant la découpe (pas d'avertissement « calcul lourd » sous le seuil)
+    assert any(m.startswith(f"Aile_test : découpe de {body.plates} plaques et ") for m in messages), messages
+    assert not any("calcul lourd" in m for m in messages)
+
+
+def test_heavy_cut_is_announced(monkeypatch):
+    monkeypatch.setattr(pipeline, "HEAVY_PLATES", 3)
+    monkeypatch.setattr(suivi, "REPORT_MIN", 0.0)  # toutes les durées d'étape annoncées
+    messages = []
+    run_model(classify(wing_x_bodies(), FAST_LINK), FAST_LINK, progress=messages.append)
+    assert any(m.startswith("⚠ Aile_test : ") and "calcul lourd" in m for m in messages), messages
+    for label in ("surface médiane", "plaques des nervures", "découpe booléenne", "découpe en morceaux", "validation"):
+        assert any(m.startswith(f"Aile_test : {label} : ") and m.endswith(" s") for m in messages), (label, messages)
 
 
 def test_spar_outside_skin_is_ignored():

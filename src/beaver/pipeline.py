@@ -7,7 +7,7 @@ import math
 import multiprocessing
 import os
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -52,7 +52,7 @@ from beaver.orient import Orientation, orient
 from beaver.segment import CutFailure, SegmentError, cut_chain, split_part
 from beaver.slicing import mesh_sections, section_sampler, slice_layers, to_mesh
 from beaver.report import hollow_summary
-from beaver.suivi import HEAVY_PLATES, can_isolate, duration, isolated, step
+from beaver.suivi import HEAVY_PLATES, available_memory, can_isolate, duration, gigas, isolated, own_memory, step
 from beaver.validate import MAX_FAILED_LAYERS, Issue, Report, validate
 
 
@@ -158,8 +158,8 @@ def cut_tools(skin: Solid, tools: Sequence[Solid]) -> Shape:
 
 def _cut_piece(piece: bytes, dz: float, tools: Sequence[bytes], spars: Sequence[bytes]):
     """Un morceau de peau (posé à z = 0, `dz` : hauteur de son bas dans la pièce) moins ses outils (repère de la
-    pièce) : (morceau découpé posé à z = 0, éclats retirés, obstruction de chaque longeron, durée). Fonction de module
-    picklable (processus à part, `cut_pieces`)."""
+    pièce) : (morceau découpé posé à z = 0, éclats retirés, obstruction de chaque longeron, durée, mémoire du
+    processus à la fin, ≈ son pic). Fonction de module picklable (processus à part, `cut_pieces`)."""
     t0 = time.monotonic()
     shape = Pos(0, 0, dz) * Shape.cast(deserialize_shape(piece))
     try:
@@ -167,7 +167,8 @@ def _cut_piece(piece: bytes, dz: float, tools: Sequence[bytes], spars: Sequence[
     except (PipelineError, *GEOMETRY_ERRORS) as exc:
         raise PieceCutError(str(exc)) from None
     blocked = [spar_obstruction(Shape.cast(deserialize_shape(sp)), part) for sp in spars]
-    return serialize_shape((Pos(0, 0, -dz) * part).wrapped), slivers, blocked, time.monotonic() - t0
+    elapsed = time.monotonic() - t0
+    return serialize_shape((Pos(0, 0, -dz) * part).wrapped), slivers, blocked, elapsed, own_memory()
 
 
 def _boxes_touch(a, b, margin: float = 1.0) -> bool:
@@ -175,6 +176,22 @@ def _boxes_touch(a, b, margin: float = 1.0) -> bool:
         min(getattr(a.max, k), getattr(b.max, k)) + margin >= max(getattr(a.min, k), getattr(b.min, k))
         for k in ("X", "Y", "Z")
     )
+
+
+PIECE_GB_PER_TOOL = 0.03  # Go par outil d'un morceau : estimation de la mémoire du booléen d'un morceau
+MEMORY_SHARE = 0.7  # part de la mémoire disponible que les booléens des morceaux peuvent prendre ensemble
+
+
+def piece_workers(tools: Sequence[int]) -> int:
+    """Booléens de morceaux lancés ensemble : au plus un par morceau et par cœur, et autant que la mémoire disponible
+    en loge (≈ PIECE_GB_PER_TOOL Go par outil du plus gros morceau) — 2 couches de nervures : plusieurs Go par
+    morceau, le swap ralentirait tout bien plus que le parallélisme ne fait gagner."""
+    n = max(1, min(len(tools), os.cpu_count() or 1))
+    avail = available_memory()
+    if avail is None or not tools:
+        return n
+    need = max(0.5, PIECE_GB_PER_TOOL * max(tools)) * 1e9
+    return max(1, min(n, int(MEMORY_SHARE * avail // need)))
 
 
 def cut_pieces(
@@ -198,15 +215,24 @@ def cut_pieces(
     def done(k: int, res) -> None:
         out[k] = res
         name = names[k] if k < len(names) else f"morceau {k + 1}"
-        progress(f"{pre}{name} : {len(jobs[k][2])} outils découpés en {duration(res[3])}")
+        mem = f", mémoire {gigas(res[4])}" if res[4] else ""
+        progress(f"{pre}{name} : {len(jobs[k][2])} outils découpés en {duration(res[3])}{mem}")
 
-    if not can_isolate():  # parent démon, BEAVER_ISOLER=0 : morceaux l'un après l'autre, sur place
+    workers = piece_workers([len(job[2]) for job in jobs])
+    avail = available_memory()
+    progress(f"{pre}découpe des morceaux : {workers} à la fois"
+             + (f" (mémoire disponible {gigas(avail)})" if avail is not None else ""))
+    if workers == 1 or not can_isolate():  # un seul à la fois, parent démon, BEAVER_ISOLER=0 : sur place
         for k, job in enumerate(jobs):
             done(k, _cut_piece(*job))
     else:
-        workers = max(1, min(len(jobs), os.cpu_count() or 1))
-        with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn")) as pool:
-            futures = {pool.submit(_cut_piece, *job): k for k, job in enumerate(jobs)}
+        # un processus neuf par morceau (la mémoire d'un booléen n'est rendue qu'à la fin du processus), le plus gros
+        # morceau d'abord
+        order = sorted(range(len(jobs)), key=lambda k: -len(jobs[k][2]))
+        with ProcessPoolExecutor(
+            max_workers=workers, mp_context=multiprocessing.get_context("spawn"), max_tasks_per_child=1,
+        ) as pool:
+            futures = {pool.submit(_cut_piece, *jobs[k]): k for k in order}
             for fut in as_completed(futures):
                 done(futures[fut], fut.result())
     blocked = [sum(o[2][i] for o in out) for i in range(len(spars))]
@@ -940,6 +966,27 @@ def segment_part(
     )
 
 
+VALIDATE_AT_ONCE = 2  # morceaux validés en même temps : les couches de l'un se calculent pendant les contrôles de l'autre
+
+
+def validate_pieces(body_name: str, seg: Segmented, cfg: Config, progress: Callable[[str], None]) -> tuple[Report, ...]:
+    """Validation de chaque morceau d'une coupe dans la corde avec sa peau de référence, VALIDATE_AT_ONCE à la fois
+    (fils : le découpage en couches d'un morceau, en Python et OpenCascade, recouvre les contrôles de l'autre, qui
+    tournent dans le pool de processus de `validate` et libèrent le GIL). Rapports dans l'ordre des morceaux."""
+
+    def one(k: int) -> Report:
+        piece, (ref, exempt) = seg.pieces[k], seg.checks[k]
+        name = seg.names[k] if k < len(seg.names) else f"morceau {k + 1}"
+        with step(progress, f"{body_name} : validation de {name}"):
+            return validate(piece, cfg, original=ref, skin_exempt=exempt)
+
+    n = min(len(seg.pieces), len(seg.checks))
+    if n < 2:
+        return tuple(one(k) for k in range(n))
+    with ThreadPoolExecutor(max_workers=VALIDATE_AT_ONCE, thread_name_prefix="beaver-validation") as pool:
+        return tuple(pool.map(one, range(n)))
+
+
 def merge_reports(reports: Sequence[Report], names: Sequence[str], offsets: Sequence[float], height: float) -> Report:
     """Rapport d'ensemble des morceaux validés séparément : défauts préfixés du nom du morceau, z ramenés au repère
     de la pièce entière (`offsets` : bas de chaque morceau) ; trajet et masse additionnés ; couches : celles de la
@@ -1136,10 +1183,8 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
             seg = segmented(result, "découpe de la peau en morceaux")
             z0 = result.bounding_box(optimal=True).min.Z
             offsets = [z0 + a for a, _ in seg.spans]
-            workers = min(len(seg.pieces), os.cpu_count() or 1)
             try:
-                with step(progress, f"{s.body.name} : découpe booléenne de {len(seg.pieces)} morceaux "
-                                    f"({workers} en parallèle)"):
+                with step(progress, f"{s.body.name} : découpe booléenne de {len(seg.pieces)} morceaux"):
                     cut, slivers = cut_pieces(seg.pieces, offsets, seg.names, gen.pending, progress, f"{s.body.name} : ")
                 seg = seg._replace(pieces=tuple(cut))
                 result = Compound([Pos(0, 0, dz) * p for p, dz in zip(cut, offsets)])
@@ -1150,12 +1195,7 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
             gen = gen._replace(result=result, slivers=slivers, pending=None)
         piece_reports: tuple[Report, ...] = ()
         if seg.checks:  # coupe dans la corde : chaque morceau validé avec la peau d'origine coupée de même
-            reports = []
-            for k, (piece, (ref, exempt)) in enumerate(zip(seg.pieces, seg.checks)):
-                name = seg.names[k] if k < len(seg.names) else f"morceau {k + 1}"
-                with step(progress, f"{s.body.name} : validation de {name}"):
-                    reports.append(validate(piece, cfg, original=ref, skin_exempt=exempt))
-            piece_reports = tuple(reports)
+            piece_reports = validate_pieces(s.body.name, seg, cfg, progress)
             bb = result.bounding_box(optimal=True)
             report = merge_reports(
                 piece_reports, seg.names, [bb.min.Z + a for a, _ in seg.spans], bb.max.Z - bb.min.Z

@@ -54,3 +54,17 @@ def test_isolated_cut_matches_in_process_cut():
     assert len(isolated.solids()) == 1 and isolated.is_valid
     assert abs(isolated.volume - local.volume) < 1e-6
     assert len(isolated.faces()) == len(local.faces())
+
+
+def test_piece_workers_bounded_by_memory(monkeypatch):
+    from beaver import pipeline
+
+    monkeypatch.setattr(pipeline.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(pipeline, "available_memory", lambda: 16e9)
+    assert pipeline.piece_workers([10, 20, 30]) == 3  # petits morceaux : un par morceau
+    # 2 couches : ≈ 5,4 Go par morceau de 180 outils → 2 à la fois dans 70 % de 16 Go
+    assert pipeline.piece_workers([180, 150, 120, 100, 90]) == 2
+    monkeypatch.setattr(pipeline, "available_memory", lambda: 2e9)
+    assert pipeline.piece_workers([180, 150]) == 1  # jamais moins d'un
+    monkeypatch.setattr(pipeline, "available_memory", lambda: None)  # sans psutil : un par cœur
+    assert pipeline.piece_workers([180] * 12) == 8

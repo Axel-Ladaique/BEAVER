@@ -83,12 +83,38 @@ def memory_bytes() -> int | None:
         return None
 
 
+def own_memory() -> int | None:
+    """Mémoire du processus courant seul (empreinte physique sous macOS), None si inconnue."""
+    if sys.platform == "darwin" and (fp := _footprint(os.getpid())) is not None:
+        return fp
+    try:
+        import psutil
+
+        return psutil.Process().memory_info().rss
+    except (ImportError, OSError):
+        return None
+
+
+def available_memory() -> int | None:
+    """Mémoire disponible du système (octets), None si inconnue (sans psutil)."""
+    try:
+        import psutil
+
+        return int(psutil.virtual_memory().available)
+    except (ImportError, OSError):
+        return None
+
+
+def gigas(n: float) -> str:
+    return f"{n / 1e9:.1f} Go".replace(".", ",")
+
+
 def memory_text() -> str:
     """« mémoire 3,2 Go » (« 450 Mo » sous 1 Go), vide si inconnue."""
     mem = memory_bytes()
     if mem is None:
         return ""
-    return f"mémoire {mem / 1e9:.1f} Go".replace(".", ",") if mem >= 1e9 else f"mémoire {mem / 1e6:.0f} Mo"
+    return f"mémoire {gigas(mem)}" if mem >= 1e9 else f"mémoire {mem / 1e6:.0f} Mo"
 
 
 @contextmanager

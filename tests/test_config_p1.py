@@ -108,7 +108,7 @@ def test_slit_defaults_survive_slicer_closing():
     cfg = load_config()
     assert cfg.preset.min_slit_width == 0.10
     assert load_config(overrides={"material": "asa_aero"}).preset.min_slit_width == 0.10
-    assert cfg.spar_settings("SBAR").slit_width == 0.15 and cfg.passages.slit_width == 0.15
+    assert cfg.spar_settings("SBAR").slit_width == 0.12 and cfg.passages.slit_width == 0.12
 
 
 @pytest.mark.parametrize(

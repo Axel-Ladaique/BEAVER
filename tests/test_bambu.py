@@ -1,3 +1,4 @@
+import json
 import zipfile
 from dataclasses import replace
 import xml.etree.ElementTree as ET
@@ -56,9 +57,12 @@ def test_write_project(tmp_path):
     out = write_project(t, objs, tmp_path / "out.3mf")
     with zipfile.ZipFile(out) as z, zipfile.ZipFile(FIXTURE) as zt:
         names = z.namelist()
-        for n in ("Metadata/project_settings.config", "Metadata/slice_info.config",
-                  "[Content_Types].xml"):
+        for n in ("Metadata/slice_info.config", "[Content_Types].xml"):
             assert z.read(n) == zt.read(n)
+        # réglages recopiés, seule la liste des clés déclarées au preset système est complétée
+        new, old = (json.loads(f.read("Metadata/project_settings.config")) for f in (z, zt))
+        assert {k for k in new if new[k] != old.get(k)} <= {"different_settings_to_system"}
+        assert "brim_type" in new["different_settings_to_system"][0].split(";")
         assert not [n for n in names if "plate_" in n and n.endswith((".png", ".json"))]
         assert sorted(n for n in names if n.startswith("3D/Objects/")) == [
             f"3D/Objects/object_{k}.model" for k in (1, 2, 3)
@@ -199,7 +203,7 @@ def test_asa_vase_forced_keeps_filament(tmp_path):
     assert all(new[k] == v for k, v in VASE_SETTINGS.items())
     assert new["spiral_mode"] == "1" and new["wall_loops"] == "1" and new["top_shell_layers"] == "0"
     changed = {k for k in new if new[k] != old.get(k)}
-    assert changed <= set(VASE_SETTINGS) and "spiral_mode" in changed
+    assert changed <= {*VASE_SETTINGS, "different_settings_to_system"} and "spiral_mode" in changed
     assert new["filament_settings_id"] == ["Bambu ASA-Aero @BBL X1C"]
     assert new["filament_type"] == ["ASA-AERO"] and new["nozzle_temperature"] == ["270"]
     assert _settings_bytes(out).endswith(b"\n")
@@ -240,6 +244,9 @@ def test_templates_no_bottom_layers_and_brim(path):
     assert s["bottom_shell_layers"] == "0"
     assert s["brim_type"] == "outer_only" and s["brim_width"] == "5"
     assert s["skirt_loops"] == "0"
+    # déclarées au preset système, sinon Bambu Studio les remet à ses valeurs (bordure auto, 3 couches)
+    declared = s["different_settings_to_system"][0].split(";")
+    assert {"bottom_shell_layers", "brim_type", "brim_width", "skirt_loops"} <= set(declared)
 
 
 def test_old_template_bottom_layers_forced_to_zero(tmp_path):
@@ -260,4 +267,5 @@ def test_old_template_bottom_layers_forced_to_zero(tmp_path):
     out = write_project(t, [_box()], tmp_path / "o.3mf")
     new, old = json.loads(_settings_bytes(out)), json.loads(_settings_bytes(src))
     assert new["bottom_shell_layers"] == "0"
-    assert {k for k in new if new[k] != old.get(k)} == {"bottom_shell_layers"}
+    assert {k for k in new if new[k] != old.get(k)} == {"bottom_shell_layers", "different_settings_to_system"}
+    assert "bottom_shell_layers" in new["different_settings_to_system"][0].split(";")

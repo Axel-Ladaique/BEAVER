@@ -9,7 +9,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
 
-from build123d import Cylinder, Location, Solid
+from build123d import Cylinder, Location, Shape, Solid
+from build123d.persistence import deserialize_shape, serialize_shape
 from OCP.Standard import Standard_Failure
 from OCP.BRepTools import BRepTools
 from shapely.errors import ShapelyError
@@ -45,6 +46,7 @@ from beaver.orient import Orientation, orient
 from beaver.segment import CutFailure, SegmentError, cut_chain, split_part
 from beaver.slicing import mesh_sections, section_sampler, slice_layers, to_mesh
 from beaver.report import hollow_summary
+from beaver.suivi import HEAVY_PLATES, isolated, step
 from beaver.validate import MAX_FAILED_LAYERS, Issue, Report, validate
 
 
@@ -114,6 +116,32 @@ def spars_inside(skin: Solid, spars: list[tuple[str, Solid]], tol: float) -> lis
 MAX_SPAR_OBSTRUCTION = 1.0  # mm³ : au-delà, le longeron ne rentre pas dans la pièce générée
 # mm³ : en dessous, un solide séparé est un éclat du booléen (fins de plaques presque jointives), pas de la matière
 MAX_SLIVER_VOLUME = 0.5
+
+
+ISOLATE_MIN_TOOLS = 100  # outils de découpe à partir desquels le booléen part dans un processus à part
+
+
+def _cut_serialized(skin: bytes, tools: Sequence[bytes]) -> bytes:
+    """`Shape.cut` sur des formes sérialisées (picklables : processus à part, `suivi.isolated`)."""
+    base = Shape.cast(deserialize_shape(skin))
+    return serialize_shape(base.cut(*(Shape.cast(deserialize_shape(t)) for t in tools)).wrapped)
+
+
+def cut_tools(skin: Solid, tools: Sequence[Solid]) -> Shape:
+    """`skin − tools` en un seul booléen (comme `skin.cut(*tools)`), calculé dans un processus à part : OpenCascade
+    garde le GIL pendant le booléen, le journal ne pourrait sinon rien dire pendant des minutes (`suivi.step`).
+
+    Pas de découpe par lots (famille ±45° puis l'autre) : plus rapide (≈ ×1,5 à 2 sur Dotitos), mais une plaque qui
+    croise les fentes déjà creusées par l'autre famille peut n'être retirée qu'en partie (tolérances des arêtes
+    laissées par le premier lot), sans erreur d'OpenCascade : fente manquante, pièce fausse.
+
+    Moins de ISOLATE_MIN_TOOLS outils (petites pièces, tests) : booléen sur place, le processus ne vaut pas son
+    démarrage."""
+    if len(tools) < ISOLATE_MIN_TOOLS:
+        return skin.cut(*tools)
+    return Shape.cast(deserialize_shape(isolated(
+        _cut_serialized, serialize_shape(skin.wrapped), [serialize_shape(t.wrapped) for t in tools]
+    )))
 
 
 def main_solid(result) -> tuple[Solid, int]:
@@ -471,16 +499,70 @@ def skin_tubes(
 
 def generate_skin(
     skin: Solid, spars: list[tuple[str, Solid]], cfg: Config, cables: frozenset[str] = frozenset(),
-    servos: Sequence[tuple[str, Solid]] = (), anchor=None,
+    servos: Sequence[tuple[str, Solid]] = (), anchor=None, progress: Callable[[str], None] = lambda m: None,
+    label: str = "",
 ) -> Generated:
     """Nervures, trous et baies d'une peau orientée. `anchor` : boîte de calage du motif de nervures (boîte globale
-    des peaux d'un modèle à plusieurs corps d'aile ; None = boîte de la peau)."""
+    des peaux d'un modèle à plusieurs corps d'aile ; None = boîte de la peau). `progress` : journal (durée de chaque
+    étape, signal périodique des étapes longues, `suivi.step`) ; `label` : préfixe des lignes (nom du corps)."""
     tol = cfg.validation.tessellation_tol
     bb = skin.bounding_box()
     nx, nz = cfg.split.grid
-    mid = MidSurface.from_skin(skin, nx, nz, tol)
+    pre = f"{label} : " if label else ""
+    with step(progress, f"{pre}surface médiane"):
+        mid = MidSurface.from_skin(skin, nx, nz, tol)
     vertical, transversal = split_spars(spars, cfg)
     inside = spars_inside(skin, vertical, tol)
+    with step(progress, f"{pre}trous, baies et plan de découpe"):
+        holes = _holes(skin, cfg, cables, servos, anchor, mid, inside, transversal)
+    found, bores, to_fill, bays, held, plan = holes
+    tubes = [t for t, _ in held]
+    guides = None
+    if hollow_on(cfg):  # évidements : nervures pleines autour des coupes, plan calculé avant (le même sert à la découpe)
+        if plan is None:
+            with step(progress, f"{pre}plan de découpe"):
+                plan = cut_plan(skin, cfg, bores, bays, filled=[f for _, f in to_fill], rib_origin=rib_origin_of(skin, anchor))
+        guides = cut_guides(plan, skin.bounding_box(optimal=True).min.Z)
+    saved = hollow_saving_g(bb, mid, bores, cfg, bays, anchor, tubes, guides) if hollow_on(cfg) else 0.0
+    skin = fill_skin(skin, to_fill, tol)
+    plates, counts = [], []
+    with step(progress, f"{pre}plaques des nervures"):
+        for i, layer in enumerate(cfg.rib_layers):
+            layer_plates = diamond_plates(bb, mid, bores, layer, **rib_options(cfg, bb, i, bays, anchor, tubes, guides))
+            plates += layer_plates
+            counts.append(len(layer_plates))
+    warns = [*wall_warnings(bb, mid, bores, cfg, counts, bays, anchor, tubes), *reinforce_warnings(bays),
+             *tube_warnings(tubes, cfg, bays)]
+    # gaines et longerons qui entrent dans une baie : simplement découpés par la poche
+    # poches et fentes de renfort : ouvertures voulues de la peau
+    pockets = [t for b in bays for t in (pocket_solid(b), *reinforce_solids(b))]
+    tube_tools = [tool for t in tubes for tool in t.tools()]
+    others = [*bore_cut_tools(bores, bb, mid), *tube_tools, *pockets]
+    layers = f" ({' + '.join(str(c) for c in counts)} par couche)" if len(counts) > 1 else ""
+    progress(f"{pre}découpe de {len(plates)} plaques{layers} et {len(others)} outil(s) de trous dans la peau…")
+    if len(plates) > HEAVY_PLATES:
+        progress(f"⚠ {pre}{len(plates)} plaques (> {HEAVY_PLATES}) : calcul lourd, plusieurs minutes et plusieurs Go "
+                 "de mémoire")
+    with step(progress, f"{pre}découpe booléenne"):
+        result = cut_tools(skin, [*plates, *others])
+    with step(progress, f"{pre}contrôle de la pièce découpée"):
+        part, slivers = main_solid(result)
+        for name, spar in [*inside, *((t.name, solid) for t, solid in held)]:
+            blocked = spar_obstruction(spar, part)
+            if blocked > MAX_SPAR_OBSTRUCTION:
+                raise PipelineError(f"{name} : le longeron traverse la matière ({blocked:.0f} mm³) — vérifier son axe")
+    # trous des SBAR transversales entre leurs bouts réels, bouches comprises (`Tube.opening`) : ouvertures voulues
+    # de la peau. Pas le prolongement d'outil au-delà (une entaille par lui reste « peau entamée »), et le trou ne
+    # touche la peau qu'à ses bouches (sinon TubeError, `tubes._check_wall`)
+    openings = (*pockets, *hole_openings(bores, bays, bb), *(o for t in tubes for o in t.opening_solids()))
+    return Generated(
+        part, tuple(bores), len(plates), tuple(f for _, f in to_fill), slivers, tuple(warns), tuple(bays), openings,
+        tuple(tubes), plan, saved,
+    )
+
+
+def _holes(skin, cfg, cables, servos, anchor, mid, inside, transversal):
+    """Alésages, rebouchages, baies de servo, SBAR transversales et plan de découpe d'une peau (`generate_skin`)."""
     try:
         found = find_passages(skin, cfg.passages.max_tilt_deg)  # une seule recherche des alésages
         bores = extend_to_existing_bores(spar_bores(inside, cfg, cables), skin, cfg, found)
@@ -493,41 +575,7 @@ def generate_skin(
         )
     except (BoreError, ServoError) as exc:
         raise PipelineError(str(exc)) from exc
-    tubes = [t for t, _ in held]
-    guides = None
-    if hollow_on(cfg):  # évidements : nervures pleines autour des coupes, plan calculé avant (le même sert à la découpe)
-        if plan is None:
-            plan = cut_plan(skin, cfg, bores, bays, filled=[f for _, f in to_fill], rib_origin=rib_origin_of(skin, anchor))
-        guides = cut_guides(plan, skin.bounding_box(optimal=True).min.Z)
-    saved = hollow_saving_g(bb, mid, bores, cfg, bays, anchor, tubes, guides) if hollow_on(cfg) else 0.0
-    skin = fill_skin(skin, to_fill, tol)
-    plates, counts = [], []
-    for i, layer in enumerate(cfg.rib_layers):
-        layer_plates = diamond_plates(bb, mid, bores, layer, **rib_options(cfg, bb, i, bays, anchor, tubes, guides))
-        plates += layer_plates
-        counts.append(len(layer_plates))
-    warns = [*wall_warnings(bb, mid, bores, cfg, counts, bays, anchor, tubes), *reinforce_warnings(bays),
-             *tube_warnings(tubes, cfg, bays)]
-    # gaines et longerons qui entrent dans une baie : simplement découpés par la poche
-    # poches et fentes de renfort : ouvertures voulues de la peau
-    pockets = [t for b in bays for t in (pocket_solid(b), *reinforce_solids(b))]
-    tube_tools = [tool for t in tubes for tool in t.tools()]
-    result = skin.cut(*plates, *bore_cut_tools(bores, bb, mid), *tube_tools, *pockets)
-    part, slivers = main_solid(result)
-    for name, spar in [*inside, *((t.name, solid) for t, solid in held)]:
-        blocked = spar_obstruction(spar, part)
-        if blocked > MAX_SPAR_OBSTRUCTION:
-            raise PipelineError(f"{name} : le longeron traverse la matière ({blocked:.0f} mm³) — vérifier son axe")
-    # trous des SBAR transversales entre leurs bouts réels, bouches comprises (`Tube.opening`) : ouvertures voulues
-    # de la peau. Pas le prolongement d'outil au-delà (une entaille par lui reste « peau entamée »), et le trou ne
-    # touche la peau qu'à ses bouches (sinon TubeError, `tubes._check_wall`)
-    openings = (*pockets, *hole_openings(bores, bays, bb), *(o for t in tubes for o in t.opening_solids()))
-    return Generated(
-        part, tuple(bores), len(plates), tuple(f for _, f in to_fill), slivers, tuple(warns), tuple(bays), openings,
-        tuple(tubes), plan, saved,
-    )
-
-
+    return found, bores, to_fill, bays, held, plan
 
 
 # erreurs de géométrie possibles (build123d / OpenCascade) : traduites en PipelineError
@@ -935,7 +983,10 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
     for s, skin in zip(skins, oriented):
         progress(f"{s.body.name} : surface médiane, trous et nervures…")
         try:
-            gen = generate_skin(skin, spars, cfg, cables, servos_for(skin, servos, several), anchor=anchor)
+            gen = generate_skin(
+                skin, spars, cfg, cables, servos_for(skin, servos, several), anchor=anchor, progress=progress,
+                label=s.body.name,
+            )
             result, bores, n, filled = gen.result, gen.bores, gen.plates, gen.filled
         except PipelineError:
             raise
@@ -962,26 +1013,30 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
                 f"{s.body.name} : ouverture de la peau impossible (poche, trou de SBAR) ({type(exc).__name__} : {exc})"
             ) from exc
         try:
-            seg = segment_part(
-                s.body.name, result, cfg, progress, skin=skin, original=original, bores=bores, bays=gen.bays,
-                plan=gen.plan, filled=gen.filled, rib_origin=rib_origin_of(skin, anchor),
-            )
+            with step(progress, f"{s.body.name} : découpe en morceaux"):
+                seg = segment_part(
+                    s.body.name, result, cfg, progress, skin=skin, original=original, bores=bores, bays=gen.bays,
+                    plan=gen.plan, filled=gen.filled, rib_origin=rib_origin_of(skin, anchor),
+                )
         except PipelineError:
             raise
         except (*GEOMETRY_ERRORS, ShapelyError) as exc:  # planificateur (shapely) ou découpe (OpenCascade)
             raise PipelineError(f"{s.body.name} : découpe impossible ({type(exc).__name__} : {exc})") from exc
         piece_reports: tuple[Report, ...] = ()
         if seg.checks:  # coupe dans la corde : chaque morceau validé avec la peau d'origine coupée de même
-            piece_reports = tuple(
-                validate(piece, cfg, original=ref, skin_exempt=exempt)
-                for piece, (ref, exempt) in zip(seg.pieces, seg.checks)
-            )
+            reports = []
+            for k, (piece, (ref, exempt)) in enumerate(zip(seg.pieces, seg.checks)):
+                name = seg.names[k] if k < len(seg.names) else f"morceau {k + 1}"
+                with step(progress, f"{s.body.name} : validation de {name}"):
+                    reports.append(validate(piece, cfg, original=ref, skin_exempt=exempt))
+            piece_reports = tuple(reports)
             bb = result.bounding_box(optimal=True)
             report = merge_reports(
                 piece_reports, seg.names, [bb.min.Z + a for a, _ in seg.spans], bb.max.Z - bb.min.Z
             )
         else:
-            report = validate(result, cfg, original=original)
+            with step(progress, f"{s.body.name} : validation"):
+                report = validate(result, cfg, original=original)
         warns = seg.warnings
         if gen.slivers:
             warns = (*warns, f"{gen.slivers} éclat(s) négligeable(s) (< {MAX_SLIVER_VOLUME} mm³) retiré(s) à la découpe")

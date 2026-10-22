@@ -1117,6 +1117,7 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
             raise PipelineError(
                 f"{s.body.name} : ouverture de la peau impossible (poche, trou de SBAR) ({type(exc).__name__} : {exc})"
             ) from exc
+
         def segmented(part: Solid, label: str = "découpe en morceaux") -> Segmented:
             try:
                 with step(progress, f"{s.body.name} : {label}"):

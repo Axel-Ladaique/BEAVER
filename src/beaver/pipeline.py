@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import functools
 import math
+import multiprocessing
+import os
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
 
-from build123d import Cylinder, Location, Shape, Solid
+from build123d import Compound, Cylinder, Location, Pos, Shape, Solid
 from build123d.persistence import deserialize_shape, serialize_shape
 from OCP.Standard import Standard_Failure
 from OCP.BRepTools import BRepTools
@@ -19,6 +24,7 @@ from shapely.geometry import MultiPoint, Point, Polygon
 from beaver.classify import Model
 from beaver.bambu import BambuError, read_template
 from beaver.config import AUTO_TEMPLATE, Config, ConfigError, resolve_template
+from beaver.env import lire_env
 from beaver.features.bores import (
     Bore,
     BoreError,
@@ -46,12 +52,17 @@ from beaver.orient import Orientation, orient
 from beaver.segment import CutFailure, SegmentError, cut_chain, split_part
 from beaver.slicing import mesh_sections, section_sampler, slice_layers, to_mesh
 from beaver.report import hollow_summary
-from beaver.suivi import HEAVY_PLATES, isolated, step
+from beaver.suivi import HEAVY_PLATES, can_isolate, duration, isolated, step
 from beaver.validate import MAX_FAILED_LAYERS, Issue, Report, validate
 
 
 class PipelineError(ValueError):
     """Échec de génération (message en français)."""
+
+
+class PieceCutError(PipelineError):
+    """Découpe par morceau en échec sur un morceau (booléen, solide invalide) : `run_model` reprend la découpe de la
+    pièce entière."""
 
 
 @dataclass(frozen=True)
@@ -119,6 +130,7 @@ MAX_SLIVER_VOLUME = 0.5
 
 
 ISOLATE_MIN_TOOLS = 100  # outils de découpe à partir desquels le booléen part dans un processus à part
+PER_PIECE = lire_env("DECOUPE_PAR_MORCEAU") not in ("0", "non", "false")  # BEAVER_DECOUPE_PAR_MORCEAU=0 : d'un seul tenant
 
 
 def _cut_serialized(skin: bytes, tools: Sequence[bytes]) -> bytes:
@@ -142,6 +154,66 @@ def cut_tools(skin: Solid, tools: Sequence[Solid]) -> Shape:
     return Shape.cast(deserialize_shape(isolated(
         _cut_serialized, serialize_shape(skin.wrapped), [serialize_shape(t.wrapped) for t in tools]
     )))
+
+
+def _cut_piece(piece: bytes, dz: float, tools: Sequence[bytes], spars: Sequence[bytes]):
+    """Un morceau de peau (posé à z = 0, `dz` : hauteur de son bas dans la pièce) moins ses outils (repère de la
+    pièce) : (morceau découpé posé à z = 0, éclats retirés, obstruction de chaque longeron, durée). Fonction de module
+    picklable (processus à part, `cut_pieces`)."""
+    t0 = time.monotonic()
+    shape = Pos(0, 0, dz) * Shape.cast(deserialize_shape(piece))
+    try:
+        part, slivers = main_solid(shape.cut(*(Shape.cast(deserialize_shape(t)) for t in tools)))
+    except (PipelineError, *GEOMETRY_ERRORS) as exc:
+        raise PieceCutError(str(exc)) from None
+    blocked = [spar_obstruction(Shape.cast(deserialize_shape(sp)), part) for sp in spars]
+    return serialize_shape((Pos(0, 0, -dz) * part).wrapped), slivers, blocked, time.monotonic() - t0
+
+
+def _boxes_touch(a, b, margin: float = 1.0) -> bool:
+    return all(
+        min(getattr(a.max, k), getattr(b.max, k)) + margin >= max(getattr(a.min, k), getattr(b.min, k))
+        for k in ("X", "Y", "Z")
+    )
+
+
+def cut_pieces(
+    pieces: Sequence[Solid], offsets: Sequence[float], names: Sequence[str], pending: Pending,
+    progress: Callable[[str], None] = lambda m: None, pre: str = "",
+) -> tuple[list[Solid], int]:
+    """Découpe par morceau : chaque morceau de la peau (`offsets` : hauteur de son bas dans la pièce) moins les seuls
+    outils dont la boîte le touche, en parallèle (un processus par morceau, au plus un par cœur). Même solide que la
+    coupe de la pièce entière puis la découpe en morceaux : (S − T) ∩ P = (S ∩ P) − T, mais chaque booléen est bien
+    plus petit (le coût d'un booléen croît bien plus vite que son nombre d'outils) et ils tournent ensemble.
+    Renvoie (morceaux découpés, éclats retirés) ; PipelineError (longeron qui traverse la matière, découpe invalide)."""
+    tool_boxes = [t.bounding_box() for t in pending.tools]
+    spars = [serialize_shape(sp.wrapped) for _, sp in pending.spars]
+    jobs = []
+    for piece, dz in zip(pieces, offsets):
+        box = (Pos(0, 0, dz) * piece).bounding_box()
+        mine = [serialize_shape(t.wrapped) for t, b in zip(pending.tools, tool_boxes) if _boxes_touch(b, box)]
+        jobs.append((serialize_shape(piece.wrapped), dz, mine, spars))
+    out: list = [None] * len(jobs)
+
+    def done(k: int, res) -> None:
+        out[k] = res
+        name = names[k] if k < len(names) else f"morceau {k + 1}"
+        progress(f"{pre}{name} : {len(jobs[k][2])} outils découpés en {duration(res[3])}")
+
+    if not can_isolate():  # parent démon, BEAVER_ISOLER=0 : morceaux l'un après l'autre, sur place
+        for k, job in enumerate(jobs):
+            done(k, _cut_piece(*job))
+    else:
+        workers = max(1, min(len(jobs), os.cpu_count() or 1))
+        with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn")) as pool:
+            futures = {pool.submit(_cut_piece, *job): k for k, job in enumerate(jobs)}
+            for fut in as_completed(futures):
+                done(futures[fut], fut.result())
+    blocked = [sum(o[2][i] for o in out) for i in range(len(spars))]
+    for (name, _), vol in zip(pending.spars, blocked):
+        if vol > MAX_SPAR_OBSTRUCTION:
+            raise PipelineError(f"{name} : le longeron traverse la matière ({vol:.0f} mm³) — vérifier son axe")
+    return [Shape.cast(deserialize_shape(o[0])) for o in out], sum(o[1] for o in out)
 
 
 def main_solid(result) -> tuple[Solid, int]:
@@ -339,6 +411,16 @@ class Generated(NamedTuple):
     tubes: tuple[Tube, ...] = ()  # SBAR transversales / inclinées
     plan: LayoutPlan | None = None  # plan de découpe déjà calculé (SBAR transversales : coupes dans la corde)
     hollow_saved_g: float = 0.0  # masse économisée estimée par les évidements (`hollow_saving_g`)
+    # découpe par morceau (`generate_skin(per_piece=True)`) : `result` est la peau rebouchée, pas encore découpée ;
+    # outils et longerons à contrôler, pour `cut_pieces`
+    pending: Pending | None = None
+
+
+class Pending(NamedTuple):
+    """Découpe différée d'une peau : outils (plaques puis trous) et longerons dont l'obstruction est contrôlée."""
+
+    tools: tuple[Solid, ...]
+    spars: tuple[tuple[str, Solid], ...]
 
 
 def split_spars(
@@ -500,11 +582,15 @@ def skin_tubes(
 def generate_skin(
     skin: Solid, spars: list[tuple[str, Solid]], cfg: Config, cables: frozenset[str] = frozenset(),
     servos: Sequence[tuple[str, Solid]] = (), anchor=None, progress: Callable[[str], None] = lambda m: None,
-    label: str = "",
+    label: str = "", per_piece: bool = False,
 ) -> Generated:
     """Nervures, trous et baies d'une peau orientée. `anchor` : boîte de calage du motif de nervures (boîte globale
     des peaux d'un modèle à plusieurs corps d'aile ; None = boîte de la peau). `progress` : journal (durée de chaque
-    étape, signal périodique des étapes longues, `suivi.step`) ; `label` : préfixe des lignes (nom du corps)."""
+    étape, signal périodique des étapes longues, `suivi.step`) ; `label` : préfixe des lignes (nom du corps).
+
+    `per_piece` : si le plan de découpe coupe dans la corde et que la découpe est lourde (≥ ISOLATE_MIN_TOOLS outils),
+    le booléen n'est pas fait ici : `result` est la peau rebouchée et `pending` porte les outils ; `run_model` coupe
+    la peau en morceaux puis découpe chaque morceau en parallèle (`cut_pieces`)."""
     tol = cfg.validation.tessellation_tol
     bb = skin.bounding_box()
     nx, nz = cfg.split.grid
@@ -543,22 +629,41 @@ def generate_skin(
     if len(plates) > HEAVY_PLATES:
         progress(f"⚠ {pre}{len(plates)} plaques (> {HEAVY_PLATES}) : calcul lourd, plusieurs minutes et plusieurs Go "
                  "de mémoire")
-    with step(progress, f"{pre}découpe booléenne"):
-        result = cut_tools(skin, [*plates, *others])
-    with step(progress, f"{pre}contrôle de la pièce découpée"):
-        part, slivers = main_solid(result)
-        for name, spar in [*inside, *((t.name, solid) for t, solid in held)]:
-            blocked = spar_obstruction(spar, part)
-            if blocked > MAX_SPAR_OBSTRUCTION:
-                raise PipelineError(f"{name} : le longeron traverse la matière ({blocked:.0f} mm³) — vérifier son axe")
     # trous des SBAR transversales entre leurs bouts réels, bouches comprises (`Tube.opening`) : ouvertures voulues
     # de la peau. Pas le prolongement d'outil au-delà (une entaille par lui reste « peau entamée »), et le trou ne
     # touche la peau qu'à ses bouches (sinon TubeError, `tubes._check_wall`)
     openings = (*pockets, *hole_openings(bores, bays, bb), *(o for t in tubes for o in t.opening_solids()))
+    tools = [*plates, *others]
+    if per_piece and len(tools) >= ISOLATE_MIN_TOOLS and cfg.segment.mode != "off":
+        if plan is None:
+            with step(progress, f"{pre}plan de découpe"):
+                plan = cut_plan(skin, cfg, bores, bays, filled=[f for _, f in to_fill], rib_origin=rib_origin_of(skin, anchor))
+        if plan is not None and plan.chord_cut:
+            pending = Pending(tuple(tools), (*inside, *((t.name, solid) for t, solid in held)))
+            return Generated(
+                skin, tuple(bores), len(plates), tuple(f for _, f in to_fill), 0, tuple(warns), tuple(bays),
+                openings, tuple(tubes), plan, saved, pending,
+            )
+    part, slivers = cut_whole(skin, Pending(tuple(tools), (*inside, *((t.name, solid) for t, solid in held))),
+                              progress, pre)
     return Generated(
         part, tuple(bores), len(plates), tuple(f for _, f in to_fill), slivers, tuple(warns), tuple(bays), openings,
         tuple(tubes), plan, saved,
     )
+
+
+def cut_whole(skin: Solid, pending: Pending, progress: Callable[[str], None] = lambda m: None, pre: str = ""):
+    """Découpe d'un seul tenant (`cut_tools`) puis contrôles : (pièce, éclats retirés) ; PipelineError si la découpe
+    est invalide ou si un longeron traverse la matière."""
+    with step(progress, f"{pre}découpe booléenne"):
+        result = cut_tools(skin, pending.tools)
+    with step(progress, f"{pre}contrôle de la pièce découpée"):
+        part, slivers = main_solid(result)
+        for name, spar in pending.spars:
+            blocked = spar_obstruction(spar, part)
+            if blocked > MAX_SPAR_OBSTRUCTION:
+                raise PipelineError(f"{name} : le longeron traverse la matière ({blocked:.0f} mm³) — vérifier son axe")
+    return part, slivers
 
 
 def _holes(skin, cfg, cables, servos, anchor, mid, inside, transversal):
@@ -985,7 +1090,7 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
         try:
             gen = generate_skin(
                 skin, spars, cfg, cables, servos_for(skin, servos, several), anchor=anchor, progress=progress,
-                label=s.body.name,
+                label=s.body.name, per_piece=PER_PIECE,
             )
             result, bores, n, filled = gen.result, gen.bores, gen.plates, gen.filled
         except PipelineError:
@@ -1012,16 +1117,36 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
             raise PipelineError(
                 f"{s.body.name} : ouverture de la peau impossible (poche, trou de SBAR) ({type(exc).__name__} : {exc})"
             ) from exc
-        try:
-            with step(progress, f"{s.body.name} : découpe en morceaux"):
-                seg = segment_part(
-                    s.body.name, result, cfg, progress, skin=skin, original=original, bores=bores, bays=gen.bays,
-                    plan=gen.plan, filled=gen.filled, rib_origin=rib_origin_of(skin, anchor),
-                )
-        except PipelineError:
-            raise
-        except (*GEOMETRY_ERRORS, ShapelyError) as exc:  # planificateur (shapely) ou découpe (OpenCascade)
-            raise PipelineError(f"{s.body.name} : découpe impossible ({type(exc).__name__} : {exc})") from exc
+        def segmented(part: Solid, label: str = "découpe en morceaux") -> Segmented:
+            try:
+                with step(progress, f"{s.body.name} : {label}"):
+                    return segment_part(
+                        s.body.name, part, cfg, progress, skin=skin, original=original, bores=bores, bays=gen.bays,
+                        plan=gen.plan, filled=gen.filled, rib_origin=rib_origin_of(skin, anchor),
+                    )
+            except PipelineError:
+                raise
+            except (*GEOMETRY_ERRORS, ShapelyError) as exc:  # planificateur (shapely) ou découpe (OpenCascade)
+                raise PipelineError(f"{s.body.name} : découpe impossible ({type(exc).__name__} : {exc})") from exc
+
+        if gen.pending is None:
+            seg = segmented(result)
+        else:  # découpe par morceau : la peau est coupée en morceaux, puis chaque morceau découpé en parallèle
+            seg = segmented(result, "découpe de la peau en morceaux")
+            z0 = result.bounding_box(optimal=True).min.Z
+            offsets = [z0 + a for a, _ in seg.spans]
+            workers = min(len(seg.pieces), os.cpu_count() or 1)
+            try:
+                with step(progress, f"{s.body.name} : découpe booléenne de {len(seg.pieces)} morceaux "
+                                    f"({workers} en parallèle)"):
+                    cut, slivers = cut_pieces(seg.pieces, offsets, seg.names, gen.pending, progress, f"{s.body.name} : ")
+                seg = seg._replace(pieces=tuple(cut))
+                result = Compound([Pos(0, 0, dz) * p for p, dz in zip(cut, offsets)])
+            except (PieceCutError, BrokenProcessPool, OSError) as exc:
+                progress(f"⚠ {s.body.name} : découpe par morceau impossible ({exc}) — découpe de la pièce entière")
+                result, slivers = cut_whole(gen.result, gen.pending, progress, f"{s.body.name} : ")
+                seg = segmented(result)
+            gen = gen._replace(result=result, slivers=slivers, pending=None)
         piece_reports: tuple[Report, ...] = ()
         if seg.checks:  # coupe dans la corde : chaque morceau validé avec la peau d'origine coupée de même
             reports = []

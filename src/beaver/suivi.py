@@ -116,15 +116,17 @@ def step(progress: Callable[[str], None], label: str, period: float = HEARTBEAT)
         progress(f"{label} : {duration(elapsed)}")
 
 
-def _isolation_enabled() -> bool:
-    return lire_env(ISOLATE_ENV) not in ("0", "non", "false")
+def can_isolate() -> bool:
+    """Calcul dans un processus à part possible : pas désactivé (BEAVER_ISOLER=0), pas dans un processus démon (qui
+    ne peut pas avoir de fils)."""
+    return lire_env(ISOLATE_ENV) not in ("0", "non", "false") and not multiprocessing.current_process().daemon
 
 
 def isolated(fn: Callable, *args):
     """`fn(*args)` dans un processus à part (spawn) : le processus principal garde le GIL libre pour le signal
     périodique. Arguments et résultat doivent être picklables (formes OCP : `build123d.persistence`). Processus
     indisponible (parent démon, ressources) : calcul sur place, même résultat."""
-    if not _isolation_enabled() or multiprocessing.current_process().daemon:
+    if not can_isolate():
         return fn(*args)
     try:
         with ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn")) as pool:

@@ -64,9 +64,12 @@ class StatiqueRevalide(StaticFiles):
 
 
 class EntetesSecurite:
-    """Défense en profondeur sur toutes les réponses : pas de reniflage de type, pas d'affichage en cadre."""
+    """Défense en profondeur sur toutes les réponses : pas de reniflage de type, pas d'affichage en cadre.
+    Réponses /api/* jamais mises en cache (Cache-Control: no-store) : une liste de projets ou un état de travail
+    périmé servi par le cache du navigateur (« Aucun projet » au premier chargement) est exclu."""
 
     ENTETES = [(b"x-content-type-options", b"nosniff"), (b"content-security-policy", b"frame-ancestors 'none'")]
+    SANS_CACHE = (b"cache-control", b"no-store")
 
     def __init__(self, app) -> None:
         self.app = app
@@ -75,9 +78,14 @@ class EntetesSecurite:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
 
+        api = scope["path"].startswith("/api/")
+
         async def envoyer(message):
             if message["type"] == "http.response.start":
-                message = {**message, "headers": [*message.get("headers", []), *self.ENTETES]}
+                entetes = [*message.get("headers", []), *self.ENTETES]
+                if api:
+                    entetes = [(k, v) for k, v in entetes if k.lower() != b"cache-control"] + [self.SANS_CACHE]
+                message = {**message, "headers": entetes}
             await send(message)
 
         await self.app(scope, receive, envoyer)
@@ -247,10 +255,12 @@ def run_gui(root: Path, port: int = 0, open_browser: bool = True) -> None:
     token = secrets.token_urlsafe(24)
     server = uvicorn.Server(build_uvicorn_config(create_app(root, token)))
     url = f"http://{HOST}:{real_port}/?token={token}"
-    print(f"BEAVER : interface disponible sur {url}")
-    print("Ctrl+C pour arrêter.")
+    # flush : sortie redirigée vers un fichier (`beaver gui > log.txt`), l'adresse doit y être tout de suite
+    print(f"BEAVER : interface disponible sur {url}", flush=True)
+    print("Ctrl+C pour arrêter.", flush=True)
     if open_browser:
         threading.Thread(target=_open_when_started, args=(server, url), daemon=True).start()
     server.run(sockets=[sock])
     if apercu.preparation_en_cours():
-        print("BEAVER : arrêt après la préparation de l'aperçu en cours…")
+        apercu.annuler_tout()
+        print("BEAVER : arrêt de la préparation de l'aperçu en cours (fin de l'étape en cours)…", flush=True)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -88,6 +89,28 @@ def detect_spar(solid: Solid) -> SparInfo | None:
         axis_dir=_clean(d),
         length=float(proj.max() - proj.min()),
     )
+
+
+_NAME_DIAMETER = re.compile(r"(\d+(?:[.,]\d+)?)\s*mm", re.I)
+NAME_DIAMETER_TOL = 0.5  # mm : écart toléré entre le diamètre écrit dans le nom et celui mesuré
+
+
+def diameter_note(cb: ClassifiedBody) -> str:
+    """Longeron dont le nom annonce un diamètre (« SBAR_14mm_1 ») différent du diamètre mesuré (plus grand cylindre
+    du solide) : le nom ou la CAO est à vérifier. Chaîne vide sinon."""
+    if cb.spar is None:
+        return ""
+    m = _NAME_DIAMETER.search(cb.body.name)
+    if m is None:
+        return ""
+    named = float(m.group(1).replace(",", "."))
+    measured = cb.spar.diameter
+    if abs(named - measured) <= NAME_DIAMETER_TOL:
+        return ""
+    why = ("nom deviné (voir ci-dessus) : il appartient peut-être à un autre corps"
+           if cb.body.note else "le nom est celui du corps dans le fichier : la géométrie de la CAO diffère du nom")
+    return (f"le nom indique Ø {named:g} mm, mais le plus grand cylindre de ce corps mesure Ø {measured:.1f} mm — "
+            f"{why} ; c'est le diamètre mesuré qui est utilisé")
 
 
 def _match(body: NamedBody, cfg: Config) -> tuple[Role | None, str]:

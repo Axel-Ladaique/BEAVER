@@ -14,7 +14,7 @@ from typing import Any, BinaryIO
 
 import yaml
 
-from beaver.classify import ClassifyError, classify
+from beaver.classify import ClassifyError, classify, diameter_note
 from beaver.config import Config, ConfigError, check_template_path, load_config
 from beaver.io_step import StepReadError, read_step
 from beaver.material_profiles import ProfileError, find_profiles, load_profile
@@ -202,7 +202,7 @@ class ProjectStore:
                 "nom": cb.body.display,
                 "role": cb.role,
                 "regle": cb.matched_by,
-                "note": cb.body.note,
+                "note": " ; ".join(n for n in (cb.body.note, diameter_note(cb)) if n),
                 "longeron": None if s is None else {
                     "diametre": s.diameter, "axe": list(s.axis_dir), "longueur": s.length},
             })

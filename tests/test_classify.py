@@ -172,3 +172,21 @@ def test_cable_marker_ignored_on_non_spar():
     m = classify([nb("SKIN"), nb("SERVO_CABLE")], load_config())
     assert roles(m)["SERVO_CABLE"] == "servo"
     assert m.cables == []
+
+
+def test_diametre_du_nom_different_du_diametre_mesure():
+    """« SBAR_14mm_1 » mesuré Ø 20 : signalé (CAO ou nom deviné), rien si le nom concorde."""
+    from build123d import Cylinder
+
+    from beaver.classify import ClassifiedBody, detect_spar, diameter_note
+    from beaver.io_step import NamedBody
+
+    def cb(name, d, note=""):
+        solid = Cylinder(d / 2, 100)
+        return ClassifiedBody(NamedBody(("A", name), solid, note), "spar", "", detect_spar(solid))
+
+    assert diameter_note(cb("SBAR_14mm_1", 14)) == ""
+    assert diameter_note(cb("SBAR_2", 20)) == ""  # pas de diamètre dans le nom
+    msg = diameter_note(cb("SBAR_14mm_1", 20))
+    assert "Ø 14 mm" in msg and "Ø 20.0 mm" in msg and "géométrie de la CAO diffère" in msg
+    assert "nom deviné" in diameter_note(cb("SBAR_14mm_1", 20, note="nom deviné parmi …"))

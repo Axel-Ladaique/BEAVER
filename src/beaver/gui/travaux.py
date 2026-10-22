@@ -119,6 +119,9 @@ def _run_job(step: str, config_path: str, out_dir: str, queue) -> None:
         except OSError:
             pass
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    from beaver import avertissements
+
+    avertissements.installer()  # processus fils (spawn sous Windows) : rien n'est hérité du serveur
     t0 = time.monotonic()
     out = Path(out_dir)
     stem = out.parents[1].name  # projets/<nom>/essais/<essai>

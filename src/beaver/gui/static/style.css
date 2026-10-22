@@ -342,6 +342,7 @@ td code.aide { display: block; font-size: .75rem; color: var(--herite); }
 .chiffre .etiquette::first-letter { text-transform: uppercase; }
 .etat-apercu { font-size: .85rem; color: var(--texte-doux); min-height: 1.3em; }
 .carte > .etat-apercu:empty { min-height: 0; }
+.etat-ligne { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
 .vue-3d {
   width: 100%; height: 440px; background: var(--surface-2); border: 1px solid var(--bord);
   border-radius: var(--rayon); position: relative; overflow: hidden;

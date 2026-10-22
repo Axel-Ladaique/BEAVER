@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections import OrderedDict
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 
@@ -20,22 +21,69 @@ _RESULTS = 8  # résultats de vue gardés (plaques, plan, estimations)
 # préparation en cours avant de quitter (annoncé par `run_gui`).
 _EN_COURS = 0
 _EN_COURS_LOCK = threading.Lock()
+_SUIVIS: set[Suivi] = set()  # préparations démarrées, pas encore terminées (annulées toutes à l'arrêt du serveur)
 
 
-def _preparer(step, cfg):
+class Suivi:
+    """Étape et durée d'une préparation, et demande d'arrêt (prise en compte entre deux étapes)."""
+
+    def __init__(self) -> None:
+        self.etape = "en attente"
+        self.debut: float | None = None
+        self.annule = threading.Event()
+        self.explicite = False  # arrêt demandé par l'utilisateur (sinon : remplacée par une demande plus récente)
+
+    def __call__(self, etape: str) -> None:
+        if self.annule.is_set():
+            raise preview.PreparationAnnulee(etape)
+        self.etape = etape
+
+    def annuler(self, explicite: bool = False) -> None:
+        self.explicite = self.explicite or explicite
+        self.annule.set()
+
+    def etat(self) -> dict:
+        ecoule = 0.0 if self.debut is None else time.monotonic() - self.debut
+        if self.annule.is_set():
+            message = "arrêt de la préparation (fin de l'étape en cours)…"
+        elif self.debut is None:
+            message = "préparation de la pièce : en attente…"
+        else:
+            message = f"préparation de la pièce : {self.etape}…"
+        return {"preparation": True, "message": message, "etape": self.etape, "ecoule_s": round(ecoule, 1)}
+
+
+def _preparer(step, cfg, suivi: Suivi | None = None):
     global _EN_COURS
+    suivi = suivi if suivi is not None else Suivi()
+    suivi.debut = time.monotonic()
     with _EN_COURS_LOCK:
         _EN_COURS += 1
+        _SUIVIS.add(suivi)
     try:
-        return preview.prepare_status(step, cfg)
+        suivi("début")  # annulée avant d'avoir démarré
+        with preview.suivi(suivi):
+            return preview.prepare_status(step, cfg)
     finally:
         with _EN_COURS_LOCK:
             _EN_COURS -= 1
+            _SUIVIS.discard(suivi)
 
 
 def preparation_en_cours() -> bool:
     with _EN_COURS_LOCK:
         return _EN_COURS > 0
+
+
+def annuler_tout() -> None:
+    """Arrêt du serveur : les préparations en cours s'arrêtent à la fin de leur étape."""
+    with _EN_COURS_LOCK:
+        for suivi in _SUIVIS:
+            suivi.annuler()
+
+
+def _suivi(fut: Future) -> Suivi:
+    return getattr(fut, "suivi", None) or Suivi()
 
 
 def _impossible(exc: BaseException) -> ProjectError:
@@ -54,7 +102,7 @@ class Apercu:
 
     # --- préparation non bloquante ---------------------------------------------------------------
     def _ready(self, nom: str, step, cfg: Config, *, wait: bool):
-        """(prep, cache_hit) si prête, None si en cours ; lève ProjectError si la préparation a échoué.
+        """(prep, cache_hit) si prête, son `Suivi` si en cours ; lève ProjectError si la préparation a échoué.
 
         `_jobs` ne garde que les travaux en cours ou en échec non encore signalé : le cache de `preview`
         est l'unique dépôt des préparations réussies (un travail réussi est retiré dès qu'il est servi).
@@ -63,15 +111,20 @@ class Apercu:
         while True:
             with self._lock:
                 fut = self._jobs.get(key)
+                if fut is not None and not fut.done() and _suivi(fut).annule.is_set():
+                    fut = None  # redemandée pendant son arrêt : nouvelle préparation, en file derrière l'arrêt
                 if fut is None:
                     prep = preview.cached(step, cfg)
                     if prep is not None:
                         return prep, True
                     self._cancel_previous(nom, key)
-                    fut = self._jobs[key] = _EXECUTOR.submit(_preparer, step, cfg)
+                    suivi = Suivi()
+                    fut = self._jobs[key] = _EXECUTOR.submit(_preparer, step, cfg, suivi)
+                    fut.suivi = suivi
                     self._latest[nom] = key
             if not fut.done() and not wait:
-                return None
+                return _suivi(fut)
+            deja_fini = fut.done()
             try:
                 prep, hit = fut.result()
             except CancelledError:
@@ -79,6 +132,13 @@ class Apercu:
                     if self._jobs.get(key) is fut:
                         del self._jobs[key]
                 continue  # remplacé par une demande plus récente : on soumet à nouveau
+            except preview.PreparationAnnulee:
+                with self._lock:
+                    if self._jobs.get(key) is fut:
+                        del self._jobs[key]
+                if _suivi(fut).explicite and not deja_fini:
+                    raise ProjectError(409, "aperçu arrêté") from None
+                continue  # arrêt déjà relevé, ou remplacée puis redemandée : on soumet à nouveau
             except Exception as exc:
                 self._forget(key, fut)
                 raise _impossible(exc) from exc
@@ -94,7 +154,8 @@ class Apercu:
                     del self._latest[nom]
 
     def _cancel_previous(self, nom: str, key) -> None:
-        """Annule le travail précédent du projet s'il est encore en file (verrou `_lock` tenu)."""
+        """Annule le travail précédent du projet (verrou `_lock` tenu) : retiré s'il est encore en file, arrêté à la
+        fin de son étape s'il a démarré (il ne bloque plus l'exécuteur pendant toute sa préparation)."""
         for k in [k for k, f in self._jobs.items() if f.done() and k != key]:  # abandonnés : jamais relevés
             del self._jobs[k]
         old = self._latest.get(nom)
@@ -102,6 +163,23 @@ class Apercu:
             fut = self._jobs.get(old)
             if fut is not None and (fut.done() or fut.cancel()):  # terminé non relevé, ou jamais démarré
                 del self._jobs[old]
+            elif fut is not None:
+                _suivi(fut).annuler()
+
+    def arreter(self, nom: str) -> bool:
+        """Arrêt demandé par l'utilisateur (bouton, projet fermé) : la préparation en cours du projet s'arrête à la
+        fin de son étape ; True s'il y en avait une."""
+        with self._lock:
+            key = self._latest.get(nom)
+            fut = self._jobs.get(key) if key is not None else None
+            if fut is None or fut.done():
+                return False
+            if fut.cancel():
+                del self._jobs[key]
+                del self._latest[nom]
+                return True
+            _suivi(fut).annuler(explicite=True)
+            return True
 
     def _cfg(self, nom: str, proposed) -> Config:
         return self.store.config_from_dict(nom, proposed)
@@ -146,8 +224,8 @@ class Apercu:
             raise
         except Exception as exc:
             raise _impossible(exc) from exc
-        if state is None:
-            return JSONResponse({"preparation": True, "message": "préparation de la pièce…"}, status_code=202)
+        if isinstance(state, Suivi):
+            return JSONResponse(state.etat(), status_code=202)
         prep, hit = state
         views = self._views(prep, hit, cfg)
         try:
@@ -178,7 +256,7 @@ class Apercu:
             raise
         except Exception as exc:
             raise _impossible(exc) from exc
-        if state is None:
+        if isinstance(state, Suivi):
             return JSONResponse({"erreur": "aperçu en préparation"}, status_code=409)
         prep, hit = state
         try:
@@ -204,6 +282,11 @@ def register(router: APIRouter, store: ProjectStore) -> None:
     @router.post("/projets/{nom}/apercu")
     def apercu(nom: str, body: dict, attendre: bool = Query(False)):
         return api.post(nom, body, attendre)
+
+    @router.delete("/projets/{nom}/apercu")
+    def arreter(nom: str):
+        api.store.require(nom)
+        return {"arrete": api.arreter(nom)}
 
     @router.get("/projets/{nom}/apercu/plaques.stl")
     def plaques_stl(nom: str):

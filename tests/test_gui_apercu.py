@@ -103,7 +103,9 @@ def test_deuxieme_appel_z_seul_rapide(client):
 def test_202_puis_200(client):
     r = _post(client, z=40.5)
     if r.status_code == 202:
-        assert r.json() == {"preparation": True, "message": "préparation de la pièce…"}
+        d = r.json()
+        assert d["preparation"] is True and d["message"].startswith("préparation de la pièce")
+        assert "etape" in d and d["ecoule_s"] >= 0
     deadline = time.time() + 120
     while r.status_code == 202 and time.time() < deadline:
         time.sleep(0.2)
@@ -306,3 +308,50 @@ def test_estimations_avec_gain_des_evidements(client):
     g = est["evidements"]
     assert g["resume"] == "ponts à 1 croisement sur 3, ponts 4 mm, 20 % de la demi-épaisseur"
     assert est["masse_g"] < g["masse_sans_g"] and 0 < g["gain_masse"] < 1
+
+
+def test_etape_affichee_et_arret_demande(client, monkeypatch):
+    """Préparation longue : l'étape en cours est renvoyée (202) ; DELETE l'arrête à la fin de l'étape."""
+    import threading
+
+    dans_etape = threading.Event()
+    reprendre = threading.Event()
+    real = preview.MidSurface.from_skin
+
+    def lente(*a, **k):
+        dans_etape.set()
+        reprendre.wait(30)
+        return real(*a, **k)
+
+    monkeypatch.setattr(preview.MidSurface, "from_skin", lente)
+    try:
+        assert _post(client).status_code == 202
+        assert dans_etape.wait(60)
+        r = _post(client)
+        assert r.status_code == 202 and r.json()["message"] == "préparation de la pièce : surface médiane…"
+        a = client.delete("/api/projets/aile1/apercu", headers=H)
+        assert a.status_code == 200 and a.json() == {"arrete": True}
+        assert _post(client).json()["message"].startswith("préparation de la pièce")  # redemandée : relancée
+        assert client.delete("/api/projets/aile1/apercu", headers=H).json() == {"arrete": True}
+    finally:
+        reprendre.set()
+    # l'arrêt intervient à l'étape suivante : rien n'est mis en cache, l'exécuteur se libère
+    deadline = time.time() + 60
+    from beaver.gui import apercu
+    while apercu.preparation_en_cours() and time.time() < deadline:
+        time.sleep(0.05)
+    assert not apercu.preparation_en_cours()
+    assert preview.cached(next((client.app.state.root / "aile1").glob("piece.step")), preview_cfg()) is None
+    monkeypatch.setattr(preview.MidSurface, "from_skin", real)
+    assert _attendre(client).json()["preparation"] is False  # relancée ensuite normalement
+
+
+def preview_cfg():
+    from beaver.config import load_config
+
+    return load_config(None, overrides=CFG)
+
+
+def test_arret_sans_preparation(client):
+    assert client.delete("/api/projets/aile1/apercu", headers=H).json() == {"arrete": False}
+    assert client.delete("/api/projets/inconnu/apercu", headers=H).status_code == 404

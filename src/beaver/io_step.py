@@ -226,11 +226,23 @@ def read_step(path: str | Path) -> list[NamedBody]:
 
     walk(root, ())
     if not found:
-        raise StepReadError(f"{path} : aucun solide trouvé")
+        raise StepReadError(f"{path} : {_no_solid(root)}")
 
     named = {p[-1] for p, _, anon in found if p and not anon}
     pool = [e for e in _brep_entries(path) if e.name not in named]
     return _assign_brep_names(found, pool)
+
+
+def _no_solid(root: Shape) -> str:
+    """Pourquoi aucun solide : surfaces seules (export « surfaces » ou corps non fermé dans la CAO), ou rien."""
+    n_faces = len(root.faces())
+    if n_faces:
+        return (
+            f"le fichier ne contient que des surfaces ({n_faces} face(s)), pas de solide : BEAVER a besoin de corps "
+            "solides fermés — dans la CAO, fermer/coudre les surfaces en solide (ex. Fusion : Stitch / Coudre) puis "
+            "réexporter le STEP"
+        )
+    return "aucun solide trouvé (fichier vide ou sans géométrie 3D)"
 
 
 def _radii_close(a: tuple[float, ...], b: tuple[float, ...]) -> bool:
@@ -260,21 +272,48 @@ def _assign_brep_names(
     Critères : nombre de faces, puis signature géométrique (types de surfaces et rayons des
     cylindres, lus dans le texte STEP et comparés aux faces OCC). Un premier passage attribue
     les correspondances uniques ; ensuite seulement, s'il reste plusieurs noms libres
-    indiscernables, l'appariement est une devinette signalée dans `NamedBody.note`.
+    indiscernables, l'appariement est une devinette signalée dans `NamedBody.note` (texte
+    compréhensible tel quel : pourquoi le nom est incertain et s'il faut s'en soucier).
     """
     entries = [p if isinstance(p, _BrepEntry) else _BrepEntry(p[0], p[1]) for p in pool]
     used = [False] * len(entries)
     chosen: dict[int, tuple[int, str]] = {}
     sigs: dict[int, Signature] = {}
 
+    def sig_of(i: int, solid: Solid) -> Signature:
+        if i not in sigs:
+            sigs[i] = solid_signature(solid)
+        return sigs[i]
+
     def candidates(i: int, solid: Solid) -> list[int]:
         n_faces = len(solid.faces())
         cands = [j for j, e in enumerate(entries) if not used[j] and e.n_faces == n_faces]
         if len(cands) > 1 and any(entries[j].signature is not None for j in cands):
-            if i not in sigs:
-                sigs[i] = solid_signature(solid)
-            cands = _signature_filter(sigs[i], cands, entries) or cands
+            cands = _signature_filter(sig_of(i, solid), cands, entries) or cands
         return cands
+
+    def guess_note(i: int, solid: Solid, cands: list[int]) -> str:
+        names = ", ".join(entries[j].name for j in cands)
+        known = [entries[j].signature for j in cands]
+        if all(k is None for k in known):
+            return (f"nom deviné parmi {names} : même nombre de faces, géométrie absente du texte STEP "
+                    "(attribué dans l'ordre du fichier)")
+        sig = sig_of(i, solid)
+        if all(k is not None and k.types == sig.types and _radii_close(k.radii, sig.radii) for k in known):
+            return (f"nom attribué dans l'ordre du fichier parmi {names} : le fichier ne permet pas de distinguer "
+                    "ces corps (même nombre et mêmes types de faces, mêmes rayons) — sans effet s'ils ont le même "
+                    "rôle et aucun réglage propre (roles:, spars:) ; sinon, leur donner des formes ou des noms "
+                    "de composant distincts dans la CAO")
+        return (f"nom deviné parmi {names} : aucun ne correspond exactement à la géométrie de ce corps — "
+                "vérifier les noms dans la CAO")
+
+    def mismatch_note(i: int, solid: Solid, j: int) -> str:
+        """Seul nom libre avec ce nombre de faces, mais rayons différents : nom probablement mal attribué."""
+        known = entries[j].signature
+        if known is None or _radii_close(known.radii, sig_of(i, solid).radii):
+            return ""
+        return (f"seul nom du fichier avec {entries[j].n_faces} faces, mais ses rayons diffèrent de ceux de ce corps "
+                "— nom peut-être mal attribué, vérifier dans la CAO")
 
     # 1er passage : correspondances uniques (le nombre de faces ou la signature suffit)
     for i, (_, solid, anonymous) in enumerate(found):
@@ -282,16 +321,14 @@ def _assign_brep_names(
             cands = candidates(i, solid)
             if len(cands) == 1:
                 used[cands[0]] = True
-                chosen[i] = (cands[0], "")
+                chosen[i] = (cands[0], mismatch_note(i, solid, cands[0]))
     # 2e passage : le reste, dans l'ordre (devinette signalée)
     for i, (_, solid, anonymous) in enumerate(found):
         if anonymous and i not in chosen:
             cands = candidates(i, solid)
             if cands:
                 used[cands[0]] = True
-                note = ""
-                if len(cands) > 1:
-                    note = "nom deviné parmi : " + ", ".join(entries[j].name for j in cands)
+                note = guess_note(i, solid, cands) if len(cands) > 1 else mismatch_note(i, solid, cands[0])
                 chosen[i] = (cands[0], note)
 
     bodies: list[NamedBody] = []

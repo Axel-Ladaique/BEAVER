@@ -168,16 +168,19 @@ uv run beaver run piece.step -c examples/config-2-troncons.yaml --3mf --out out
 
 - Le `.3mf` part d'un **gabarit** : un projet Bambu Studio enregistré avec imprimante, filament et vase mode
   réglés. Les réglages du gabarit sont recopiés tels quels ; seuls les objets sont remplacés
-  (jamais de réglage Bambu reconstruit à la main). Quatre gabarits sont embarqués,
-  un par imprimante et matière (`templates/<imprimante>_<matière>.3mf` : `p1s` ou `h2s`, `pla_aero` ou `asa_aero`) :
+  (jamais de réglage Bambu reconstruit à la main). Quatre gabarits sont fournis dans le dossier
+  **`presets-bambu/`** à la racine, un par imprimante et matière (`<imprimante>_<matière>.3mf` : `p1s` ou `h2s`,
+  `pla_aero` ou `asa_aero`). Pour changer un réglage : ouvrir le fichier dans Bambu Studio, modifier, puis
+  « Enregistrer le projet » au même nom (Bambu Studio y note les réglages modifiés ; ceux qu'il n'y note pas
+  reprennent la valeur du preset système à l'ouverture) :
   le réglage `printer: p1s | h2s` (menu « Imprimante » de la GUI) choisit le gabarit, donc le plateau
   (P1S 256 × 256 × 250, H2S 340 × 320 × 340) et le volume utile. `bambu.template` (chemin) impose le sien et
   l'emporte ; `null` = aucun gabarit.
 - **Fond ouvert** : aucune couche inférieure (`bottom_shell_layers: 0`), la 1re couche est un tour fermé (imposé par Bambu Studio
   avec une bordure), la spirale part de la 2e.
-  **Bordure** : les gabarits embarqués (P1S et H2S) ont une bordure extérieure (`brim_type: outer_only`,
+  **Bordure** : les gabarits fournis (P1S et H2S) ont une bordure extérieure (`brim_type: outer_only`,
   5 mm) pour l'accroche au plateau ; le brim « auto » de Bambu Studio calcule sa propre largeur et l'omet
-  souvent. Pas de jupe (`skirt_loops: 0`).
+  souvent. Pas de jupe (`skirt_height: 0`).
 - **Un plateau par tronçon** (en vase mode, un seul objet par plateau), disposés comme dans Bambu Studio,
   chaque tronçon centré et posé sur son plateau, emplanture en bas.
 - Découpe automatique quand la pièce dépasse la hauteur utile = hauteur du gabarit − marge. La découpe

@@ -42,9 +42,8 @@ VASE_SETTINGS = {
     "skin_infill_density": "0%",
 }
 # Bambu Studio ne garde d'un projet que les clés listées dans different_settings_to_system (1re entrée :
-# process) ; les autres reprennent la valeur du preset système (bordure auto, 3 couches inférieures…).
-# Toutes les clés imposées ou réglées par le gabarit y sont donc ajoutées.
-DIFF_KEYS = (*VASE_SETTINGS, "brim_type", "brim_width", "brim_object_gap", "skirt_loops", "skirt_height")
+# process) ; les autres reprennent la valeur du preset système (bordure auto, 3 couches inférieures…). Une
+# clé imposée y est donc ajoutée ; celles réglées dans le gabarit y sont déjà (Bambu Studio les y écrit).
 
 
 class BambuError(ValueError):
@@ -94,25 +93,24 @@ def vase_warning(template: Template) -> str | None:
     return f"gabarit {template.path.name} : réglages vase mode imposés ({', '.join(keys)})"
 
 
-def _diff_list(settings: dict) -> list[str]:
-    """different_settings_to_system complété des DIFF_KEYS présentes dans les réglages."""
+def _declare(settings: dict, keys: list[str]) -> list[str]:
+    """different_settings_to_system complété des clés imposées."""
     diff = list(settings.get("different_settings_to_system") or ["", "", ""])
-    keys = [k for k in diff[0].split(";") if k] if diff else []
-    keys += [k for k in DIFF_KEYS if k in settings and k not in keys]
-    return [";".join(sorted(keys)), *diff[1:]]
+    declared = [k for k in diff[0].split(";") if k]
+    return [";".join(sorted({*declared, *keys})), *diff[1:]]
 
 
 def _force_vase(raw: bytes) -> bytes:
-    """project_settings.config avec VASE_SETTINGS imposés et DIFF_KEYS déclarées ; octets inchangés si déjà conformes."""
+    """project_settings.config avec VASE_SETTINGS imposés (et déclarés) ; octets inchangés si déjà conformes."""
     try:
         settings = json.loads(raw)
     except ValueError as exc:
         raise BambuError("project_settings.config illisible dans le gabarit.") from exc
-    settings.update(VASE_SETTINGS)
-    diff = _diff_list(settings)
-    if not _vase_keys(json.loads(raw)) and settings.get("different_settings_to_system") == diff:
+    keys = _vase_keys(settings)
+    if not keys:
         return raw
-    settings["different_settings_to_system"] = diff
+    settings.update(VASE_SETTINGS)
+    settings["different_settings_to_system"] = _declare(settings, keys)
     out = json.dumps(settings, indent=4, ensure_ascii=False)
     return (out + ("\n" if raw.endswith(b"\n") else "")).encode("utf-8")
 

@@ -60,11 +60,13 @@ def test_piece_workers_bounded_by_memory(monkeypatch):
     from beaver import pipeline
 
     monkeypatch.setattr(pipeline.os, "cpu_count", lambda: 8)
-    monkeypatch.setattr(pipeline, "available_memory", lambda: 16e9)
+    monkeypatch.setattr(pipeline, "available_memory", lambda: 8e9)
     assert pipeline.piece_workers([10, 20, 30]) == 3  # petits morceaux : un par morceau
-    # 2 couches : ≈ 5,4 Go par morceau de 180 outils → 2 à la fois dans 70 % de 16 Go
-    assert pipeline.piece_workers([180, 150, 120, 100, 90]) == 2
-    monkeypatch.setattr(pipeline, "available_memory", lambda: 2e9)
+    # 2 couches : ≈ 3,5 Go pour le plus gros morceau (290 outils) → 1 à la fois dans 70 % de 8 Go, 3 dans 16 Go
+    assert pipeline.piece_workers([290, 250, 240, 180]) == 1
+    monkeypatch.setattr(pipeline, "available_memory", lambda: 16e9)
+    assert pipeline.piece_workers([290, 250, 240, 180]) == 3
+    monkeypatch.setattr(pipeline, "available_memory", lambda: 1e9)
     assert pipeline.piece_workers([180, 150]) == 1  # jamais moins d'un
     monkeypatch.setattr(pipeline, "available_memory", lambda: None)  # sans psutil : un par cœur
     assert pipeline.piece_workers([180] * 12) == 8

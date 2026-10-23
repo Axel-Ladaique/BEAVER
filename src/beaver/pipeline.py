@@ -178,21 +178,24 @@ def _boxes_touch(a, b, margin: float = 1.0) -> bool:
     )
 
 
-# Go par outil : mémoire du booléen d'un morceau (Dotitos 1 couche : 0,6 à 1 Go pour 60 à 115 outils)
-PIECE_GB_PER_TOOL = 0.012
+# mémoire du booléen d'un morceau de n outils ≈ PIECE_GB_BASE + PIECE_GB_PER_PAIR · n² Go : elle suit les croisements de
+# plaques, pas le nombre d'outils (Dotitos, 1 couche : 0,6 à 1 Go pour 60 à 115 outils ; 2 couches : 2 Go pour 182,
+# 5,8 Go pour 276)
+PIECE_GB_BASE = 0.5
+PIECE_GB_PER_PAIR = 7e-5
 MEMORY_SHARE = 0.7  # part de la mémoire disponible que les booléens des morceaux peuvent prendre ensemble
 
 
 def piece_workers(tools: Sequence[int]) -> int:
     """Booléens de morceaux lancés ensemble : au plus un par morceau et par cœur, et autant que la mémoire disponible
-    en loge (≈ PIECE_GB_PER_TOOL Go par outil du plus gros morceau) — 2 couches de nervures : plusieurs Go par
+    en loge pour le plus gros morceau (PIECE_GB_BASE, PIECE_GB_PER_PAIR) — 2 couches de nervures : plusieurs Go par
     morceau (5 à la fois : > 30 Go d'empreinte sur Dotitos), le swap ralentirait tout bien plus que le parallélisme
     ne fait gagner."""
     n = max(1, min(len(tools), os.cpu_count() or 1))
     avail = available_memory()
     if avail is None or not tools:
         return n
-    need = max(0.5, PIECE_GB_PER_TOOL * max(tools)) * 1e9
+    need = (PIECE_GB_BASE + PIECE_GB_PER_PAIR * max(tools) ** 2) * 1e9
     return max(1, min(n, int(MEMORY_SHARE * avail // need)))
 
 

@@ -33,6 +33,37 @@ const etat = {
 let vue3d = null;
 
 // --- requêtes -------------------------------------------------------------------------------------------
+function majuscule(t) {
+  return t ? t[0].toUpperCase() + t.slice(1) : t;
+}
+
+/** Préparation en cours (202) : étape et durée écoulée, bouton « Arrêter ». */
+function montrerPreparation(d) {
+  const texte = majuscule((d && d.message) || "préparation de la pièce…");
+  const ecoule = d && d.ecoule_s >= 1 ? ` (${duree(d.ecoule_s)})` : "";
+  ui.etat.textContent = texte + ecoule;
+  ui.arret.hidden = false;
+  ui.relancer.hidden = true;
+}
+
+/** Arrête la préparation côté serveur (à la fin de son étape) ; sans attendre ni signaler d'échec. */
+function arreterServeur(nom) {
+  appel("DELETE", `/api/projets/${seg(nom)}/apercu`).catch(() => {});
+}
+
+/** Bouton « Arrêter » : plus de relance ; l'aperçu repart avec « Relancer » ou au prochain réglage modifié. */
+function arreter() {
+  if (!etat.projet) return;
+  etat.seq += 1; // une réponse en vol sera ignorée
+  clearTimeout(etat.relance);
+  etat.relance = null;
+  etat.aJour = true; // pas de relance automatique à l'affichage
+  ui.arret.hidden = true;
+  ui.relancer.hidden = false;
+  ui.etat.textContent = "Aperçu arrêté.";
+  arreterServeur(etat.projet);
+}
+
 async function demander() {
   if (!etat.projet || etat.config === null) return;
   etat.aJour = false;
@@ -42,13 +73,15 @@ async function demander() {
   const nom = etat.projet;
   const corps = { config: etat.config };
   if (etat.z !== null) corps.z = etat.z;
-  ui.etat.textContent = "Calcul de l'aperçu…";
+  ui.relancer.hidden = true;
+  if (!etat.relance && ui.arret.hidden) ui.etat.textContent = "Calcul de l'aperçu…";
   let r;
   try {
     r = await appel("POST", `/api/projets/${seg(nom)}/apercu`, corps);
   } catch (e) {
     if (s !== etat.seq) return;
     ui.etat.textContent = "";
+    ui.arret.hidden = true;
     if (e instanceof ErreurApi && e.statut === 422 && /^aperçu impossible/i.test(e.message)) {
       // réglages valides, mais la géométrie de l'aperçu a échoué : aucun champ en cause
       etat.aJour = true;
@@ -68,7 +101,7 @@ async function demander() {
   ctx.emettre("validation", { ok: true });
   vider(ui.erreur);
   if (r.statut === 202) {
-    ui.etat.textContent = (r.donnees && r.donnees.message) || "Préparation de la pièce…";
+    montrerPreparation(r.donnees);
     etat.relance = setTimeout(() => {
       etat.relance = null;
       if (s === etat.seq) demander();
@@ -78,6 +111,7 @@ async function demander() {
   etat.resultat = r.donnees;
   etat.aJour = true;
   ui.etat.textContent = "";
+  ui.arret.hidden = true;
   rendre();
   if (vue3d) ui.note3d.hidden = JSON.stringify(etat.config) === etat.configVue3d;
 }
@@ -522,6 +556,10 @@ function fermer3d() {
 // --- montage ---------------------------------------------------------------------------------------------
 function construire() {
   ui.etat = el("div", { classe: "etat-apercu", role: "status", "aria-live": "polite" });
+  ui.arret = el("button", { type: "button", classe: "petit", texte: "Arrêter", hidden: true, onclick: arreter,
+    title: "Arrête la préparation de l'aperçu (à la fin de l'étape en cours)" });
+  ui.relancer = el("button", { type: "button", classe: "petit", texte: "Relancer l'aperçu", hidden: true,
+    onclick: () => demander() });
   ui.erreur = el("div");
   ui.curseur = el("input", { type: "range", min: "0", max: "1", step: "0.01", disabled: true, id: "curseur-z" });
   ui.curseur.addEventListener("input", () => choisirZ(Number(ui.curseur.value)));
@@ -541,7 +579,7 @@ function construire() {
   racine = el("div", { classe: "apercu" }, [
     el("div", { classe: "carte" }, [
       el("h2", { texte: "Aperçu instantané" }),
-      ui.etat,
+      el("div", { classe: "etat-ligne" }, [ui.etat, ui.arret, ui.relancer]),
       ui.erreur,
       ui.notices,
       ui.avertissements,
@@ -593,6 +631,11 @@ export function init(panneau, contexte) {
   construire();
   panneau.append(racine);
   ctx.sur("projet", (nom) => {
+    // projet fermé ou changé pendant une préparation : arrêtée côté serveur (elle occuperait le calcul)
+    if (etat.projet && etat.projet !== nom && (!etat.aJour || etat.relance)) arreterServeur(etat.projet);
+    ui.arret.hidden = true;
+    ui.relancer.hidden = true;
+    ui.etat.textContent = "";
     etat.projet = nom;
     etat.config = null;
     etat.z = null;
@@ -644,5 +687,6 @@ export function masquer() {
     etat.relance = null;
     etat.aJour = false;
     ui.etat.textContent = ""; // « Calcul… » / « Préparation… » abandonnés : relancés à l'affichage
+    ui.arret.hidden = true;
   }
 }

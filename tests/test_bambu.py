@@ -8,6 +8,7 @@ import pytest
 import trimesh
 
 from beaver.bambu import BambuError, plate_origin, read_template, write_project
+from beaver.config import TEMPLATES_DIR
 
 FIXTURE = Path(__file__).parent / "fixtures" / "bambu_p1s_pla_aero.3mf"
 NS = {"c": "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"}
@@ -167,8 +168,8 @@ def test_write_project_template_without_settings_is_error(tmp_path):
 
 
 # --- réglages vase mode imposés -------------------------------------------------------------------
-ASA = Path(__file__).parents[1] / "src" / "beaver" / "templates" / "p1s_asa_aero.3mf"
-PLA = Path(__file__).parents[1] / "src" / "beaver" / "templates" / "p1s_pla_aero.3mf"
+ASA = TEMPLATES_DIR / "p1s_asa_aero.3mf"
+PLA = TEMPLATES_DIR / "p1s_pla_aero.3mf"
 
 
 def _settings_bytes(path: Path) -> bytes:
@@ -185,21 +186,35 @@ def test_pla_settings_byte_identical(tmp_path):
     assert _settings_bytes(out) == _settings_bytes(PLA)
 
 
+def _not_vase(src: Path, out: Path) -> Path:
+    """Copie d'un gabarit hors vase mode (spirale coupée, 2 parois), comme un projet utilisateur ordinaire."""
+    with zipfile.ZipFile(src) as zt, zipfile.ZipFile(out, "w") as z:
+        for n in zt.namelist():
+            data = zt.read(n)
+            if n == "Metadata/project_settings.config":
+                data = data.replace(b'"spiral_mode": "1"', b'"spiral_mode": "0"')
+                data = data.replace(b'"wall_loops": "1"', b'"wall_loops": "2"')
+            z.writestr(n, data)
+    return out
+
+
 def test_asa_vase_forced_keeps_filament(tmp_path):
     import json
 
     from beaver.bambu import VASE_SETTINGS, vase_warning
 
-    t = read_template(ASA)
+    src = _not_vase(ASA, tmp_path / "p1s_asa_aero.3mf")
+    t = read_template(src)
     assert t.settings["spiral_mode"] == "0"  # read_template lit le fichier d'origine
     w = vase_warning(t)
     assert w.startswith("gabarit p1s_asa_aero.3mf : réglages vase mode imposés (spiral_mode")
     out = write_project(t, [_box()], tmp_path / "o.3mf")
-    new, old = json.loads(_settings_bytes(out)), json.loads(_settings_bytes(ASA))
+    new, old = json.loads(_settings_bytes(out)), json.loads(_settings_bytes(src))
     assert all(new[k] == v for k, v in VASE_SETTINGS.items())
     assert new["spiral_mode"] == "1" and new["wall_loops"] == "1" and new["top_shell_layers"] == "0"
     changed = {k for k in new if new[k] != old.get(k)}
-    assert changed <= set(VASE_SETTINGS) and "spiral_mode" in changed
+    assert changed <= {*VASE_SETTINGS, "different_settings_to_system"} and "spiral_mode" in changed
+    assert {"spiral_mode", "wall_loops"} <= set(new["different_settings_to_system"][0].split(";"))
     assert new["filament_settings_id"] == ["Bambu ASA-Aero @BBL X1C"]
     assert new["filament_type"] == ["ASA-AERO"] and new["nozzle_temperature"] == ["270"]
     assert _settings_bytes(out).endswith(b"\n")
@@ -214,11 +229,13 @@ def test_asa_template_resolves_and_run_writes_3mf(tmp_path):
     from beaver.testing.synthetic import wing_x_bodies
 
     assert resolve_template(load_config(overrides={"material": "asa_aero"})).name == "p1s_asa_aero.3mf"
+    template = _not_vase(ASA, tmp_path / "p1s_asa_aero.3mf")
     src = write_step(tmp_path / "aile.step", wing_x_bodies())
     cfg = tmp_path / "c.yaml"
     cfg.write_text(
         "material: asa_aero\nmaterial_settings: {layer_height: 1.0}\nrib_layers: [{spacing: 20}]\n"
-        "passages: {mode: link}\nsegment: {max_height: 30}\n", encoding="utf-8")
+        "passages: {mode: link}\nsegment: {max_height: 30}\n"
+        f"bambu: {{template: '{template.as_posix()}'}}\n", encoding="utf-8")
     r = CliRunner().invoke(app, ["run", str(src), "-c", str(cfg), "--out", str(tmp_path / "res"), "--3mf"])
     # code 1 toléré : la pièce synthétique reste « non imprimable » avec le surplomb ASA (40°), mais les
     # fichiers sont écrits pour inspection ; seul l'écriture du 3MF est testée ici.
@@ -228,7 +245,7 @@ def test_asa_template_resolves_and_run_writes_3mf(tmp_path):
 
 
 # --- fond ouvert et bordure -----------------------------------------------------------------------
-TEMPLATES = sorted((Path(__file__).parents[1] / "src" / "beaver" / "templates").glob("*.3mf"))
+TEMPLATES = sorted(TEMPLATES_DIR.glob("*.3mf"))
 
 
 @pytest.mark.parametrize("path", TEMPLATES, ids=lambda p: p.name)
@@ -239,7 +256,10 @@ def test_templates_no_bottom_layers_and_brim(path):
     s = json.loads(_settings_bytes(path))
     assert s["bottom_shell_layers"] == "0"
     assert s["brim_type"] == "outer_only" and s["brim_width"] == "5"
-    assert s["skirt_loops"] == "0"
+    assert s["skirt_loops"] == "0" or s["skirt_height"] == "0"
+    # déclarées au preset système, sinon Bambu Studio les remet à ses valeurs (bordure auto, 3 couches)
+    declared = s["different_settings_to_system"][0].split(";")
+    assert {"bottom_shell_layers", "brim_type"} <= set(declared)
 
 
 def test_old_template_bottom_layers_forced_to_zero(tmp_path):
@@ -260,4 +280,5 @@ def test_old_template_bottom_layers_forced_to_zero(tmp_path):
     out = write_project(t, [_box()], tmp_path / "o.3mf")
     new, old = json.loads(_settings_bytes(out)), json.loads(_settings_bytes(src))
     assert new["bottom_shell_layers"] == "0"
-    assert {k for k in new if new[k] != old.get(k)} == {"bottom_shell_layers"}
+    assert {k for k in new if new[k] != old.get(k)} == {"bottom_shell_layers", "different_settings_to_system"}
+    assert "bottom_shell_layers" in new["different_settings_to_system"][0].split(";")

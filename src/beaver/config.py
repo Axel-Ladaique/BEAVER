@@ -40,8 +40,10 @@ PRINTERS: dict[str, PrinterSpec] = {
     "h2s": PrinterSpec(volume=(340, 320, 340)),
 }
 
-# gabarits Bambu embarqués : templates/<imprimante>_<matière>.3mf
-TEMPLATES_DIR = Path(__file__).parent / "templates"
+# gabarits Bambu : presets-bambu/<imprimante>_<matière>.3mf à la racine du dépôt (projets Bambu Studio
+# enregistrés tels quels, modifiables par l'utilisateur) ; copie embarquée dans le paquet installé
+_REPO_TEMPLATES = Path(__file__).resolve().parents[2] / "presets-bambu"
+TEMPLATES_DIR = _REPO_TEMPLATES if _REPO_TEMPLATES.is_dir() else Path(__file__).parent / "presets-bambu"
 AUTO_TEMPLATE = "auto"
 
 
@@ -223,7 +225,7 @@ class BoreSettings(_Strict):
     sleeve: float = Field(default=0.8, gt=0)  # matière gardée autour du trou, sans nervure
     strip: float = Field(default=2.0, gt=0)  # largeur de la bande sans nervure jusqu'à la peau
     slit_side: Literal["top", "bottom"] = "top"  # top = extrados (+Y)
-    slit_width: float = Field(default=0.15, gt=0)  # largeur de la fente trou → peau (≥ 1,1 × min_slit_width)
+    slit_width: float = Field(default=0.12, gt=0)  # largeur de la fente trou → peau (≥ 1,1 × min_slit_width)
     # attache côté opposé : fente borgne du trou jusqu'à `anchor_gap` de la peau opposée (≥ largeur de ligne)
     anchor: bool = True
     anchor_gap: float = Field(default=1.0, gt=0)
@@ -236,7 +238,7 @@ class PassageSettings(_Strict):
     sleeve: float = Field(default=0.8, gt=0)  # cf. BoreSettings : ≥ largeur de ligne
     strip: float = Field(default=1.0, gt=0)
     slit_side: Literal["top", "bottom"] = "top"
-    slit_width: float = Field(default=0.15, gt=0)
+    slit_width: float = Field(default=0.12, gt=0)
     max_tilt_deg: float = Field(default=5.0, gt=0, lt=90)
 
 
@@ -278,7 +280,7 @@ class SegmentSettings(_Strict):
 
 class BambuSettings(_Strict):
     # gabarit de projet Bambu Studio (.3mf) : "auto" (défaut) = gabarit embarqué de l'imprimante et de la matière
-    # (templates/<printer>_<material>.3mf), un chemin impose le sien, null = aucun
+    # (presets-bambu/<printer>_<material>.3mf), un chemin impose le sien, null = aucun
     template: str | None = AUTO_TEMPLATE
     open: bool = False  # ouvre le projet dans Bambu Studio après génération
 
@@ -586,7 +588,7 @@ def embedded_template(printer: str, material: str) -> Path:
 
 def resolve_template(cfg: Config) -> Path:
     """Chemin du gabarit Bambu à utiliser : `bambu.template` explicite d'abord ; sinon (« auto ») le gabarit
-    embarqué `templates/<imprimante>_<matière>.3mf` ; ConfigError clair si absent."""
+    `presets-bambu/<imprimante>_<matière>.3mf` ; ConfigError clair si absent."""
     template = cfg.bambu.template
     if template == AUTO_TEMPLATE:
         auto = embedded_template(cfg.printer, cfg.material)

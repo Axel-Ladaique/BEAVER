@@ -41,6 +41,9 @@ VASE_SETTINGS = {
     "skeleton_infill_density": "0%",
     "skin_infill_density": "0%",
 }
+# Bambu Studio ne garde d'un projet que les clés listées dans different_settings_to_system (1re entrée :
+# process) ; les autres reprennent la valeur du preset système (bordure auto, 3 couches inférieures…). Une
+# clé imposée y est donc ajoutée ; celles réglées dans le gabarit y sont déjà (Bambu Studio les y écrit).
 
 
 class BambuError(ValueError):
@@ -90,15 +93,24 @@ def vase_warning(template: Template) -> str | None:
     return f"gabarit {template.path.name} : réglages vase mode imposés ({', '.join(keys)})"
 
 
+def _declare(settings: dict, keys: list[str]) -> list[str]:
+    """different_settings_to_system complété des clés imposées."""
+    diff = list(settings.get("different_settings_to_system") or ["", "", ""])
+    declared = [k for k in diff[0].split(";") if k]
+    return [";".join(sorted({*declared, *keys})), *diff[1:]]
+
+
 def _force_vase(raw: bytes) -> bytes:
-    """project_settings.config avec VASE_SETTINGS imposés ; octets inchangés si déjà conformes."""
+    """project_settings.config avec VASE_SETTINGS imposés (et déclarés) ; octets inchangés si déjà conformes."""
     try:
         settings = json.loads(raw)
     except ValueError as exc:
         raise BambuError("project_settings.config illisible dans le gabarit.") from exc
-    if not _vase_keys(settings):
+    keys = _vase_keys(settings)
+    if not keys:
         return raw
     settings.update(VASE_SETTINGS)
+    settings["different_settings_to_system"] = _declare(settings, keys)
     out = json.dumps(settings, indent=4, ensure_ascii=False)
     return (out + ("\n" if raw.endswith(b"\n") else "")).encode("utf-8")
 

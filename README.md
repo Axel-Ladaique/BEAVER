@@ -122,21 +122,27 @@ serait un trou. La validation reste l'arbitre.
 ```yaml
 ribs_hollow:
   mode: croisements   # off (défaut) | croisements | pas
+  every: 3            # mode croisements : un pont tous les 3 croisements (1 = à chaque croisement)
   bridge_width: 4.0   # mm, longueur pleine hauteur de chaque pont, le long de la nervure
   pitch: 30.0         # mm, mode pas : distance entre deux ponts
-  keep_ratio: 0.3     # hauteur gardée sous la peau = 30 % de la demi-épaisseur locale…
+  keep_ratio: 0.2     # hauteur gardée sous la peau = 20 % de la demi-épaisseur locale…
   keep_min: 2.0       # …et au moins 2 mm
   ramp_factor: 1.0    # ≤ 1 : rampes plus douces que le surplomb max
 ```
 
 - **Deux modes** :
-  - `croisements` (recommandé) : un pont à chaque nœud du losange, là où la nervure croise une nervure de l'autre
-    famille de la même couche ; au pas `spacing / (2·sin angle)` le long de la nervure (≈ 21 mm à 45°, spacing 30).
+  - `croisements` (recommandé) : ponts aux nœuds du losange, là où la nervure croise une nervure de l'autre
+    famille de la même couche — un pont tous les `every` croisements (défaut **3**), sur des rangées de nœuds
+    communes aux deux familles. Les croisements sont au pas `spacing / (2·sin angle)` le long de la nervure
+    (≈ 21 mm à 45°, spacing 30), donc un pont tous les ≈ 64 mm avec `every: 3`. Pourquoi pas à chaque croisement
+    (`every: 1`) : les rampes au surplomb max mangent ≈ 1,4 mm de nervure par mm évidé ; sur une aile épaisse,
+    des ponts rapprochés ne laissent que de petits triangles évidés (≈ −17 % de nervures sur l'aile de test,
+    contre ≈ −44 % avec `every: 3`).
   - `pas` : ponts à pas régulier `pitch` le long de la nervure, calés sur la boîte de la pièce comme le motif (rendu
     régulier d'un morceau à l'autre).
-- **Hauteur gardée** : sous la peau, `keep_ratio` × la demi-épaisseur locale de l'aile, au moins `keep_min` ; jamais
-  plus profond que la nervure pleine. Une couche peu profonde (`depth` en mm) n'est évidée que si elle descend plus
-  bas que cette hauteur gardée.
+- **Hauteur gardée** : sous la peau, `keep_ratio` (défaut **0,2**) × la demi-épaisseur locale de l'aile, au moins
+  `keep_min` (2 mm) ; jamais plus profond que la nervure pleine. Une couche peu profonde (`depth` en mm) n'est
+  évidée que si elle descend plus bas que cette hauteur gardée.
 - **Pentes** : les flancs des échancrures sont des rampes à l'angle de surplomb de la matière (45° PLA, 40° ASA),
   mesurées en z d'impression : d'une couche à l'autre, le fond de fente n'avance jamais vers la bande de plus que
   le surplomb admis. Rampe sous chaque pont, marche verticale au-dessus (le fond recule en montant : pas de
@@ -168,16 +174,19 @@ uv run beaver run piece.step -c examples/config-2-troncons.yaml --3mf --out out
 
 - Le `.3mf` part d'un **gabarit** : un projet Bambu Studio enregistré avec imprimante, filament et vase mode
   réglés. Les réglages du gabarit sont recopiés tels quels ; seuls les objets sont remplacés
-  (jamais de réglage Bambu reconstruit à la main). Quatre gabarits sont embarqués,
-  un par imprimante et matière (`templates/<imprimante>_<matière>.3mf` : `p1s` ou `h2s`, `pla_aero` ou `asa_aero`) :
+  (jamais de réglage Bambu reconstruit à la main). Quatre gabarits sont fournis dans le dossier
+  **`presets-bambu/`** à la racine, un par imprimante et matière (`<imprimante>_<matière>.3mf` : `p1s` ou `h2s`,
+  `pla_aero` ou `asa_aero`). Pour changer un réglage : ouvrir le fichier dans Bambu Studio, modifier, puis
+  « Enregistrer le projet » au même nom (Bambu Studio y note les réglages modifiés ; ceux qu'il n'y note pas
+  reprennent la valeur du preset système à l'ouverture) :
   le réglage `printer: p1s | h2s` (menu « Imprimante » de la GUI) choisit le gabarit, donc le plateau
   (P1S 256 × 256 × 250, H2S 340 × 320 × 340) et le volume utile. `bambu.template` (chemin) impose le sien et
   l'emporte ; `null` = aucun gabarit.
 - **Fond ouvert** : aucune couche inférieure (`bottom_shell_layers: 0`), la 1re couche est un tour fermé (imposé par Bambu Studio
   avec une bordure), la spirale part de la 2e.
-  **Bordure** : les gabarits embarqués (P1S et H2S) ont une bordure extérieure (`brim_type: outer_only`,
+  **Bordure** : les gabarits fournis (P1S et H2S) ont une bordure extérieure (`brim_type: outer_only`,
   5 mm) pour l'accroche au plateau ; le brim « auto » de Bambu Studio calcule sa propre largeur et l'omet
-  souvent. Pas de jupe (`skirt_loops: 0`).
+  souvent. Pas de jupe (`skirt_height: 0`).
 - **Un plateau par tronçon** (en vase mode, un seul objet par plateau), disposés comme dans Bambu Studio,
   chaque tronçon centré et posé sur son plateau, emplanture en bas.
 - Découpe automatique quand la pièce dépasse la hauteur utile = hauteur du gabarit − marge. La découpe

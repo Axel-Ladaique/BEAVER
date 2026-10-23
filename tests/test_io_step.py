@@ -142,7 +142,9 @@ def test_ambiguous_face_count_is_flagged():
     found = [((), Box(1, 1, 1), True), ((), Box(2, 2, 2), True)]
     bodies = _assign_brep_names(found, [("A", 6), ("B", 6)])
     assert [b.name for b in bodies] == ["A", "B"]
-    assert bodies[0].note == "nom deviné parmi : A, B"  # deux candidats libres
+    # deux candidats libres, sans signature dans le texte : devinette expliquée
+    assert bodies[0].note.startswith("nom deviné parmi A, B : même nombre de faces")
+    assert "ordre du fichier" in bodies[0].note
     assert bodies[1].note == ""  # un seul candidat restant
 
 
@@ -170,7 +172,8 @@ def test_inspect_shows_ambiguity_note(tmp_path: Path):
     text = re.sub(r"MANIFOLD_SOLID_BREP\(''", lambda m: f"MANIFOLD_SOLID_BREP('{next(names)}'", text)
     (tmp_path / "amb.step").write_text(text, encoding="utf-8")
     r = CliRunner().invoke(app, ["inspect", str(tmp_path / "amb.step")])
-    assert "⚠ nom ambigu, nom deviné parmi : SKIN_A, SKIN_B" in r.output, r.output
+    assert "⚠ nom attribué dans l'ordre du fichier parmi SKIN_A, SKIN_B : le fichier ne permet pas" in r.output, r.output
+    assert "nom ambigu," not in r.output
 
 
 # --- signature géométrique (servo, tâche 1) ---------------------------------
@@ -236,3 +239,36 @@ def test_servo_fixture_names_by_signature():
     assert [cb.body.name for cb in model.of("servo")] == ["SERVO_1"]
     assert [cb.body.name for cb in model.cables] == ["SBAR_CABLES_SERVO"]
     assert len(spars) == 3  # 2 longerons + 1 gaine (une gaine reste un spar marqué cable)
+
+
+def test_corps_identiques_nom_dans_l_ordre_explique():
+    """Deux corps de même géométrie : le fichier ne les distingue pas, dit clairement et sans alarme."""
+    from beaver.io_step import _assign_brep_names, _BrepEntry, solid_signature
+
+    sig = solid_signature(_spar())
+    found = [((), _spar(), True), ((), _spar().moved(Location((50, 0, 0))), True)]
+    bodies = _assign_brep_names(found, [_BrepEntry("SBAR_14mm_2", 3, sig), _BrepEntry("SBAR_14mm_3", 3, sig)])
+    assert [b.name for b in bodies] == ["SBAR_14mm_2", "SBAR_14mm_3"]
+    assert "ne permet pas de distinguer" in bodies[0].note and "sans effet s'ils ont le même rôle" in bodies[0].note
+    assert bodies[1].note == ""
+
+
+def test_nom_unique_mais_rayons_differents_signale():
+    """Seul nom libre avec ce nombre de faces, mais d'un autre rayon : nom probablement mal attribué."""
+    from beaver.io_step import Signature, _assign_brep_names, _BrepEntry, solid_signature
+
+    sig = solid_signature(_spar())
+    autre = Signature(sig.types, (10.0,))  # Ø 20 dans le texte, Ø 14 mesuré
+    bodies = _assign_brep_names([((), _spar(), True)], [_BrepEntry("SBAR_20mm", 3, autre)])
+    assert bodies[0].name == "SBAR_20mm" and "rayons diffèrent" in bodies[0].note
+    ok = _assign_brep_names([((), _spar(), True)], [_BrepEntry("SBAR_14mm", 3, sig)])
+    assert ok[0].note == ""
+
+
+def test_step_surfaces_seules_message_explicite(tmp_path: Path):
+    from build123d import Shell
+
+    shell = Shell(Box(10, 10, 10).faces()[:3])
+    export_step(shell, str(tmp_path / "surf.step"))
+    with pytest.raises(StepReadError, match="ne contient que des surfaces .*pas de solide"):
+        read_step(tmp_path / "surf.step")

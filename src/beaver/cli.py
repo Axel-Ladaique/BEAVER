@@ -8,8 +8,8 @@ from typing import NoReturn, Optional
 
 import typer
 
-from beaver import __version__
-from beaver.classify import ClassifyError, cable_marker, classify
+from beaver import __version__, avertissements
+from beaver.classify import ClassifyError, cable_marker, classify, diameter_note
 from beaver.bambu import BambuError, open_in_bambu, read_template, vase_warning
 from beaver.config import AUTO_TEMPLATE, Config, embedded_templates, ConfigError, load_config, resolve_template
 from beaver.material_profiles import ProfileError, copy_profile, find_profiles, load_profile
@@ -37,10 +37,12 @@ def main(
     ),
 ) -> None:
     """BEAVER : structure interne pour impression vase mode."""
-    # symboles ✔ ✘ ≈ Ø ⚠ absents de cp1252 : sortie redirigée sous Windows
+    avertissements.installer()  # « Boolean operation unable to clean » de build123d : traduit, une fois
+    # symboles ✔ ✘ ≈ Ø ⚠ absents de cp1252 : sortie redirigée sous Windows ; ligne par ligne : une sortie
+    # redirigée vers un fichier (`beaver gui > log.txt`) est lisible tout de suite, pas à l'arrêt
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", errors="replace")
+            stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
 
 def _fail(message: str) -> NoReturn:
@@ -77,12 +79,14 @@ def inspect(
         how = f"   ({how})" if how else ""
         typer.echo(f"  {role:<6}  {cb.body.display}{how}")
         if cb.body.note:
-            typer.echo(f"      ⚠ nom ambigu, {cb.body.note}")
+            typer.echo(f"      ⚠ {cb.body.note}")
         if cb.spar is not None:
             s = cb.spar
             typer.echo(
                 f"      Ø {s.diameter:.1f} mm · axe {_fmt_vec(s.axis_dir)} · longueur {s.length:.1f} mm"
             )
+            if note := diameter_note(cb):
+                typer.echo(f"      ⚠ {note}")
         if cb.role == "servo":
             bb = cb.body.solid.bounding_box()
             typer.echo(f"      boîte {bb.size.X:.1f} × {bb.size.Y:.1f} × {bb.size.Z:.1f} mm")

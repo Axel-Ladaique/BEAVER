@@ -14,7 +14,8 @@ import math
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from concurrent.futures import Future
 from dataclasses import dataclass, field, replace
 from itertools import pairwise
@@ -52,6 +53,7 @@ from beaver.pipeline import (
     GEOMETRY_ERRORS,
     PipelineError,
     check_fill,
+    check_printable_size,
     check_spars_assigned,
     cut_guides,
     cut_plan,
@@ -87,6 +89,33 @@ _PLATES_TOL = 0.05  # mm : maillage des plaques pour la vue 3D (plaques planes :
 
 class PreviewError(ValueError):
     """Aperçu impossible (message en français)."""
+
+
+class PreparationAnnulee(Exception):
+    """Préparation arrêtée à une étape (aperçu remplacé, projet fermé, arrêt demandé). Pas une erreur géométrique :
+    ne dérive ni de ValueError ni de RuntimeError (jamais traduite en « préparation impossible »)."""
+
+
+# Suivi de la préparation en cours dans ce fil : appelé avec le nom de chaque étape ; peut lever PreparationAnnulee
+# (point d'arrêt entre deux étapes : un calcul OpenCascade en cours n'est pas interruptible).
+_suivi = threading.local()
+
+
+@contextmanager
+def suivi(fn: Callable[[str], None]) -> Iterator[None]:
+    """Étapes de `prepare_status` appelé dans ce fil (et dans ce bloc) transmises à `fn`."""
+    avant = getattr(_suivi, "fn", None)
+    _suivi.fn = fn
+    try:
+        yield
+    finally:
+        _suivi.fn = avant
+
+
+def _etape(texte: str) -> None:
+    fn = getattr(_suivi, "fn", None)
+    if fn is not None:
+        fn(texte)
 
 
 def _round(v: float) -> float:
@@ -288,11 +317,18 @@ def prepare(step_path: str | Path, cfg: Config) -> Prepared:
 
 def _prepare(path: Path, cfg: Config, key: tuple[str, str]) -> Prepared:
     t0 = time.perf_counter()
+    _etape("lecture du fichier STEP")
     try:
         model = classify(read_step(path), cfg)
     except (StepReadError, ClassifyError) as exc:
         raise PreviewError(str(exc)) from exc
     skins = model.of("skin")
+    try:
+        for s in skins:
+            check_printable_size(s.body.name, s.body.solid, cfg)
+    except PipelineError as exc:
+        raise PreviewError(str(exc)) from exc
+    _etape("orientation")
     try:
         o = orient(model, cfg)
     except GEOMETRY_ERRORS as exc:
@@ -314,8 +350,9 @@ def _prepare(path: Path, cfg: Config, key: tuple[str, str]) -> Prepared:
         except PipelineError as exc:
             raise PreviewError(str(exc)) from exc
     parts = [
-        _prepare_skin(s.body.name, skin, spars, servos_for(skin, servos, several), cables, o, cfg, key, anchor, t0)
-        for s, skin in zip(skins, oriented)
+        _prepare_skin(s.body.name, skin, spars, servos_for(skin, servos, several), cables, o, cfg, key, anchor, t0,
+                      f"{s.body.name} ({i}/{len(skins)}) : " if several else "")
+        for i, (s, skin) in enumerate(zip(skins, oriented), 1)
     ]
     if not several:
         return replace(parts[0], prepare_s=time.perf_counter() - t0)
@@ -329,14 +366,17 @@ def _prepare(path: Path, cfg: Config, key: tuple[str, str]) -> Prepared:
 
 
 def _prepare_skin(
-    name: str, skin: Solid, spars, servos, cables, o: Orientation, cfg: Config, key, anchor, t0: float
+    name: str, skin: Solid, spars, servos, cables, o: Orientation, cfg: Config, key, anchor, t0: float,
+    where: str = "",
 ) -> Prepared:
     """Préparation d'une peau orientée : mêmes étapes que `generate_skin`, sans les booléens."""
     tol = cfg.validation.tessellation_tol
     try:
         bb = skin.bounding_box()
         nx, nz = cfg.split.grid
+        _etape(f"{where}surface médiane")
         mid = MidSurface.from_skin(skin, nx, nz, tol)
+        _etape(f"{where}longerons et passages")
         vertical, transversal = split_spars(list(spars), cfg)
         inside = spars_inside(skin, vertical, tol)
         found = find_passages(skin, cfg.passages.max_tilt_deg)
@@ -344,8 +384,10 @@ def _prepare_skin(
         to_fill = passages_to_fill(skin, cfg, exclude=bores, found=found)
         bores += passage_bores(skin, cfg, exclude=bores, found=found)
         check_fill(skin, to_fill, tol)
+        _etape(f"{where}baies de servo et attaches")
         bays = tuple(servo_bays(servos, skin, mid, cfg, bores))
         anchors = tuple(tuple(anchor_profiles_2d(b, mid, bb)) if b.anchor_gap > 0 else () for b in bores)
+        _etape(f"{where}maillage de la peau")
         mesh = to_mesh(skin, tol)
         obb = skin.bounding_box(optimal=True)
     except (PipelineError, BoreError, ServoError) as exc:

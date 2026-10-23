@@ -62,10 +62,10 @@ def test_piece_workers_bounded_by_memory(monkeypatch):
     monkeypatch.setattr(pipeline.os, "cpu_count", lambda: 8)
     monkeypatch.setattr(pipeline, "available_memory", lambda: 8e9)
     assert pipeline.piece_workers([10, 20, 30]) == 3  # petits morceaux : un par morceau
-    assert pipeline.piece_workers([60, 115, 95, 80, 85]) == 3  # 1 couche : ≈ 1,4 Go pour 115 outils
-    # 2 couches : ≈ 6,4 Go pour le plus gros morceau (290 outils) → 1 à la fois dans 70 % de 8 Go, 2 dans 20 Go
+    assert pipeline.piece_workers([60, 115, 95, 80, 85]) == 3  # 1 couche : ≈ 1,8 Go pour 115 outils
+    # 2 couches : ≈ 8,9 Go pour le plus gros morceau (290 outils) → 1 à la fois dans 70 % de 8 Go, 2 dans 26 Go
     assert pipeline.piece_workers([290, 250, 240, 180]) == 1
-    monkeypatch.setattr(pipeline, "available_memory", lambda: 20e9)
+    monkeypatch.setattr(pipeline, "available_memory", lambda: 26e9)
     assert pipeline.piece_workers([290, 250, 240, 180]) == 2
     monkeypatch.setattr(pipeline, "available_memory", lambda: 1e9)
     assert pipeline.piece_workers([180, 150]) == 1  # jamais moins d'un

@@ -180,9 +180,9 @@ def _boxes_touch(a, b, margin: float = 1.0) -> bool:
 
 # mémoire du booléen d'un morceau de n outils ≈ PIECE_GB_BASE + PIECE_GB_PER_PAIR · n² Go : elle suit les croisements de
 # plaques, pas le nombre d'outils (Dotitos, 1 couche : 0,6 à 1 Go pour 60 à 115 outils ; 2 couches : 2 Go pour 182,
-# 5,8 Go pour 276)
+# 5,9 Go pour 239, 5,8 Go pour 276, 4 Go pour 294) ; estimation prudente, le swap coûte bien plus qu'un booléen en série
 PIECE_GB_BASE = 0.5
-PIECE_GB_PER_PAIR = 7e-5
+PIECE_GB_PER_PAIR = 1e-4
 MEMORY_SHARE = 0.7  # part de la mémoire disponible que les booléens des morceaux peuvent prendre ensemble
 
 

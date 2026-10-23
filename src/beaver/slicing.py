@@ -6,13 +6,16 @@ import os
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
-import trimesh
-from build123d import Shape
-from OCP.BRepMesh import BRepMesh_IncrementalMesh
-from OCP.StlAPI import StlAPI_Writer
 from shapely.geometry import Polygon
+
+# build123d (sklearn compris), OpenCascade et trimesh : plusieurs secondes d'import, importés à l'usage. Les workers
+# de validation (`validate._check_layer`, spawn) importent ce module pour `Layer` : ils n'en ont pas besoin.
+if TYPE_CHECKING:
+    import trimesh
+    from build123d import Shape
 
 
 @dataclass(frozen=True)
@@ -26,6 +29,10 @@ def to_mesh(shape: Shape, tol: float = 0.02, angular: float = 0.3) -> trimesh.Tr
 
     La triangulation est stockée sur la forme par OpenCascade et réutilisée par les appels suivants.
     """
+    import trimesh
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.StlAPI import StlAPI_Writer
+
     BRepMesh_IncrementalMesh(shape.wrapped, tol, False, angular, True)
     fd, tmp = tempfile.mkstemp(suffix=".stl")
     os.close(fd)

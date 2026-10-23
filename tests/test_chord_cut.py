@@ -480,3 +480,24 @@ def test_preview_cut_plan_matches_generation(wide_run, tmp_path):
         assert (bb.min.X - dx, bb.max.X - dx) == (pytest.approx(p["x0"], abs=0.05), pytest.approx(p["x1"], abs=0.05))
     for p, pl in zip(pieces, b.placements):
         assert p["tient"] == pl.fits and p["rotation"] == pytest.approx(pl.angle_deg, abs=1.0)
+
+
+@pytest.mark.slow
+def test_per_piece_cut_matches_whole_cut(monkeypatch, wide_run):
+    """Découpe par morceau (peau coupée d'abord, booléens des morceaux en parallèle) : mêmes morceaux, même validation
+    que la découpe de la pièce entière puis la coupe dans la corde (`wide_run`)."""
+    cfg, whole, _ = wide_run
+    monkeypatch.setattr(pipeline, "ISOLATE_MIN_TOOLS", 1)  # la petite aile de test passe par la découpe par morceau
+    msgs = []
+    run = pipeline.run_model(classify(wide_wing_bodies(), cfg), cfg, progress=msgs.append)
+    (a,), (b,) = whole.bodies, run.bodies
+    assert any("découpe booléenne de 2 morceaux" in m for m in msgs), msgs
+    assert not any("découpe par morceau impossible" in m for m in msgs), msgs
+    assert b.names == a.names and [r.ok for r in b.piece_reports] == [r.ok for r in a.piece_reports]
+    for p, q in zip(b.segments, a.segments):
+        assert len(p.solids()) == 1 and p.is_valid
+        assert p.volume == pytest.approx(q.volume, rel=1e-6)
+        pb, qb = p.bounding_box(), q.bounding_box()
+        assert (pb.min.Z, pb.max.Z, pb.min.X, pb.max.X) == pytest.approx((qb.min.Z, qb.max.Z, qb.min.X, qb.max.X), abs=1e-6)
+    assert b.result.volume == pytest.approx(a.result.volume, rel=1e-6)
+    assert b.report.stats["path_length_m"] == pytest.approx(a.report.stats["path_length_m"], rel=1e-4)

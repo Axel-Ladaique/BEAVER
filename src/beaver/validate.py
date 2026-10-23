@@ -8,15 +8,17 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from build123d import Shape
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
 from beaver.config import Config
 from beaver.env import lire_env
 from beaver.slicing import Layer, layer_heights, slice_layers
+
+if TYPE_CHECKING:  # build123d : plusieurs secondes d'import, inutile aux workers de validation (`_check_layer`)
+    from build123d import Shape
 
 Severity = Literal["error", "warning"]
 MAX_FAILED_LAYERS = 20

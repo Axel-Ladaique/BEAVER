@@ -223,7 +223,7 @@ def test_arret_signale_la_preparation_en_cours(tmp_path, monkeypatch, capsys):
     _fake_server(monkeypatch, record)
     monkeypatch.setattr(apercu, "preparation_en_cours", lambda: True)
     server.run_gui(tmp_path, port=0, open_browser=False)
-    assert "arrêt après la préparation de l'aperçu en cours" in capsys.readouterr().out
+    assert "arrêt de la préparation de l'aperçu en cours" in capsys.readouterr().out
 
 
 def test_preparation_en_cours_suivie(monkeypatch):
@@ -233,6 +233,7 @@ def test_preparation_en_cours_suivie(monkeypatch):
 
     go = threading.Event()
     monkeypatch.setattr(apercu.preview, "prepare_status", lambda step, cfg: go.wait(10) and ("prep", False))
+    monkeypatch.setattr(apercu, "_EN_COURS", 0)
     assert not apercu.preparation_en_cours()
     fut = apercu._EXECUTOR.submit(apercu._preparer, "s", None)
     t0 = time.monotonic()
@@ -249,3 +250,25 @@ def test_entetes_de_securite(tmp_path):
     for r in (c.get("/"), c.get("/api/sante", headers={"X-Beaver-Token": TOKEN}), c.get("/api/sante")):
         assert r.headers["x-content-type-options"] == "nosniff"
         assert r.headers["content-security-policy"] == "frame-ancestors 'none'"
+
+
+def test_api_jamais_en_cache(tmp_path):
+    """Liste de projets jamais servie par le cache du navigateur (« Aucun projet » au premier chargement)."""
+    c = _client(tmp_path)
+    for r in (c.get("/api/projets", headers={"X-Beaver-Token": TOKEN}), c.get("/api/sante"),
+              c.get("/api/inconnue", headers={"X-Beaver-Token": TOKEN})):
+        assert r.headers["cache-control"] == "no-store"
+    assert c.get("/").headers["cache-control"] == "no-cache"  # fichiers statiques : revalidés (ETag)
+
+
+def test_adresse_videe_tout_de_suite(tmp_path, monkeypatch):
+    """`beaver gui > log.txt` : l'adresse (avec jeton) est écrite sans attendre l'arrêt du serveur."""
+    import builtins
+
+    record = {"opened": []}
+    _fake_server(monkeypatch, record)
+    vus = []
+    vrai = builtins.print
+    monkeypatch.setattr(builtins, "print", lambda *a, **k: (vus.append(k.get("flush")), vrai(*a, **k)))
+    server.run_gui(tmp_path, port=0, open_browser=False)
+    assert vus and all(vus)

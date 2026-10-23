@@ -9,16 +9,20 @@ const ROLES = {
 
 let ctx = null;
 const ui = {};
+let seqListe = 0; // listes demandées en rafale (démarrage, ouverture, onglet) : seule la dernière réponse compte
 
 async function lister() {
+  const s = ++seqListe;
   vider(ui.erreurListe);
   let liste;
   try {
     liste = await api.get("/api/projets");
   } catch (e) {
+    if (s !== seqListe) return;
     ui.erreurListe.append(message(`Liste des projets indisponible : ${e.message}`));
     return;
   }
+  if (s !== seqListe) return;
   vider(ui.liste);
   if (!liste.length) {
     ui.liste.append(el("p", { classe: "vide", texte: "Aucun projet : importez un fichier STEP pour commencer." }));

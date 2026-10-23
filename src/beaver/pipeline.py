@@ -610,6 +610,34 @@ def usable_height(cfg: Config) -> float:
     return H - seg.margin
 
 
+# Une pièce plus volumineuse que MAX_BUILD_VOLUMES volumes d'impression utiles est refusée avant tout calcul : en vase
+# mode chaque morceau est plein jusqu'à la peau, il faudrait donc au moins autant de morceaux remplissant entièrement
+# le volume (bien plus en pratique). Une grande aile reste loin en dessous : 4,5 m d'envergure, corde 400 mm, profil
+# 14 % ≈ 68 L ≈ 4,5 volumes de P1S (≈ 15 L utiles) ; une pièce au-delà de 10 (≈ 150 L sur P1S, ≈ 340 L sur H2S) est
+# une erreur d'export (unité du STEP, mauvais corps pris pour la peau) ou n'est pas une pièce imprimable de ce
+# type — sans ce contrôle, elle échoue après de longues minutes de génération.
+MAX_BUILD_VOLUMES = 10.0
+
+
+def check_printable_size(name: str, solid: Solid, cfg: Config) -> None:
+    """PipelineError en français si la pièce est sans commune mesure avec le volume d'impression (même découpée)."""
+    (W, D, H), _, label = _print_volume(cfg)
+    m = cfg.segment.margin
+    usable = max(W - 2 * m, 1.0) * max(D - 2 * m, 1.0) * max(H - m, 1.0)
+    volume = abs(solid.volume)
+    ratio = volume / usable
+    if ratio <= MAX_BUILD_VOLUMES:
+        return
+    bb = solid.bounding_box()
+    raise PipelineError(
+        f"{name} : pièce sans commune mesure avec l'imprimante — {volume / 1e6:.0f} L "
+        f"({bb.size.X:.0f} × {bb.size.Y:.0f} × {bb.size.Z:.0f} mm), soit {ratio:.0f} fois le volume utile "
+        f"{label} ({W:.0f} × {D:.0f} × {H:.0f} mm, marge {m:g} mm) ; refusée au-delà de {MAX_BUILD_VOLUMES:g} "
+        "volumes même découpée. Vérifier l'unité d'export du STEP (mètres au lieu de millimètres ?) et le corps "
+        "pris pour la peau (beaver inspect)"
+    )
+
+
 class Segmented(NamedTuple):
     pieces: tuple[Solid, ...]  # morceaux imprimables, posés à z = 0
     warnings: tuple[str, ...]
@@ -908,6 +936,8 @@ def run_model(model: Model, cfg: Config, progress: Callable[[str], None] = lambd
     par corps (re-découpé s'il ne tient pas), orientation commune, motif de nervures calé sur la boîte globale
     (`skins_anchor`), longerons, gaines et baies attribués à chaque corps qu'ils traversent."""
     skins = model.of("skin")
+    for s in skins:  # avant tout calcul : une pièce démesurée échouerait après de longues minutes
+        check_printable_size(s.body.name, s.body.solid, cfg)
     progress("orientation…")
     try:
         o = orient(model, cfg)

@@ -21,6 +21,7 @@ _STEP_ESCAPE = re.compile(
     re.S,
 )
 _NON_ASCII = re.compile(r"[^\x00-\x7f]+")
+_NON_ASCII_BYTES = re.compile(rb"[\x80-\xff]")
 
 
 def _decode_step_string(s: str) -> str:
@@ -348,12 +349,20 @@ def _assign_brep_names(
 
 def write_step(path: str | Path, bodies: list[NamedBody], assembly_name: str = "BEAVER") -> Path:
     path = Path(path)
-    children = []
+    children, seen = [], []
     for body in bodies:
-        solid = copy.deepcopy(body.solid)
+        # nouvelle enveloppe Python de la même forme : le libellé et le parent posés par Compound ne touchent pas
+        # l'original (une copie profonde doublait la mémoire de l'export : grande aile delta, 9 morceaux de 11 000 faces). Copie
+        # seulement d'une forme déjà écrite (même TShape, ailleurs ou au même endroit) : sinon les deux corps n'en
+        # feraient qu'un dans le STEP, sous un seul nom
+        shared = any(body.solid.wrapped.IsPartner(w) for w in seen)
+        seen.append(body.solid.wrapped)
+        solid = copy.deepcopy(body.solid) if shared else Shape.cast(body.solid.wrapped)
         solid.label = body.name
         children.append(solid)
-    export_step(Compound(children=children, label=assembly_name), str(path))
+    # sans pcurves (courbes des arêtes dans l'espace de leurs faces, recalculées à la lecture) : grande aile delta 2 couches,
+    # 3 morceaux : fichier 723 → 301 Mo, pic 4,8 → 2,5 Go, relus identiques (faces, volume, validité)
+    export_step(Compound(children=children, label=assembly_name), str(path), write_pcurves=False)
     _fix_label_encoding(path)
     return path
 
@@ -372,7 +381,14 @@ def _fix_label_encoding(path: Path) -> None:
             pass
         return "\\X2\\" + run.encode("utf-16-be").hex().upper() + "\\X0\\"
 
-    text = path.read_text(encoding="utf-8")
-    if _NON_ASCII.search(text):
-        path.write_text(_NON_ASCII.sub(fix, text), encoding="utf-8", newline="")
+    # ligne par ligne (un fichier de plusieurs centaines de Mo ne passe pas en mémoire) : une suite non ASCII ne
+    # traverse jamais une fin de ligne, même résultat que sur le texte entier
+    with path.open("rb") as f:
+        if not any(_NON_ASCII_BYTES.search(chunk) for chunk in iter(lambda: f.read(1 << 24), b"")):
+            return
+    tmp = path.with_name(path.name + ".tmp")
+    with path.open(encoding="utf-8", newline="") as src, tmp.open("w", encoding="utf-8", newline="") as dst:
+        for line in src:
+            dst.write(_NON_ASCII.sub(fix, line))
+    tmp.replace(path)
 

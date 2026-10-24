@@ -214,35 +214,41 @@ def _boxes_touch(a, b, margin: float = 1.0) -> bool:
     )
 
 
-# mémoire du booléen d'un morceau ≈ PIECE_GB_BASE + PIECE_GB_PER_FACE_PAIR · F² Go, F = faces de ses outils rognés
-# (`clip_tools`) : elle suit les croisements de plaques, ni le nombre d'outils proches ni l'épaisseur. Booléens à boîtes
-# orientées (`cut_obb`), grande aile delta 2 couches (2 mm à 15 mm + 30 mm, évidements tous les 2) : 6,7 Go pour 3 998 faces,
-# 8,5 Go pour 4 269 et 4 508, 7,1 Go pour 4 441, 8,9 Go pour 4 512, > 11 Go pour 5 196 ; estimation prudente, le swap
-# coûte bien plus qu'un booléen en série
+# mémoire du booléen d'un morceau ≈ PIECE_GB_BASE + PIECE_GB_PER_PAIR · n² Go, n = outils rognés qui le touchent
+# (`clip_tools`) : elle suit les croisements de plaques, ni le nombre de faces ni l'épaisseur. Booléens à boîtes
+# orientées (`cut_obb`), grande aile delta 2 couches : 3,3 à 3,9 Go pour 164 à 168 outils (peau à 30 mm), 6,7 à 8,9 Go pour 240
+# à 244 (peau à 15 mm, avec ou sans évidements), > 9 Go pour 250 (T3-B) ; estimation prudente, le swap coûte bien plus
+# qu'un booléen en série, et le plafond (`piece_memory_cap`) arrête un morceau qui la dépasse de trop
 PIECE_GB_BASE = 0.5
-PIECE_GB_PER_FACE_PAIR = 4.5e-7
+PIECE_GB_PER_PAIR = 1.5e-4
 MEMORY_SHARE = 0.7  # part de la mémoire disponible que les booléens des morceaux peuvent prendre ensemble
 
 
-def piece_gb(faces: int) -> float:
-    """Mémoire estimée (Go) du booléen d'un morceau dont les outils rognés ont `faces` faces."""
-    return PIECE_GB_BASE + PIECE_GB_PER_FACE_PAIR * faces**2
+def piece_gb(tools: int) -> float:
+    """Mémoire estimée (Go) du booléen d'un morceau de `tools` outils rognés."""
+    return PIECE_GB_BASE + PIECE_GB_PER_PAIR * tools**2
 
 
-def piece_workers(faces: Sequence[int]) -> int:
+def piece_workers(tools: Sequence[int]) -> int:
     """Booléens de morceaux lancés ensemble : au plus un par morceau et par cœur, et autant que la mémoire disponible
-    en loge pour le plus gros morceau (`piece_gb`, faces de ses outils rognés) — 2 couches de nervures : plusieurs Go
-    par morceau, le swap ralentirait tout bien plus que le parallélisme ne fait gagner."""
-    n = max(1, min(len(faces), os.cpu_count() or 1))
+    en loge pour le plus gros morceau (`piece_gb`, outils rognés) — 2 couches de nervures : plusieurs Go par morceau,
+    le swap ralentirait tout bien plus que le parallélisme ne fait gagner."""
+    n = max(1, min(len(tools), os.cpu_count() or 1))
     avail = available_memory()
-    if avail is None or not faces:
+    if avail is None or not tools:
         return n
-    return max(1, min(n, int(MEMORY_SHARE * avail // (piece_gb(max(faces)) * 1e9))))
+    return max(1, min(n, int(MEMORY_SHARE * avail // (piece_gb(max(tools)) * 1e9))))
 
 
 PIECE_CAP_ENV = "MEMOIRE_MORCEAU_GO"  # BEAVER_MEMOIRE_MORCEAU_GO=20 : plafond de mémoire d'un morceau (Go), 0 = aucun
 PIECE_CAP_SHARE = 0.85  # part de la mémoire disponible (au départ de la découpe) partagée entre les morceaux lancés ensemble
 PIECE_POLL = 1.0  # s entre deux relevés de mémoire des morceaux en cours
+# la mémoire suit le nombre de plaques qui se croisent dans un morceau (pas les évidements : grande aile delta, sans évidements,
+# autant de mémoire qu'avec)
+PIECE_MEMORY_HINT = (
+    "Pistes : fermer d'autres applications, couche de nervures moins dense (spacing plus grand), morceaux moins hauts "
+    f"(segment.max_height) ; plafond réglable par BEAVER_{PIECE_CAP_ENV} (Go, 0 = aucun)"
+)
 
 
 def piece_memory_cap(workers: int, avail: int | None) -> float | None:
@@ -273,10 +279,9 @@ def _piece_child(conn, job) -> None:
         conn.close()
 
 
-def piece_text(tools: int, near: int, faces: int) -> str:
-    """« découpe de 244 outils (436 proches, 4 441 faces, ≈ 9,4 Go)… » : annonce d'un booléen de morceau."""
-    n = f"{faces:,}".replace(",", " ")
-    return f"découpe de {tools} outils ({near} proches, {n} faces, ≈ {gigas(piece_gb(faces) * 1e9)})…"
+def piece_text(tools: int, near: int) -> str:
+    """« découpe de 244 outils (436 proches, ≈ 9,4 Go)… » : annonce d'un booléen de morceau."""
+    return f"découpe de {tools} outils ({near} proches, ≈ {gigas(piece_gb(tools) * 1e9)})…"
 
 
 def _run_piece_jobs(jobs, names, workers: int, cap: float | None, done, progress, pre: str, texts=None) -> None:
@@ -331,9 +336,7 @@ def _run_piece_jobs(jobs, names, workers: int, cap: float | None, done, progress
                     stop_all()
                     raise PieceMemoryError(
                         f"{label(k)} : le booléen de {n} outils dépasse {gigas(cap)} de mémoire après "
-                        f"{duration(time.monotonic() - t0)} — arrêté. Pistes : évidements sans ponts (ribs_hollow.mode "
-                        f"off), couche de peau moins dense, morceaux plus petits ; plafond réglable par "
-                        f"BEAVER_{PIECE_CAP_ENV} (Go, 0 = aucun)"
+                        f"{duration(time.monotonic() - t0)} — arrêté. {PIECE_MEMORY_HINT}"
                     )
                 if beat:
                     progress(f"{pre}{label(k)} : en cours depuis {duration(time.monotonic() - t0)}, mémoire {gigas(mem)}")
@@ -355,13 +358,12 @@ def cut_pieces(
     Renvoie (morceaux découpés, éclats retirés) ; PipelineError (longeron qui traverse la matière, découpe invalide)."""
     tool_boxes = [t.bounding_box() for t in pending.tools]
     spars = [serialize_shape(sp.wrapped) for _, sp in pending.spars]
-    jobs, near, faces = [], [], []
+    jobs, near = [], []
     for piece, dz in zip(pieces, offsets):
         placed = Pos(0, 0, dz) * piece
         box = placed.bounding_box()
         mine = clip_tools(placed, [t for t, b in zip(pending.tools, tool_boxes) if _boxes_touch(b, box)])
         near.append(sum(_boxes_touch(b, box) for b in tool_boxes))
-        faces.append(sum(len(t.faces()) for t in mine))
         jobs.append((serialize_shape(piece.wrapped), dz, [serialize_shape(t.wrapped) for t in mine], spars))
     out: list = [None] * len(jobs)
 
@@ -371,19 +373,24 @@ def cut_pieces(
         mem = f", mémoire {gigas(res[4])}" if res[4] else ""
         progress(f"{pre}{name} : {len(jobs[k][2])} outils découpés en {duration(res[3])}{mem}")
 
-    workers = piece_workers(faces)
+    workers = piece_workers([len(job[2]) for job in jobs])
     avail = available_memory()
     cap = piece_memory_cap(workers, avail)
     progress(f"{pre}découpe des morceaux : {workers} à la fois"
              + (f" (mémoire disponible {gigas(avail)})" if avail is not None else "")
              + (f", plafond {gigas(cap)} par morceau" if cap is not None and can_isolate() else ""))
+    heavy = [names[k] if k < len(names) else f"morceau {k + 1}" for k, job in enumerate(jobs)
+             if cap is not None and piece_gb(len(job[2])) * 1e9 > cap]
+    if heavy and can_isolate():
+        progress(f"⚠ {pre}{', '.join(heavy)} : mémoire estimée au-delà du plafond ({gigas(cap)}), risque d'arrêt — "
+                 f"{PIECE_MEMORY_HINT}")
     if not can_isolate():  # parent démon, BEAVER_ISOLER=0 : sur place, sans signal ni plafond
         for k, job in enumerate(jobs):
-            progress(f"{pre}{names[k] if k < len(names) else f'morceau {k + 1}'} : {piece_text(len(job[2]), near[k], faces[k])}")
+            progress(f"{pre}{names[k] if k < len(names) else f'morceau {k + 1}'} : {piece_text(len(job[2]), near[k])}")
             done(k, _cut_piece(*job))
     else:
         _run_piece_jobs(jobs, names, workers, cap, done, progress, pre,
-                        [piece_text(len(j[2]), m, f) for j, m, f in zip(jobs, near, faces)])
+                        [piece_text(len(j[2]), m) for j, m in zip(jobs, near)])
     blocked = [sum(o[2][i] for o in out) for i in range(len(spars))]
     for (name, _), vol in zip(pending.spars, blocked):
         if vol > MAX_SPAR_OBSTRUCTION:

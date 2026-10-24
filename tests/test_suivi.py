@@ -62,16 +62,17 @@ def test_piece_workers_bounded_by_memory(monkeypatch):
 
     monkeypatch.setattr(pipeline.os, "cpu_count", lambda: 8)
     monkeypatch.setattr(pipeline, "available_memory", lambda: 8e9)
-    assert pipeline.piece_workers([200, 400, 600]) == 3  # petits morceaux : un par morceau
-    assert pipeline.piece_workers([1500, 2000, 1800]) == 2  # ≈ 2,3 Go pour 2 000 faces : 2 dans 70 % de 8 Go
-    # 2 couches (grande aile delta) : ≈ 9,6 Go pour le plus gros morceau (4 500 faces) → 1 à la fois dans 70 % de 8 Go, 2 dans 32 Go
-    assert pipeline.piece_workers([4500, 4400, 4000]) == 1
+    assert pipeline.piece_workers([10, 20, 30]) == 3  # petits morceaux : un par morceau
+    assert pipeline.piece_workers([60, 115, 95]) == 2  # 1 couche : ≈ 2,5 Go pour 115 outils rognés, 2 dans 5,6 Go
+    # 2 couches (grande aile delta) : ≈ 9,4 Go pour le plus gros morceau (244 outils rognés) → 1 à la fois dans 70 % de 8 Go,
+    # 2 dans 32 Go
+    assert pipeline.piece_workers([244, 240, 192]) == 1
     monkeypatch.setattr(pipeline, "available_memory", lambda: 32e9)
-    assert pipeline.piece_workers([4500, 4400, 4000]) == 2
+    assert pipeline.piece_workers([244, 240, 192]) == 2
     monkeypatch.setattr(pipeline, "available_memory", lambda: 1e9)
-    assert pipeline.piece_workers([3000, 2000]) == 1  # jamais moins d'un
+    assert pipeline.piece_workers([180, 150]) == 1  # jamais moins d'un
     monkeypatch.setattr(pipeline, "available_memory", lambda: None)  # sans psutil : un par cœur
-    assert pipeline.piece_workers([3000] * 12) == 8
+    assert pipeline.piece_workers([180] * 12) == 8
 
 
 def test_piece_memory_cap(monkeypatch):

@@ -171,6 +171,9 @@ class Prepared:
     # SBAR transversales par réglages (leurs fentes dépendent du plan de découpe) : calculées à la demande, sous
     # `mesh_lock`
     memo: dict = field(default_factory=dict, repr=False)
+    # sections du maillage par z (`_sections`, sous `mesh_lock`) : les plans de découpe avec et sans évidements en
+    # lisent beaucoup aux mêmes hauteurs
+    section_cache: dict = field(default_factory=dict, repr=False)
 
     @property
     def bounds(self) -> tuple[float, float, float, float, float, float]:
@@ -409,6 +412,23 @@ def _remember(prep: Prepared, key, value) -> None:
             prep.memo.pop(next(iter(prep.memo)))
 
 
+_SECTION_CACHE = 4000  # sections gardées par préparation (quelques Mo)
+
+
+def _sections(prep: Prepared, zs) -> list[np.ndarray]:
+    """Sections du maillage de la peau aux hauteurs absolues `zs` (`slicing.mesh_sections`), gardées par z."""
+    zs = [float(z) for z in zs]
+    with prep.mesh_lock:
+        cache = prep.section_cache
+        todo = sorted({z for z in zs if z not in cache})
+        if todo:
+            for z, sec in zip(todo, mesh_sections(prep.mesh)(todo)):
+                cache[z] = sec
+            while len(cache) > _SECTION_CACHE:
+                cache.pop(next(iter(cache)))
+        return [cache[z] if z in cache else mesh_sections(prep.mesh)([z])[0] for z in zs]
+
+
 def _layout_plan(prep: Prepared, cfg: Config):
     """Plan de découpe d'une peau (`pipeline.layout_for`, sur le maillage de l'aperçu), calculé une fois par réglages :
     le même sert aux évidements (`guides`) et à la vue du plan (`_layout`) — plus de 10 s sur une grande aile.
@@ -418,15 +438,9 @@ def _layout_plan(prep: Prepared, cfg: Config):
         hit = prep.memo.get(key)
     if hit is None:
         zlo, zhi = prep.zrange
-        sample = mesh_sections(prep.mesh)
-
-        def sections(zs):  # zs absolus
-            with prep.mesh_lock:
-                return sample(list(zs))
-
         try:
             hit = layout_for(
-                zhi - zlo, zlo, sections, cfg, prep.bores, prep.bays, [f for _, f in prep.filled],
+                zhi - zlo, zlo, lambda zs: _sections(prep, zs), cfg, prep.bores, prep.bays, [f for _, f in prep.filled],
                 (prep.anchor if prep.anchor is not None else prep.bb).min.Z,
             )
         except SegmentError as exc:
@@ -836,11 +850,8 @@ def _layout(prep: Prepared, cfg: Config) -> Layout:
             return prep.memo[key]
     zlo, zhi = prep.zrange
     height = zhi - zlo
-    sample = mesh_sections(prep.mesh)
-
     def sections(zs):  # zs absolus
-        with prep.mesh_lock:
-            return sample(list(zs))
+        return _sections(prep, zs)
 
     (W, D, _), _, printer = _print_volume(cfg)
     seg = cfg.segment

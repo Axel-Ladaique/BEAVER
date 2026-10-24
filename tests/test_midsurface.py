@@ -49,11 +49,28 @@ def test_swept_leading_edge_has_no_thickness_in_front_of_the_nose():
     le = 60 * np.tan(np.radians(50))
     _, th = m.at(le + np.array([-1.0, -0.2, 50.0]), z)
     assert th[0] == 0 and th[1] == 0 and th[2] == pytest.approx(23.8, abs=0.3)
-    # sans flèche ni effilement : identique à la lecture à x fixe
+    # sans flèche ni effilement : identique à la lecture à x fixe (grille seule, sans les échantillons fins des bords)
     s = MidSurface.from_skin(swept_wing(chord=200, span=120, code="4412"), 101, 22)
     fixed = MidSurface(s.xs, s.zs, s.ymid, s.thick)
+    grid = MidSurface(s.xs, s.zs, s.ymid, s.thick, s.le, s.te)
     xs, zs = np.linspace(-5, 205, 50), np.linspace(1, 119, 50)
-    assert np.allclose(s.at(xs, zs)[1], fixed.at(xs, zs)[1], atol=0.05)
+    assert np.allclose(grid.at(xs, zs)[1], fixed.at(xs, zs)[1], atol=0.05)
+    # échantillons fins : seulement plus près du profil réel, à moins d'un pas de grille des bords
+    far = (xs > 5) & (xs < 195)
+    assert np.allclose(s.at(xs, zs)[1][far], fixed.at(xs, zs)[1][far], atol=0.05)
+
+
+def test_edge_samples_follow_a_round_nose():
+    # nez de rayon 20 mm, grille de 10 mm : l'épaisseur lue près du nez est celle du cercle, pas une rampe
+    from build123d import Face, Vector, Wire, extrude
+
+    r = 20.0
+    nose = [Vector(r - r * np.sin(a), r * np.cos(a), 0) for a in np.linspace(0, np.pi, 81)]
+    wing = extrude(Face(Wire.make_polygon([*nose, Vector(1000, 0, 0)], close=True)), amount=40)
+    mid = MidSurface.from_skin(wing, 101, 5)
+    x = np.array([0.5, 2.0, 5.0])
+    _, th = mid.at(x, np.full(3, 20.0))
+    assert th == pytest.approx(2 * np.sqrt(r**2 - (r - x) ** 2), abs=0.1)
 
 
 @pytest.mark.slow

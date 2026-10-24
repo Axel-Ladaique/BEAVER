@@ -545,3 +545,28 @@ def test_ribs_above_the_closed_top_of_a_vertical_sbar_start_from_the_skin():
     # 0,2 mm de dérive de la plaque à 45° + 0,2 mm de toit par couche ; première couche : bout de l'attache
     # (anchor_gap) sous le toit
     assert _unsupported(body.result, zs, 0.2, near) <= 0.6
+
+
+def _round_nosed_wing(chord=1000.0, radius=20.0, span=60.0):
+    """Aile épaisse à nez rond (demi-cercle de rayon `radius` au bord d'attaque x = 0), bord de fuite en coin."""
+    from build123d import Face, Wire, extrude
+    from build123d import Vector as V
+
+    nose = [V(radius - radius * math.sin(a), radius * math.cos(a), 0) for a in np.linspace(0, math.pi, 41)]
+    w = Wire.make_polygon([*nose, V(chord, 0, 0)], close=True)
+    return extrude(Face(w), amount=span)
+
+
+def test_steep_mask_sees_a_blunt_nose_finer_than_the_grid():
+    # grande aile delta (corde 1,2 m) : grille de 101 nœuds = 12 mm ; entre le nez (épaisseur nulle) et le premier nœud, la peau
+    # devenait une rampe moins raide que le nez réel, et des fentes longeaient le nez à 1 mm (peau entamée, matière
+    # trop fine). Le masque doit couvrir le nez réel : pente > max_slope, plus la marge.
+    r = 20.0
+    mid = MidSurface.from_skin(_round_nosed_wing(radius=r), 101, 5)
+    max_slope, margin = wall_limits(slit=0.1, angle_deg=45.0, **WALL)
+    # pente de la peau du demi-cercle |dy/dx| = cot φ (φ depuis l'axe −x) : raide pour x < r·(1 − cos φ_lim)
+    steep_x = r * (1 - math.cos(math.atan(1 / max_slope)))
+    x = np.arange(0.0, 40.0, 0.05)
+    steep = steep_samples(mid, x, np.full_like(x, 30.0), max_slope=max_slope, margin=margin)
+    assert steep[x <= steep_x + margin - 0.1].all()
+    assert not steep[x > steep_x + margin + 1.0].any()

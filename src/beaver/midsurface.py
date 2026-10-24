@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 
 import numpy as np
+import shapely
 from build123d import Solid
 from scipy.interpolate import RegularGridInterpolator
 from shapely.geometry import LineString, Polygon
@@ -24,6 +26,38 @@ def mid_line(envelope, xs: np.ndarray, y_lo: float, y_hi: float) -> tuple[np.nda
         ymid[i] = (y0 + y1) / 2
         thick[i] = y1 - y0
     return ymid, thick
+
+
+# Échantillons fins près des bords exacts de chaque rangée (`MidSurface.edges`) : premier à _EDGE_FIRST mm du bord,
+# puis pas croissant de _EDGE_GROWTH jusqu'à _EDGE_REACH pas de grille. La grille régulière (101 nœuds sur la corde
+# de la boîte, 12 mm sur une aile de 1,2 m) ne voit pas un nez émoussé : entre le bord (épaisseur nulle) et le premier
+# nœud, la peau devient une rampe droite, moins raide que la paroi réelle — des fentes passaient alors à 1 mm du nez,
+# le longeaient et entamaient la peau (`ribs.steep_samples`).
+_EDGE_FIRST = 0.05
+_EDGE_GROWTH = 1.2
+_EDGE_REACH = 2.0
+
+
+def edge_offsets(step: float) -> np.ndarray:
+    """Distances au bord des échantillons fins (pas de grille `step`)."""
+    n = max(int(np.ceil(np.log(_EDGE_REACH * step / _EDGE_FIRST) / np.log(_EDGE_GROWTH))), 0) + 1
+    return _EDGE_FIRST * _EDGE_GROWTH ** np.arange(n)
+
+
+def edge_samples(env, le: float, te: float, step: float, y_lo: float, y_hi: float):
+    """(x, y médian, épaisseur) aux abscisses fines près du bord d'attaque et du bord de fuite d'une section `env`
+    (x croissant, dans ]le, te[, sans recouvrement entre les deux bords)."""
+    d = edge_offsets(step)
+    d = d[d < (te - le) / 2]
+    xs = np.unique(np.concatenate([le + d, te - d]))
+    if not len(xs):
+        return xs, xs, xs
+    cut = shapely.intersection(env, shapely.linestrings([[(x, y_lo), (x, y_hi)] for x in xs]))
+    b = shapely.bounds(cut)
+    ok = ~shapely.is_empty(cut)
+    th = np.where(ok, b[:, 3] - b[:, 1], 0.0)
+    ym = np.where(ok, (b[:, 1] + b[:, 3]) / 2, np.nan)
+    return xs[ok], ym[ok], th[ok]
 
 
 def camber_offset(section: Polygon, n: int = 41) -> float:
@@ -47,6 +81,8 @@ class MidSurface:
     # fixe entre deux rangées
     le: np.ndarray | None = None
     te: np.ndarray | None = None
+    # par rangée : (x, y médian, épaisseur) fins près des bords exacts (`edge_samples`), ou None : grille seule
+    edges: tuple | None = None
 
     @classmethod
     def from_skin(cls, skin: Solid, nx: int = 101, nz: int = 22, tol: float = 0.02) -> "MidSurface":
@@ -56,6 +92,8 @@ class MidSurface:
         ymid = np.full((nx, nz), np.nan)
         thick = np.zeros((nx, nz))
         le, te = np.full(nz, np.nan), np.full(nz, np.nan)
+        empty = np.empty(0)
+        edges = [(empty, empty, empty)] * nz
         for j, layer in enumerate(slice_layers(skin, zs, tol)):
             if not layer.polygons:
                 continue
@@ -63,10 +101,12 @@ class MidSurface:
             ymid[:, j], thick[:, j] = mid_line(env, xs, bb.min.Y - 5, bb.max.Y + 5)
             if env.geom_type == "Polygon":  # plusieurs corps dans la rangée (aileron…) : lecture à x fixe
                 le[j], te[j] = env.bounds[0], env.bounds[2]
+                step = xs[1] - xs[0] if nx > 1 else te[j] - le[j]
+                edges[j] = edge_samples(env, le[j], te[j], step, bb.min.Y - 5, bb.max.Y + 5)
         for j in range(nz):
             ok = ~np.isnan(ymid[:, j])
             ymid[:, j] = np.interp(xs, xs[ok], ymid[ok, j]) if ok.any() else 0.0
-        return cls(xs, zs, ymid, thick, le, te)
+        return cls(xs, zs, ymid, thick, le, te, tuple(edges))
 
     def at(self, x: np.ndarray, z: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """(y médian, épaisseur) en (x, z). Entre deux rangées z de la grille, chaque rangée est lue à la même position
@@ -98,18 +138,36 @@ class MidSurface:
             xj = np.clip(xj, self.xs[0], self.xs[-1])
             for k in np.unique(j):
                 m = j == k
-                ym[m] += w[m] * np.interp(xj[m], self.xs, self.ymid[:, k])
-                th[m] += w[m] * self._row_thickness(k, xj[m])
+                xr, yr, tr = self._rows[k]
+                ym[m] += w[m] * np.interp(xj[m], xr, yr)
+                th[m] += w[m] * np.interp(xj[m], xr, tr, left=0.0, right=0.0)
         return ym, np.where(inside, th, 0.0)
 
-    def _row_thickness(self, k: int, x: np.ndarray) -> np.ndarray:
-        """Épaisseur de la rangée k en x : nœuds de la grille dans la section, plus les bords exacts (épaisseur nulle) —
-        sinon l'interpolation entre le dernier nœud vide et le premier plein mettrait de l'épaisseur devant le nez
-        quand le bord tombe entre deux nœuds (flèche, effilement)."""
-        le, te = self.le[k], self.te[k]
-        if np.isnan(le) or np.isnan(te):
-            return np.interp(x, self.xs, self.thick[:, k])
-        keep = (self.xs > le) & (self.xs < te)
-        xa = np.concatenate([[le], self.xs[keep], [te]])
-        ta = np.concatenate([[0.0], self.thick[keep, k], [0.0]])
-        return np.interp(x, xa, ta, left=0.0, right=0.0)
+    @cached_property
+    def _rows(self) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """(x, y médian, épaisseur) de chaque rangée, lus par interpolation linéaire en x : nœuds de la grille dans la
+        section, échantillons fins près des bords (`edges`) et bords exacts (épaisseur nulle) — sans les bords,
+        l'interpolation entre le dernier nœud vide et le premier plein mettrait de l'épaisseur devant le nez quand le
+        bord tombe entre deux nœuds (flèche, effilement) ; sans les échantillons fins, un nez émoussé deviendrait une
+        rampe d'un pas de grille. Rangée sans bords connus : grille seule."""
+        out = []
+        for k in range(len(self.zs)):
+            le, te = self.le[k], self.te[k]
+            if np.isnan(le) or np.isnan(te):
+                out.append((self.xs, self.ymid[:, k], self.thick[:, k]))
+                continue
+            ex, ey, et = self.edges[k] if self.edges is not None else (np.empty(0),) * 3
+            # nœuds de la grille au-delà des échantillons fins de chaque bord
+            half = (le + te) / 2
+            lo = ex[ex < half].max(initial=le)
+            hi = ex[ex > half].min(initial=te)
+            keep = (self.xs > lo) & (self.xs < hi)
+            xa = np.concatenate([[le], ex, self.xs[keep], [te]])
+            ya = np.concatenate([[np.nan], ey, self.ymid[keep, k], [np.nan]])
+            ta = np.concatenate([[0.0], et, self.thick[keep, k], [0.0]])
+            order = np.argsort(xa, kind="stable")
+            xa, ya, ta = xa[order], ya[order], ta[order]
+            ok = ~np.isnan(ya)  # y médian aux bords exacts : celui du point voisin (lu dans la section)
+            ya = np.interp(xa, xa[ok], ya[ok]) if ok.any() else np.interp(xa, self.xs, self.ymid[:, k])
+            out.append((xa, ya, ta))
+        return out

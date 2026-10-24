@@ -122,20 +122,40 @@ class _TooSteep(Exception):
 def _hull(pts: np.ndarray) -> Polygon | None:
     if len(pts) < 3:
         return None
-    h = MultiPoint([tuple(p) for p in pts]).convex_hull
+    h = MultiPoint(np.ascontiguousarray(np.asarray(pts)[:, :2], dtype=float)).convex_hull
     return h if isinstance(h, Polygon) and h.area > 0 else None
 
 
-def _coords(geom) -> list[np.ndarray]:
-    if geom.is_empty:
-        return []
-    parts = getattr(geom, "geoms", [geom])
-    out = []
-    for g in parts:
-        c = np.asarray(g.exterior.coords if hasattr(g, "exterior") else g.coords)
-        if len(c):
-            out.append(c[:, :2])
-    return out
+class _Rings:
+    """Anneaux (ouverts) de sections convexes mis bout à bout, pour les couper tous d'un coup à une bande par section."""
+
+    def __init__(self, zs: Sequence[float], rings: Sequence[np.ndarray]):
+        self.z = np.asarray(zs, dtype=float)
+        self.pts = np.concatenate(rings)
+        self.sec = np.repeat(np.arange(len(rings)), [len(r) for r in rings])
+        starts = np.cumsum([0] + [len(r) for r in rings[:-1]])
+        nxt = np.arange(len(self.pts)) + 1
+        nxt[starts + np.array([len(r) for r in rings]) - 1] = starts  # dernier sommet d'un anneau → son premier
+        self.nxt = nxt
+
+    def clip(self, xl: np.ndarray, xr: np.ndarray) -> np.ndarray:
+        """Sommets de chaque (section ∩ bande xl ≤ x ≤ xr de sa section) — ceux de `h.intersection(box(xl, …, xr, …))`
+        à l'arrondi près, sans construire de géométrie (le plan de découpe en essaie des milliers) : sommets dans la
+        bande et passages des arêtes sur x = xl et x = xr (polygones convexes), dans le désordre (seule leur
+        enveloppe convexe sert). Sections où xr ≤ xl : ignorées."""
+        ok = (xr > xl)[self.sec]
+        x = self.pts[:, 0]
+        lo, hi = xl[self.sec], xr[self.sec]
+        out = [self.pts[ok & (x >= lo) & (x <= hi)]]
+        a, b = self.pts, self.pts[self.nxt]
+        for line in (lo, hi):
+            cross = ok & ((a[:, 0] - line) * (b[:, 0] - line) < 0)
+            if cross.any():
+                ac, bc, lc = a[cross], b[cross], line[cross]
+                on = ac + ((lc - ac[:, 0]) / (bc[:, 0] - ac[:, 0]))[:, None] * (bc - ac)
+                on[:, 0] = lc
+                out.append(on)
+        return np.concatenate(out)
 
 
 def _le_at_min(hull: Polygon) -> bool:
@@ -178,16 +198,16 @@ def _chord_segment(
     size = _extent(np.asarray(worst.exterior.coords))
     le_min = _le_at_min(worst)
 
+    rings = _Rings([z for z, _ in sections], [np.asarray(h.exterior.coords)[:-1, :2] for _, h in sections])
+
     def footprint(left: ChordPlane | None, right: ChordPlane | None) -> Placement | None:
-        pts = []
-        for z, h in sections:
-            xl = left.x_at(z) if left is not None else -_FAR
-            xr = right.x_at(z) if right is not None else _FAR
-            if xr > xl:
-                pts += _coords(h.intersection(box(xl, -_FAR, xr, _FAR)))
-        if not pts:
+        far = np.full(len(rings.z), _FAR)
+        xl = -far if left is None else left.xa + (rings.z - left.za) * (left.xb - left.xa) / (left.zb - left.za)
+        xr = far if right is None else right.xa + (rings.z - right.za) * (right.xb - right.xa) / (right.zb - right.za)
+        pts = rings.clip(xl, xr)
+        if not len(pts):
             return None
-        return fit_on_bed(np.concatenate(pts), bed, margin)
+        return fit_on_bed(pts, bed, margin)
 
     def inside(p: ChordPlane, prev: ChordPlane | None) -> bool:
         if not (lo_a + MIN_PIECE <= p.xa <= hi_a - MIN_PIECE and lo_b + MIN_PIECE <= p.xb <= hi_b - MIN_PIECE):

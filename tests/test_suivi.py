@@ -3,6 +3,7 @@
 import os
 import time
 
+import pytest
 from build123d import Box, Cylinder, Pos
 
 from beaver import suivi
@@ -62,12 +63,93 @@ def test_piece_workers_bounded_by_memory(monkeypatch):
     monkeypatch.setattr(pipeline.os, "cpu_count", lambda: 8)
     monkeypatch.setattr(pipeline, "available_memory", lambda: 8e9)
     assert pipeline.piece_workers([10, 20, 30]) == 3  # petits morceaux : un par morceau
-    assert pipeline.piece_workers([60, 115, 95, 80, 85]) == 3  # 1 couche : ≈ 1,8 Go pour 115 outils
-    # 2 couches : ≈ 8,9 Go pour le plus gros morceau (290 outils) → 1 à la fois dans 70 % de 8 Go, 2 dans 26 Go
-    assert pipeline.piece_workers([290, 250, 240, 180]) == 1
-    monkeypatch.setattr(pipeline, "available_memory", lambda: 26e9)
-    assert pipeline.piece_workers([290, 250, 240, 180]) == 2
+    assert pipeline.piece_workers([60, 115, 95]) == 2  # 1 couche : ≈ 2,5 Go pour 115 outils rognés, 2 dans 5,6 Go
+    # 2 couches (grande aile delta) : ≈ 9,4 Go pour le plus gros morceau (244 outils rognés) → 1 à la fois dans 70 % de 8 Go,
+    # 2 dans 32 Go
+    assert pipeline.piece_workers([244, 240, 192]) == 1
+    monkeypatch.setattr(pipeline, "available_memory", lambda: 32e9)
+    assert pipeline.piece_workers([244, 240, 192]) == 2
     monkeypatch.setattr(pipeline, "available_memory", lambda: 1e9)
     assert pipeline.piece_workers([180, 150]) == 1  # jamais moins d'un
     monkeypatch.setattr(pipeline, "available_memory", lambda: None)  # sans psutil : un par cœur
     assert pipeline.piece_workers([180] * 12) == 8
+
+
+def test_piece_memory_cap(monkeypatch):
+    from beaver import pipeline
+
+    monkeypatch.delenv("BEAVER_MEMOIRE_MORCEAU_GO", raising=False)
+    monkeypatch.delenv("AERORIB_MEMOIRE_MORCEAU_GO", raising=False)
+    assert pipeline.piece_memory_cap(2, 40e9) == 0.85 * 20e9  # mémoire disponible partagée entre les morceaux
+    assert pipeline.piece_memory_cap(1, None) is None  # sans psutil : pas de plafond
+    monkeypatch.setenv("BEAVER_MEMOIRE_MORCEAU_GO", "12,5")
+    assert pipeline.piece_memory_cap(3, 40e9) == 12.5e9
+    monkeypatch.setenv("BEAVER_MEMOIRE_MORCEAU_GO", "0")
+    assert pipeline.piece_memory_cap(1, 40e9) is None
+
+
+def test_piece_over_memory_cap_is_stopped_with_its_name(monkeypatch):
+    """Un booléen de morceau qui dépasse le plafond est arrêté : erreur claire (nom du morceau, outils), annoncé avant."""
+    from build123d.persistence import serialize_shape
+
+    from beaver import pipeline
+
+    piece = serialize_shape(Box(40, 40, 40).wrapped)
+    tools = [serialize_shape((Pos(-15 + 3 * i, 15, 0) * Box(0.4, 20, 60)).wrapped) for i in range(10)]
+    msgs = []
+    with pytest.raises(pipeline.PieceMemoryError, match="T1-B : le booléen de 10 outils dépasse"):
+        pipeline._run_piece_jobs([(piece, 0.0, tools, [])], ["T1-B"], 1, 1e6, lambda k, r: None, msgs.append, "")
+    assert msgs[0] == "T1-B : découpe de 10 outils…"
+
+
+def test_piece_jobs_run_in_child_processes():
+    from build123d.persistence import serialize_shape
+
+    from beaver import pipeline
+
+    piece = serialize_shape(Box(40, 40, 40).wrapped)
+    tools = [serialize_shape((Pos(-15 + 3 * i, 15, 0) * Box(0.4, 20, 60)).wrapped) for i in range(4)]
+    out = {}
+    pipeline._run_piece_jobs([(piece, 0.0, tools, []), (piece, 0.0, tools[:2], [])], ["A", "B"], 2, None,
+                             out.__setitem__, lambda m: None, "")
+    assert sorted(out) == [0, 1] and out[0][1] == 0 and out[0][2] == []
+
+
+def test_clip_tools_keeps_the_cut_solid():
+    """Outils rognés à la boîte du morceau : même solide que la découpe par les outils entiers ; ceux qui ne touchent
+    que la boîte voisine sont écartés."""
+    from build123d import Rot
+
+    from beaver import pipeline
+
+    piece = Box(40, 20, 40)
+    tools = [Pos(-12 + 6 * i, 5, 0) * Rot(0, 45, 0) * Box(0.4, 20, 300) for i in range(5)]
+    tools.append(Pos(0, 5, 200) * Box(0.4, 20, 30))  # boîte au-delà du morceau
+    clipped = pipeline.clip_tools(piece, tools)
+    assert len(clipped) == 5
+    assert all(c.bounding_box().size.Z < 45 for c in clipped)
+    whole, cut = piece.cut(*tools), piece.cut(*clipped)
+    assert cut.volume == pytest.approx(whole.volume, rel=1e-9)
+    assert len(cut.faces()) == len(whole.faces())
+
+
+def test_piece_over_shared_cap_is_retried_alone(monkeypatch):
+    """Plafond partagé dépassé à plusieurs morceaux à la fois : le morceau est repris seul à la fin, au plafond d'un
+    morceau seul ; il ne s'arrête en erreur que s'il le dépasse aussi seul."""
+    from build123d.persistence import serialize_shape
+
+    from beaver import pipeline
+
+    piece = serialize_shape(Box(40, 40, 40).wrapped)
+    tools = [serialize_shape((Pos(-15 + 3 * i, 15, 0) * Box(0.4, 20, 60)).wrapped) for i in range(4)]
+    jobs = [(piece, 0.0, tools, []), (piece, 0.0, tools[:2], [])]
+    monkeypatch.delenv("BEAVER_MEMOIRE_MORCEAU_GO", raising=False)
+    monkeypatch.delenv("AERORIB_MEMOIRE_MORCEAU_GO", raising=False)
+    msgs, out = [], {}
+    pipeline._run_piece_jobs(jobs, ["A", "B"], 2, 1e6, out.__setitem__, msgs.append, "")
+    assert sorted(out) == [0, 1]
+    assert any("A : 0,0 Go dépassés à plusieurs morceaux à la fois — repris seul" in m for m in msgs), msgs
+    assert any(m.startswith("reprise seul de ") for m in msgs), msgs
+    monkeypatch.setenv("BEAVER_MEMOIRE_MORCEAU_GO", "0.001")  # seul aussi : arrêt
+    with pytest.raises(pipeline.PieceMemoryError, match="dépasse 0,0 Go"):
+        pipeline._run_piece_jobs(jobs, ["A", "B"], 2, 1e6, lambda k, r: None, lambda m: None, "")

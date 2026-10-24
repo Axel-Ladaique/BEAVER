@@ -22,7 +22,9 @@ class Placement:
 
 def _hull_points(footprint) -> np.ndarray:
     if isinstance(footprint, np.ndarray):
-        geom = MultiPoint([tuple(p) for p in footprint[:, :2]])
+        # tableau passé tel quel (création vectorisée) : un Point Python par sommet coûtait ~70 s par plan de découpe
+        # sur grande aile delta (des centaines de milliers de sommets de sections, ×4 500 emprises essayées)
+        geom = MultiPoint(np.ascontiguousarray(footprint[:, :2], dtype=float))
     else:
         geom = footprint
     hull = geom.convex_hull

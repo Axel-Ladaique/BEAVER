@@ -64,6 +64,20 @@ def _process_memory(proc) -> int:
     return proc.memory_info().rss
 
 
+def process_memory(pid: int) -> int | None:
+    """Mémoire d'un processus (empreinte physique sous macOS, RSS ailleurs), None si inconnue ou terminé."""
+    if sys.platform == "darwin" and (fp := _footprint(pid)) is not None:
+        return fp
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        return psutil.Process(pid).memory_info().rss
+    except (OSError, psutil.Error):
+        return None
+
+
 def memory_bytes() -> int | None:
     """Mémoire du processus et de ses fils (booléen isolé, pool de validation) ; None si inconnue (sans psutil)."""
     try:

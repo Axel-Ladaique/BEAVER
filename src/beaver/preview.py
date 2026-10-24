@@ -56,7 +56,6 @@ from beaver.pipeline import (
     check_printable_size,
     check_spars_assigned,
     cut_guides,
-    cut_plan,
     hollow_on,
     rib_options,
     servos_for,
@@ -403,24 +402,59 @@ def _prepare_skin(
 _MEMO = 8  # résultats gardés par préparation (SBAR transversales, plans de découpe)
 
 
+def _remember(prep: Prepared, key, value) -> None:
+    with prep.mesh_lock:
+        prep.memo[key] = value
+        while len(prep.memo) > _MEMO:
+            prep.memo.pop(next(iter(prep.memo)))
+
+
+def _layout_plan(prep: Prepared, cfg: Config):
+    """Plan de découpe d'une peau (`pipeline.layout_for`, sur le maillage de l'aperçu), calculé une fois par réglages :
+    le même sert aux évidements (`guides`) et à la vue du plan (`_layout`) — plus de 10 s sur une grande aile.
+    SegmentError si la découpe est impossible."""
+    key = ("plan", cfg.model_dump_json())
+    with prep.mesh_lock:
+        hit = prep.memo.get(key)
+    if hit is None:
+        zlo, zhi = prep.zrange
+        sample = mesh_sections(prep.mesh)
+
+        def sections(zs):  # zs absolus
+            with prep.mesh_lock:
+                return sample(list(zs))
+
+        try:
+            hit = layout_for(
+                zhi - zlo, zlo, sections, cfg, prep.bores, prep.bays, [f for _, f in prep.filled],
+                (prep.anchor if prep.anchor is not None else prep.bb).min.Z,
+            )
+        except SegmentError as exc:
+            hit = exc
+        _remember(prep, key, hit)
+    if isinstance(hit, SegmentError):
+        raise hit
+    return hit
+
+
 def guides(prep: Prepared, cfg: Config):
     """Coupes du plan de découpe autour desquelles les évidements s'arrêtent, exactement celles de `generate_skin`
-    (même plan, `pipeline.cut_plan`, sur le même maillage) ; None sans évidement."""
+    (même plan que `pipeline.cut_plan`, sur le même maillage) ; None sans évidement."""
     if not hollow_on(cfg):
         return None
     key = ("coupes", cfg.model_dump_json())
     with prep.mesh_lock:
         if key in prep.memo:
             return prep.memo[key]
-        plan = cut_plan(
-            prep.skin, cfg, prep.bores, prep.bays, prep.mesh, [f for _, f in prep.filled],
-            (prep.anchor if prep.anchor is not None else prep.bb).min.Z,
-        )
-        out = cut_guides(plan, prep.zrange[0])
-        prep.memo[key] = out
-        while len(prep.memo) > _MEMO:
-            prep.memo.pop(next(iter(prep.memo)))
-        return out
+    plan = None
+    if cfg.segment.mode != "off":
+        try:
+            plan = _layout_plan(prep, cfg)
+        except SegmentError:  # comme `cut_plan` : signalée par la vue du plan
+            plan = None
+    out = cut_guides(plan, prep.zrange[0])
+    _remember(prep, key, out)
+    return out
 
 
 def tubes(prep: Prepared, cfg: Config) -> tuple[Tube, ...]:
@@ -822,18 +856,12 @@ def _layout(prep: Prepared, cfg: Config) -> Layout:
         out = Layout([], warns, [], [_piece("T1", zlo, zhi, ext, pl)], [])
     else:
         try:
-            plan = layout_for(
-                height, zlo, sections, cfg, prep.bores, prep.bays, [f for _, f in prep.filled],
-                (prep.anchor if prep.anchor is not None else prep.bb).min.Z,
-            )
+            plan = _layout_plan(prep, cfg)
         except SegmentError as exc:
             out = Layout([], [*warns, f"découpe en tronçons impossible : {exc}"], [], [], [], ok=False)
         else:
             out = _plan_view(plan, cfg, (W, D), zlo, height, sections, printer, warns)
-    with prep.mesh_lock:
-        prep.memo[key] = out
-        while len(prep.memo) > _MEMO:
-            prep.memo.pop(next(iter(prep.memo)))
+    _remember(prep, key, out)
     return out
 
 

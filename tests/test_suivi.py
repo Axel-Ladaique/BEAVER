@@ -131,3 +131,25 @@ def test_clip_tools_keeps_the_cut_solid():
     whole, cut = piece.cut(*tools), piece.cut(*clipped)
     assert cut.volume == pytest.approx(whole.volume, rel=1e-9)
     assert len(cut.faces()) == len(whole.faces())
+
+
+def test_piece_over_shared_cap_is_retried_alone(monkeypatch):
+    """Plafond partagé dépassé à plusieurs morceaux à la fois : le morceau est repris seul à la fin, au plafond d'un
+    morceau seul ; il ne s'arrête en erreur que s'il le dépasse aussi seul."""
+    from build123d.persistence import serialize_shape
+
+    from beaver import pipeline
+
+    piece = serialize_shape(Box(40, 40, 40).wrapped)
+    tools = [serialize_shape((Pos(-15 + 3 * i, 15, 0) * Box(0.4, 20, 60)).wrapped) for i in range(4)]
+    jobs = [(piece, 0.0, tools, []), (piece, 0.0, tools[:2], [])]
+    monkeypatch.delenv("BEAVER_MEMOIRE_MORCEAU_GO", raising=False)
+    monkeypatch.delenv("AERORIB_MEMOIRE_MORCEAU_GO", raising=False)
+    msgs, out = [], {}
+    pipeline._run_piece_jobs(jobs, ["A", "B"], 2, 1e6, out.__setitem__, msgs.append, "")
+    assert sorted(out) == [0, 1]
+    assert any("A : 0,0 Go dépassés à plusieurs morceaux à la fois — repris seul" in m for m in msgs), msgs
+    assert any(m.startswith("reprise seul de ") for m in msgs), msgs
+    monkeypatch.setenv("BEAVER_MEMOIRE_MORCEAU_GO", "0.001")  # seul aussi : arrêt
+    with pytest.raises(pipeline.PieceMemoryError, match="dépasse 0,0 Go"):
+        pipeline._run_piece_jobs(jobs, ["A", "B"], 2, 1e6, lambda k, r: None, lambda m: None, "")

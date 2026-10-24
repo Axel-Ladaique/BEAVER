@@ -287,7 +287,8 @@ def piece_text(tools: int, near: int) -> str:
 def _run_piece_jobs(jobs, names, workers: int, cap: float | None, done, progress, pre: str, texts=None) -> None:
     """Booléens des morceaux, `workers` à la fois, chacun dans un processus neuf (la mémoire d'un booléen n'est rendue
     qu'à la fin du processus), le plus gros d'abord. Le parent reste libre : il annonce chaque morceau (nom, outils),
-    donne sa mémoire toutes les HEARTBEAT s et l'arrête au plafond `cap` (PieceMemoryError)."""
+    donne sa mémoire toutes les HEARTBEAT s et l'arrête au plafond `cap`. Un morceau arrêté pendant que d'autres
+    tournent est repris seul à la fin, au plafond d'un morceau seul (`piece_memory_cap`) ; seul, PieceMemoryError."""
     from multiprocessing.connection import wait
 
     from beaver.suivi import HEARTBEAT, process_memory
@@ -297,6 +298,7 @@ def _run_piece_jobs(jobs, names, workers: int, cap: float | None, done, progress
     running: dict = {}  # conn → (k, process, t0, pic)
     label = lambda k: names[k] if k < len(names) else f"morceau {k + 1}"  # noqa: E731
     last_beat = time.monotonic()
+    alone: list[int] = []  # morceaux arrêtés au plafond à plusieurs : repris seuls à la fin
 
     def stop_all() -> None:
         for _, proc, _, _ in running.values():
@@ -306,7 +308,12 @@ def _run_piece_jobs(jobs, names, workers: int, cap: float | None, done, progress
         running.clear()
 
     try:
-        while todo or running:
+        while todo or running or alone:
+            if not todo and not running:  # ne restent que les morceaux à reprendre seuls
+                todo, alone, workers = alone, [], 1
+                cap = piece_memory_cap(1, available_memory())
+                progress(f"{pre}reprise seul de {', '.join(label(k) for k in todo)}"
+                         + (f" (plafond {gigas(cap)})" if cap is not None else ""))
             while todo and len(running) < workers:
                 k = todo.pop(0)
                 parent, child = ctx.Pipe(duplex=False)
@@ -331,6 +338,15 @@ def _run_piece_jobs(jobs, names, workers: int, cap: float | None, done, progress
             for conn, (k, proc, t0, peak) in list(running.items()):
                 mem = process_memory(proc.pid) or 0
                 running[conn] = (k, proc, t0, max(peak, mem))
+                if cap is not None and mem > cap and workers > 1:  # plafond partagé : retenté seul, plafond entier
+                    proc.kill()
+                    proc.join()
+                    conn.close()
+                    del running[conn]
+                    alone.append(k)
+                    progress(f"{pre}{label(k)} : {gigas(cap)} dépassés à plusieurs morceaux à la fois — repris seul à "
+                             "la fin")
+                    continue
                 if cap is not None and mem > cap:
                     n = len(jobs[k][2])
                     stop_all()
